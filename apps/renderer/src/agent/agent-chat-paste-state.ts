@@ -22,19 +22,34 @@ export type PasteImportState = {
   readonly imports: readonly { readonly token: string; readonly generation: number; readonly kind: PasteImportKind }[];
 };
 
+// Catalogs are immutable arrays. Keep their index without retaining abandoned
+// conversations; plain typing must not scan every project asset again.
+const referenceIndexes = new WeakMap<readonly PasteReference[], ReadonlyMap<string, PasteReference>>();
+
+function referenceIndex(references: readonly PasteReference[]): ReadonlyMap<string, PasteReference> {
+  const cached = referenceIndexes.get(references);
+  if (cached !== undefined) return cached;
+  const index = new Map(references.map((reference) => [reference.assetId, reference]));
+  referenceIndexes.set(references, index);
+  return index;
+}
+
 export function reducePasteComposer(
   current: PasteComposer,
   text: string,
   references: readonly PasteReference[],
 ): PasteComposer {
-  const referencesByAssetId = new Map(references.map((reference) => [reference.assetId, reference]));
+  if (current.citations.length === 0) return { text, citations: current.citations };
+  const referencesByAssetId = referenceIndex(references);
+  const citations = current.citations.flatMap((citation) => {
+    const reference = referencesByAssetId.get(citation.assetId);
+    if (reference === undefined || !hasCompleteMentionToken(text, pasteMentionToken(reference))) return [];
+    return [reference.label === citation.label ? citation : { assetId: citation.assetId, label: reference.label }];
+  });
   return {
     text,
-    citations: current.citations.flatMap((citation) => {
-      const reference = referencesByAssetId.get(citation.assetId);
-      if (reference === undefined || !hasCompleteMentionToken(text, pasteMentionToken(reference))) return [];
-      return [{ assetId: reference.assetId, label: reference.label }];
-    }),
+    citations: citations.length === current.citations.length && citations.every((citation, index) => citation === current.citations[index])
+      ? current.citations : citations,
   };
 }
 

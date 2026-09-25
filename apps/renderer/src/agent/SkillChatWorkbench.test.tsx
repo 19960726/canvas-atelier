@@ -83,7 +83,7 @@ function renderWorkbench(overrides: Partial<React.ComponentProps<typeof SkillCha
   // Provider conversation tests explicitly enter their provider mode. Tests of
   // the default Codex surface supply codexProfiles (including an empty catalog).
   if (overrides.codexProfiles === undefined && !hasStoredConversation) {
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
   }
   return view;
 }
@@ -145,7 +145,14 @@ describe('SkillChatWorkbench', () => {
     expect(resolveAgentRequestTimeoutMs('codex', 'high', true)).toBe(240_000);
     expect(resolveAgentRequestTimeoutMs('codex', 'max', false)).toBe(480_000);
     expect(resolveAgentRequestTimeoutMs('codex', 'ultra', false)).toBe(600_000);
-    expect(resolveAgentRequestTimeoutMs('comfly', 'high', true)).toBe(315_000);
+    expect(resolveAgentRequestTimeoutMs('comfly', 'high', true)).toBe(375_000);
+  });
+  it.each(['comfly', 'relayme'] as const)('keeps %s reverse UI timeout beyond the actual provider depth budget', (provider) => {
+    expect(resolveAgentRequestTimeoutMs(provider, 'medium', true, 'fast')).toBe(195_000);
+    expect(resolveAgentRequestTimeoutMs(provider, 'medium', true, 'standard')).toBe(375_000);
+    expect(resolveAgentRequestTimeoutMs(provider, 'medium', true, 'deep')).toBe(615_000);
+    expect(resolveAgentRequestTimeoutMs(provider, 'medium', false, 'deep')).toBe(195_000);
+    expect(resolveAgentRequestTimeoutMs('codex', 'high', true, 'deep')).toBe(240_000);
   });
   it('shows model-declared reasoning in chat and creative Agent while keeping each mode independent', async () => {
     const chat = vi.fn(async () => ({ message: '完成', modelRoute: 'chat/reasoning', sources: [] }));
@@ -157,14 +164,14 @@ describe('SkillChatWorkbench', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '思考能力：中' }));
     fireEvent.change(screen.getByRole('slider', { name: '思考能力' }), { target: { value: '0' } });
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     expect(screen.getByRole('button', { name: '思考能力：中' })).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '思考能力：中' }));
     fireEvent.change(screen.getByRole('slider', { name: '思考能力' }), { target: { value: '2' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成可执行工作流方案' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({ agentMode: 'original', reasoningEffort: 'high' })));
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     expect(screen.getByRole('button', { name: '思考能力：轻度' })).toBeVisible();
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '检查方案' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -181,8 +188,10 @@ describe('SkillChatWorkbench', () => {
       profiles: [visualProfile], chat,
       referenceImages: [{ assetId: 'a'.repeat(16), label: '产品参考', displayUrl: 'novus-project://asset/product' }],
     });
+    expect(screen.queryByRole('group', { name: '反推强度' })).not.toBeInTheDocument();
     window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'a'.repeat(16) } }));
     await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
+    fireEvent.click(screen.getByRole('button', { name: '反推强度：标准反推' }));
     expect(screen.getByRole('group', { name: '反推强度' })).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '深度反推' }));
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 分析当前构图' } });
@@ -245,30 +254,53 @@ describe('SkillChatWorkbench', () => {
     fireEvent.keyDown(slider, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: '思考能力设置' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
-    fireEvent.click(trigger);
     fireEvent.click(screen.getByTestId('agent-model-trigger'));
+    const reasoning = screen.getByRole('dialog', { name: '思考能力设置' });
+    expect(reasoning).toBeVisible();
+    expect(within(reasoning).getByRole('dialog', { name: '选择聊天模型' })).toBeVisible();
+    fireEvent.click(within(reasoning).getByRole('button', { name: '关闭模型选择' }));
     expect(screen.queryByRole('dialog', { name: '思考能力设置' })).not.toBeInTheDocument();
-    expect(screen.getByRole('dialog', { name: '选择聊天模型' })).toBeVisible();
     fireEvent.click(trigger);
+    expect(screen.getByRole('dialog', { name: '选择聊天模型' })).toBeVisible();
     fireEvent.pointerDown(document.body);
     expect(screen.queryByRole('dialog', { name: '思考能力设置' })).not.toBeInTheDocument();
+  });
+
+  it('searches the configured model catalog without changing provider routes', () => {
+    renderWorkbench({
+      profiles: [
+        { provider: 'comfly', modelRoute: 'chat/creative', modelId: 'canvas-chat', displayName: 'Creative chat', capabilities: ['chat'] },
+        { provider: 'relayme', modelRoute: 'relayme/vision-pro', modelId: 'vision-pro', displayName: 'Vision Pro', capabilities: ['chat', 'vision'] },
+        { provider: 'comfly', modelRoute: 'chat/quick', modelId: 'quick-chat', displayName: 'Quick chat', capabilities: ['chat'] },
+      ],
+      codexProfiles: [],
+    });
+
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
+    fireEvent.click(screen.getByTestId('agent-model-trigger'));
+    const dialog = screen.getByRole('dialog', { name: '选择聊天模型' });
+    const search = within(dialog).getByRole('searchbox', { name: '搜索聊天模型' });
+    expect(within(dialog).getByRole('button', { name: '使用 Creative chat' })).toBeVisible();
+    fireEvent.change(search, { target: { value: 'vision-pro' } });
+    expect(within(dialog).getByRole('button', { name: '使用 Vision Pro' })).toBeVisible();
+    expect(within(dialog).queryByRole('button', { name: '使用 Quick chat' })).not.toBeInTheDocument();
+    fireEvent.change(search, { target: { value: 'no-match' } });
+    expect(within(dialog).getByRole('status')).toHaveTextContent('没有匹配的模型');
   });
 
   it('discards a late creative response when the mode changes', async () => {
     let resolveChat!: (result: ChatSkillBridgeResult) => void;
     const chat = vi.fn(() => new Promise<ChatSkillBridgeResult>((resolve) => { resolveChat = resolve; }));
     renderWorkbench({ chat });
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '图片方案' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     await act(async () => resolveChat({ message: '过期方案', modelRoute: 'chat/creative', sources: [] }));
     expect(screen.queryByText('过期方案')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Agent 正在分析')).not.toBeInTheDocument();
   });
   it('asks the chat model for choices before any creative execution and keeps generation preferences separate', async () => {
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView });
     const executeCanvasAction = vi.fn(async () => true);
     const chat = vi.fn(async () => ({ message: JSON.stringify({
       summary: '保留产品比例，选择构图',
@@ -283,8 +315,14 @@ describe('SkillChatWorkbench', () => {
       options: [{ id: 'clean', title: '简洁棚拍', reason: '突出产品', kind: 'image', prompt: '产品居中构图，保持产品比例与 Logo，柔和棚灯突出材质，纯净浅色背景，高清商业摄影。', modelRoute: 'image/only' }],
     }), modelRoute: 'chat/creative', sources: [] }));
     const canvasActionTargets = [{ kind: 'image_generation' as const, nodeId: 'image-node', label: '图片节点', selected: true }];
-    const view = renderWorkbench({ chat, executeCanvasAction, canvasActionTargets });
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    const view = renderWorkbench({ chat, executeCanvasAction, canvasActionTargets, profiles: [
+      profiles[0]!,
+      { ...profiles[1]!, constraints: { image: { resolutions: ['1K', '2K'] } } },
+      { ...profiles[1]!, modelRoute: 'image/only-4k', modelId: 'image-only-4k', displayName: 'Image only 4K', constraints: { image: { resolutions: ['4K'] } } },
+    ] });
+    const messageStream = screen.getByLabelText('Agent 消息流');
+    Object.defineProperty(messageStream, 'scrollHeight', { configurable: true, value: 700 });
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.click(screen.getByRole('button', { name: '生成偏好' }));
     expect(screen.getByRole('dialog', { name: '生成偏好' })).toBeVisible();
     fireEvent.change(screen.getByLabelText('生成模型选择方式'), { target: { value: 'fixed' } });
@@ -311,11 +349,12 @@ describe('SkillChatWorkbench', () => {
     fireEvent.click(option);
     expect(option).toHaveAttribute('aria-pressed', 'true');
     expect(option).toHaveTextContent('已选择');
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'smooth' });
+    expect(messageStream.scrollTop).toBe(700);
     expect(executeCanvasAction).not.toHaveBeenCalled();
     expect(screen.getByLabelText('待确认画布操作')).toHaveTextContent('将创建1个生图节点');
     expect(screen.getByLabelText('待确认画布操作')).toHaveTextContent('提示词与结果保留在生成节点内');
     const claritySelect = screen.getByRole('combobox', { name: '选择生图清晰度' });
+    expect(within(screen.getByRole('combobox', { name: '选择生图模型' })).getAllByRole('option')).toHaveLength(1);
     expect(claritySelect).toHaveValue('');
     fireEvent.change(claritySelect, { target: { value: '4K' } });
     expect(screen.getByLabelText('待确认画布操作')).toHaveClass('skill-chat-workbench__confirmation');
@@ -324,7 +363,7 @@ describe('SkillChatWorkbench', () => {
       createNode: true,
       createWorkflow: true,
       nodeId: expect.stringMatching(/^agent-image-/u),
-      modelRoute: 'image/only',
+      modelRoute: 'image/only-4k',
       prompt: '产品居中构图，保持产品比例与 Logo，柔和棚灯突出材质，纯净浅色背景，高清商业摄影。',
       parameters: expect.objectContaining({ resolution: '4K' }),
     })));
@@ -351,7 +390,7 @@ describe('SkillChatWorkbench', () => {
       { ...profiles[1]!, modelRoute: 'image/edit', capabilities: ['image_generation', 'image_edit'] },
       { provider: 'julun', modelRoute: 'video/i2v', modelId: 'seedance-2.0-deal', displayName: 'Seedance', capabilities: ['video_generation'] },
     ], chat });
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
 
     expect(screen.getByRole('button', { name: '生成偏好' })).toHaveTextContent('图片工作流');
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 精修产品，其他不要改变' } });
@@ -379,7 +418,7 @@ describe('SkillChatWorkbench', () => {
       sources: [],
     }));
     renderWorkbench({ chat, executeCanvasAction });
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成一张产品主图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
@@ -410,7 +449,7 @@ describe('SkillChatWorkbench', () => {
     });
     window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'a'.repeat(16) } }));
     await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 生成一张产品主图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
@@ -438,7 +477,7 @@ describe('SkillChatWorkbench', () => {
       sources: [],
     }));
     renderWorkbench({ chat, executeCanvasAction });
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成一张产品主图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
@@ -459,7 +498,7 @@ describe('SkillChatWorkbench', () => {
       sources: [],
     }));
     renderWorkbench({ chat, executeCanvasAction });
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '为新品设计一张高级电商主图，保持品牌颜色和产品结构' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
@@ -485,7 +524,7 @@ describe('SkillChatWorkbench', () => {
       chat,
       executeCanvasAction,
     });
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'product-reference' } }));
     await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 把产品单独精修，其他不需要改变' } });
@@ -503,12 +542,12 @@ describe('SkillChatWorkbench', () => {
       sources: [],
     }));
     renderWorkbench({ profiles, codexProfiles: [catalogAstraProfile], chat });
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '先分析这张产品图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     await screen.findByText('对话模式已分析素材');
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Codex' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'codex' } });
     await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'GPT-6 Astra'));
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '检查当前画布节点' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -596,6 +635,21 @@ describe('SkillChatWorkbench', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('请先在设置中配置图片生成模型');
   });
 
+  it('shows usable image model candidates while automatic selection is active', () => {
+    renderWorkbench();
+    fireEvent.click(screen.getByRole('button', { name: '生成偏好' }));
+
+    const candidates = screen.getByRole('list', { name: '可用图片模型' });
+    expect(candidates).toBeVisible();
+    expect(candidates).toHaveTextContent('Image only');
+    fireEvent.change(screen.getByRole('searchbox', { name: '搜索图片模型' }), { target: { value: 'image only' } });
+    expect(within(candidates).getAllByRole('listitem')).toHaveLength(1);
+
+    fireEvent.click(within(candidates).getByRole('button', { name: '固定使用 Image only' }));
+    expect(screen.getByLabelText('生成模型选择方式')).toHaveValue('fixed');
+    expect(screen.getByLabelText('固定生成模型')).toHaveTextContent('Image only');
+  });
+
   it('shows and forwards a persisted quality choice only for a fixed GPT image model', async () => {
     const executeCanvasAction = vi.fn(async () => true);
     const gptImage: ProviderBridgeProfile = {
@@ -621,7 +675,8 @@ describe('SkillChatWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '生成偏好' }));
     fireEvent.change(screen.getByLabelText('生成模型选择方式'), { target: { value: 'fixed' } });
     expect(screen.queryByLabelText('固定 GPT 图片质量')).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('固定生成模型'), { target: { value: gptImage.modelRoute } });
+    fireEvent.click(screen.getByRole('button', { name: '固定使用 GPT Image 1.5' }));
+    fireEvent.click(screen.getByText('模型参数', { exact: false, selector: 'summary' }));
     const quality = screen.getByLabelText('固定 GPT 图片质量');
     expect(quality).toHaveValue('medium');
     fireEvent.change(quality, { target: { value: 'high' } });
@@ -630,7 +685,7 @@ describe('SkillChatWorkbench', () => {
     expect(JSON.parse(window.localStorage.getItem('agent-canvas:generation-preferences:v1:project-a') ?? '{}'))
       .toMatchObject({ image: { parameters: { imageQuality: 'high' } } });
 
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成 GPT 产品主图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     fireEvent.click(await screen.findByRole('button', { name: '选择方案：GPT 高质量' }));
@@ -650,7 +705,7 @@ describe('SkillChatWorkbench', () => {
       sources: [],
     }));
     const view = renderWorkbench({ chat, executeCanvasAction });
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成产品主图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     fireEvent.click(await screen.findByRole('button', { name: '选择方案：迟到返图' }));
@@ -686,7 +741,7 @@ describe('SkillChatWorkbench', () => {
     }));
     try {
       const view = renderWorkbench({ chat, executeCanvasAction });
-      fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+      fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
       fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成产品主图' } });
       fireEvent.click(screen.getByRole('button', { name: '发送' }));
       fireEvent.click(await screen.findByRole('button', { name: '选择方案：生成结果预览' }));
@@ -770,7 +825,7 @@ describe('SkillChatWorkbench', () => {
       sources: [],
     }));
     const view = renderWorkbench({ chat, executeCanvasAction });
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成产品主图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     fireEvent.click(await screen.findByRole('button', { name: '选择方案：同节点重试' }));
@@ -819,7 +874,7 @@ describe('SkillChatWorkbench', () => {
 
     window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'a'.repeat(16) } }));
     await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 生成一张参考图编辑' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({ referenceAssetIds: ['a'.repeat(16)] })));
@@ -860,7 +915,7 @@ describe('SkillChatWorkbench', () => {
 
     window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'v'.repeat(16) } }));
     await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.click(screen.getByRole('button', { name: '生成偏好' }));
     fireEvent.click(screen.getByRole('tab', { name: '视频' }));
     fireEvent.click(screen.getByRole('button', { name: '关闭生成偏好' }));
@@ -888,7 +943,7 @@ describe('SkillChatWorkbench', () => {
       sources: [],
     }));
     renderWorkbench({ chat, executeCanvasAction });
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成新图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     fireEvent.click(await screen.findByRole('button', { name: '选择方案：新方案' }));
@@ -1013,6 +1068,18 @@ describe('SkillChatWorkbench', () => {
     expect(screen.getByRole('button', { name: '发送' })).toBeEnabled();
   });
 
+  it('submits only one request when the form is submitted twice before React commits', () => {
+    const chat = vi.fn(() => new Promise<ChatSkillBridgeResult>(() => undefined));
+    renderWorkbench({ chat });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '请分析这个方案' } });
+    const form = screen.getByRole('button', { name: '发送' }).closest('form')!;
+    act(() => {
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
   it('times out a stalled Agent request and restores the composer for retry', async () => {
     vi.useFakeTimers();
     const chat = vi.fn(() => new Promise<ChatSkillBridgeResult>(() => undefined));
@@ -1126,7 +1193,7 @@ describe('SkillChatWorkbench', () => {
         visualAnalysis,
       }));
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(314_999);
+        await vi.advanceTimersByTimeAsync(374_999);
       });
 
       expect(screen.queryByRole('alert')).not.toBeInTheDocument();
@@ -1136,11 +1203,52 @@ describe('SkillChatWorkbench', () => {
         await vi.advanceTimersByTimeAsync(1);
       });
 
-      expect(screen.getByRole('alert')).toHaveTextContent('模型分析已等待 315 秒仍未返回，请减少图片数量、切换快速或标准反推，或更换模型后重试。');
+      expect(screen.getByRole('alert')).toHaveTextContent('模型分析已等待 375 秒仍未返回，请减少图片数量、切换快速或标准反推，或更换模型后重试。');
       expect(composer).toHaveValue(content);
       expect(screen.getByRole('button', { name: '发送' })).toBeEnabled();
     },
   );
+
+  it('allows a deep reverse reply after the former five-minute UI limit', async () => {
+    vi.useFakeTimers();
+    const visualProfile: ProviderBridgeProfile = {
+      ...profiles[0]!, capabilities: ['chat', 'vision'],
+    };
+    const initialConversation = {
+      ...createAgentConversation(10), mode: 'chat' as const,
+      modelRoute: visualProfile.modelRoute, reverseAnalysisDepth: 'deep' as const,
+    };
+    writeAgentConversationCollection('project-a', {
+      version: 2, activeConversationId: initialConversation.id, conversations: [initialConversation],
+    });
+    let complete!: (result: ChatSkillBridgeResult) => void;
+    const chat = vi.fn(() => new Promise<ChatSkillBridgeResult>((resolve) => { complete = resolve; }));
+    renderWorkbench({ profiles: [visualProfile], chat, referenceImages: [{
+      assetId: 'a'.repeat(16), label: 'Deep reference', displayUrl: 'novus-project://asset/deep',
+    }] });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: '@' } });
+    fireEvent.click(projectMention('Deep reference'));
+    fireEvent.change(composer, { target: { value: '@图片1 反推图片' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(chat).toHaveBeenCalledWith(expect.objectContaining({ visualAnalysis: true, reverseAnalysisDepth: 'deep' }));
+    fireEvent.click(screen.getByRole('button', { name: '反推强度：深度反推' }));
+    expect(screen.getByRole('button', { name: '快速反推' })).toBeDisabled();
+    expect(screen.getByLabelText('本次反推强度')).toHaveTextContent('深度反推');
+    await act(async () => { await vi.advanceTimersByTimeAsync(540_000); });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
+    await act(async () => { complete({ message: '深度分析已完成', modelRoute: visualProfile.modelRoute, sources: [] }); });
+    expect(screen.getAllByText('深度分析已完成').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('group', { name: '反推强度' })).not.toBeInTheDocument();
+    fireEvent.change(composer, { target: { value: '@' } });
+    fireEvent.click(projectMention('Deep reference'));
+    fireEvent.click(screen.getByRole('button', { name: '反推强度：深度反推' }));
+    expect(screen.getByRole('button', { name: '快速反推' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: '快速反推' }));
+    expect(screen.getByLabelText('本次反推强度')).toHaveTextContent('深度反推');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
 
   it('does not send an unsynchronized knowledge base that would break Agent chat', async () => {
     const chat = vi.fn(async () => ({ message: '可以正常对话', modelRoute: 'chat/creative', sources: [] }));
@@ -1173,7 +1281,7 @@ describe('SkillChatWorkbench', () => {
       }],
       chat,
     });
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '你好' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
@@ -1229,7 +1337,8 @@ describe('SkillChatWorkbench', () => {
 
     fireEvent.click(modelTrigger);
     const modelDialog = container.querySelector('.skill-chat-workbench__sheet:not(.skill-chat-workbench__sheet--library)');
-    expect(modelDialog).toHaveAttribute('data-anchor', 'composer-footer');
+    expect(modelDialog).toHaveAttribute('data-anchor', 'reasoning');
+    expect(footer).toContainElement(modelDialog as HTMLElement);
   });
   it('keeps the Canvas image-reference affordance hidden until the user types @', () => {
     renderWorkbench();
@@ -1335,7 +1444,7 @@ describe('SkillChatWorkbench', () => {
 
   it('restores the active task and its mode after the workbench remounts', async () => {
     const first = renderWorkbench();
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '保留这个任务' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(screen.getByText('Use a clean studio-lighting hierarchy.')).toBeVisible());
@@ -1344,7 +1453,7 @@ describe('SkillChatWorkbench', () => {
     renderWorkbench();
 
     expect(within(screen.getByLabelText('对话消息')).getByText('保留这个任务')).toBeVisible();
-    expect(screen.getByRole('tab', { name: '创作 Agent' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByLabelText('Agent 模式')).toHaveValue('original');
     expect((screen.getByRole('combobox', { name: 'Codex 任务' }) as HTMLSelectElement).value).toMatch(/^conversation-/u);
   });
 
@@ -1426,9 +1535,9 @@ describe('SkillChatWorkbench', () => {
 
     expect(screen.getByRole('button', { name: /^思考能力：/ })).toBeVisible();
     expect(screen.queryByRole('group', { name: '反推强度' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     expect(screen.queryByRole('button', { name: /^思考能力：/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     expect(screen.queryByRole('button', { name: /^思考能力：/ })).not.toBeInTheDocument();
   });
 
@@ -1516,7 +1625,7 @@ describe('SkillChatWorkbench', () => {
 
     await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveTextContent('未发现 Codex 模型'));
     expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'Gemini 3.1 Flash Lite'));
   });
 
@@ -1534,7 +1643,7 @@ describe('SkillChatWorkbench', () => {
     expect(screen.queryByLabelText('知识库请求: Codex Auto Review')).not.toBeInTheDocument();
     expect(screen.getByLabelText('反推上下文事件')).toBeVisible();
 
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
     expect(within(screen.getByLabelText('对话消息')).getByText('正常聊天消息')).toBeVisible();
     expect(screen.getByText('普通助手回复')).toBeVisible();
@@ -1574,9 +1683,9 @@ describe('SkillChatWorkbench', () => {
     await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'GPT-6 Astra'));
     expect(screen.getByText('支持 ChatGPT / API Key · 调用时验证')).toBeVisible();
     expect(screen.getByRole('button', { name: '添加素材' })).toBeEnabled();
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'Gemini 3.1 Flash Lite'));
-    fireEvent.click(screen.getByRole('tab', { name: 'Codex' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'codex' } });
     await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'GPT-6 Astra'));
     fireEvent.click(screen.getByRole('button', { name: /^思考能力：/ }));
     fireEvent.change(screen.getByRole('slider', { name: '思考能力' }), { target: { value: '4' } });
@@ -1669,7 +1778,7 @@ describe('SkillChatWorkbench', () => {
     await waitFor(() => expect(chat).toHaveBeenCalledOnce());
     const sentRequestId = (chat.mock.calls[0]?.[0])?.requestId;
 
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
     await waitFor(() => expect(cancelChat).toHaveBeenCalledWith(sentRequestId));
   });
@@ -1736,7 +1845,7 @@ describe('SkillChatWorkbench', () => {
     fireEvent.paste(composer, { clipboardData: { files: [video], items: [], getData: () => '' } });
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('当前 Codex 支持图片引用'));
 
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
@@ -1866,7 +1975,7 @@ describe('SkillChatWorkbench', () => {
       }],
       chat,
     });
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: 'Use RelayMe.' } });
     fireEvent.submit(screen.getByTestId('agent-composer-input').closest('form')!);
@@ -1893,6 +2002,52 @@ describe('SkillChatWorkbench', () => {
       messages: [expect.objectContaining({ role: 'user', content: 'First line' })],
     }));
   });
+
+  it('lists the current GPT-6 Codex family from the local catalog and honors each model effort list', async () => {
+    const sol = {
+      ...catalogAstraProfile,
+      modelRoute: 'codex/gpt-6-sol' as const,
+      modelId: 'gpt-6-sol',
+      displayName: 'GPT-6 Sol',
+    };
+    const luna = {
+      ...catalogAstraProfile,
+      modelRoute: 'codex/gpt-6-luna' as const,
+      modelId: 'gpt-6-luna',
+      displayName: 'GPT-6 Luna',
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] as const,
+      defaultReasoningEffort: 'medium' as const,
+    };
+    renderWorkbench({ profiles: [], codexProfiles: [catalogAstraProfile, sol, luna] });
+    fireEvent.click(await screen.findByTestId('agent-model-trigger'));
+    const dialog = screen.getByRole('dialog', { name: '选择聊天模型' });
+    for (const model of ['GPT-6 Astra', 'GPT-6 Sol', 'GPT-6 Luna']) {
+      expect(within(dialog).getByRole('button', { name: `使用 ${model}` })).toBeVisible();
+    }
+    fireEvent.click(within(dialog).getByRole('button', { name: '使用 GPT-6 Luna' }));
+    expect(await screen.findByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'GPT-6 Luna');
+    fireEvent.click(screen.getByRole('button', { name: '思考能力：中' }));
+    expect(screen.getByRole('slider', { name: '思考能力' })).toHaveAttribute('max', '4');
+    expect(screen.getByRole('slider', { name: '思考能力' })).toHaveAttribute('aria-valuetext', '中');
+  });
+
+  it('opens Codex model choices inside the reasoning popover from the footer model pill', () => {
+    const sol = {
+      ...catalogAstraProfile,
+      modelRoute: 'codex/gpt-6-sol' as const,
+      modelId: 'gpt-6-sol',
+      displayName: 'GPT-6 Sol',
+    };
+    renderWorkbench({ profiles: [], codexProfiles: [catalogAstraProfile, sol] });
+
+    fireEvent.click(screen.getByTestId('agent-model-trigger'));
+
+    const reasoning = screen.getByRole('dialog', { name: '思考能力设置' });
+    expect(reasoning).toBeVisible();
+    expect(within(reasoning).getByRole('dialog', { name: '选择聊天模型' })).toBeVisible();
+    expect(screen.queryAllByRole('dialog', { name: '选择聊天模型' })).toHaveLength(1);
+  });
+
   it('does not display Stop when the chat bridge has no cancellation capability', () => {
     const chat = vi.fn(() => new Promise<ChatSkillBridgeResult>(() => {}));
     renderWorkbench({ chat });
@@ -2000,7 +2155,7 @@ describe('SkillChatWorkbench', () => {
         positivePrompt: '红色产品，暖色厨房，保持主体结构，柔和侧光，商业摄影。'.repeat(240),
       }],
     });
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     const userRequest = `请根据当前反推重新设计一套完整电商主图方案，${'保留产品结构并优化构图。'.repeat(120)}`;
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: userRequest } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -2028,7 +2183,7 @@ describe('SkillChatWorkbench', () => {
         },
       ],
     });
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
     fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
     const routeSheet = screen.getByRole('dialog', { name: '选择聊天模型' });
@@ -2079,7 +2234,7 @@ describe('SkillChatWorkbench', () => {
       }],
       chat,
     });
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
     const mentionItem = projectMention('Bottle reference');
@@ -2122,7 +2277,7 @@ describe('SkillChatWorkbench', () => {
       }],
     });
 
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     const composer = screen.getByTestId('agent-composer-input');
     fireEvent.change(composer, { target: { value: '前文 @ 后文' } });
     fireEvent.click(projectMention('Bottle reference'));
@@ -2146,9 +2301,10 @@ describe('SkillChatWorkbench', () => {
       }],
     });
 
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     const composer = screen.getByTestId('agent-composer-input');
     fireEvent.change(composer, { target: { value: '前文@图后文，第二处@尾部' } });
+    composer.focus();
     const range = document.createRange();
     range.setStart(composer.firstChild!, '前文@图'.length);
     range.collapse(true);
@@ -2178,7 +2334,7 @@ describe('SkillChatWorkbench', () => {
       }],
     });
 
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     const composer = screen.getByTestId('agent-composer-input');
     fireEvent.change(composer, { target: { value: '前文 @ 后文' } });
     fireEvent.click(projectMention('Bottle reference'));
@@ -2216,7 +2372,7 @@ describe('SkillChatWorkbench', () => {
       onImportReferenceVideo,
       chat,
     });
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
     expect(screen.getByTestId('agent-reference-file-input')).toHaveAttribute('accept', 'image/*');
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
@@ -2251,7 +2407,7 @@ describe('SkillChatWorkbench', () => {
         referenceVideos: [{ assetId: 'b'.repeat(16), label: 'Demo video', displayUrl: 'novus-project://asset/demo' }],
         chat,
       });
-      fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+      fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
       const composer = screen.getByTestId('agent-composer-input');
       fireEvent.change(composer, { target: { value: '@' } });
       fireEvent.click(projectMention('Bottle reference'));
@@ -2292,7 +2448,7 @@ describe('SkillChatWorkbench', () => {
         referenceImages: [{ assetId: 'a'.repeat(16), label: 'Bottle reference', displayUrl: 'novus-project://asset/bottle' }],
         chat,
       });
-      fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+      fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
       const composer = screen.getByTestId('agent-composer-input');
       fireEvent.change(composer, { target: { value: '@' } });
       fireEvent.click(projectMention('Bottle reference'));
@@ -2326,7 +2482,7 @@ describe('SkillChatWorkbench', () => {
         referenceImages: [{ assetId: 'a'.repeat(16), label: 'Bottle reference', displayUrl: 'novus-project://asset/bottle' }],
         chat,
       });
-      fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+      fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
       const composer = screen.getByTestId('agent-composer-input');
       fireEvent.change(composer, { target: { value: '@' } });
       fireEvent.click(projectMention('Bottle reference'));
@@ -2364,7 +2520,7 @@ describe('SkillChatWorkbench', () => {
         referenceImages: [{ assetId: 'a'.repeat(16), label: 'Bottle reference', displayUrl: 'novus-project://asset/missing' }],
         chat,
       });
-      fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+      fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
       const composer = screen.getByTestId('agent-composer-input');
       fireEvent.change(composer, { target: { value: '@' } });
       fireEvent.click(projectMention('Bottle reference'));
@@ -2609,16 +2765,15 @@ describe('SkillChatWorkbench', () => {
     expect(await screen.findByText('是否基于本次方案生成工作流？')).toBeVisible();
   });
 
-  it('keeps unrelated project images out of the default reference picker', () => {
+  it('offers project images in the picker without implicitly attaching them', () => {
     renderWorkbench({
       profiles: [{ ...profiles[0]!, capabilities: ['chat', 'vision'] }],
       referenceImages: [{ assetId: 'unrelated', label: '无关项目图片', displayUrl: 'novus-asset://unrelated' }],
     });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
     expect(screen.getByRole('menu', { name: 'Reference images' })).toBeVisible();
-    expect(screen.queryByRole('menuitem', { name: 'Mention 无关项目图片' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '浏览项目图片' }));
     expect(screen.getByRole('menuitem', { name: 'Mention 无关项目图片' })).toBeVisible();
+    expect(screen.queryByLabelText('Selected image references')).not.toBeInTheDocument();
   });
 
   it('numbers a newly pasted image from the conversation catalog and preserves its send mapping', async () => {
@@ -2656,8 +2811,6 @@ describe('SkillChatWorkbench', () => {
     });
 
     fireEvent.change(composer, { target: { value: '@' } });
-    expect(screen.queryByRole('menuitem', { name: 'Mention Project image 1' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '浏览项目图片' }));
     const browsedProjectImage = screen.getByRole('menuitem', { name: 'Mention Project image 1' });
     expect(browsedProjectImage).toHaveTextContent('@图片2');
     fireEvent.click(browsedProjectImage);
@@ -2684,7 +2837,7 @@ describe('SkillChatWorkbench', () => {
     await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent(imported.label));
 
     fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
 
     expect(screen.queryByRole('menuitem', { name: `Mention ${imported.label}` })).not.toBeInTheDocument();
@@ -2721,7 +2874,7 @@ describe('SkillChatWorkbench', () => {
       }],
       chat,
     });
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
 
@@ -2787,9 +2940,10 @@ describe('SkillChatWorkbench', () => {
       profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }, profiles[1]!],
       onImportReferenceImage,
     });
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     const composer = screen.getByTestId('agent-composer-input');
     fireEvent.change(composer, { target: { value: '前文 后文' } });
+    composer.focus();
     const range = document.createRange();
     range.setStart(composer.firstChild!, '前文 '.length);
     range.collapse(true);
@@ -2827,7 +2981,7 @@ describe('SkillChatWorkbench', () => {
       assetId: 'image-2', label: 'text-only.png', displayUrl: 'novus-asset://image-2',
     });
     renderWorkbench({ onImportReferenceImage });
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
     fireEvent.click(screen.getByRole('button', { name: '\u6dfb\u52a0\u7d20\u6750' }));
     fireEvent.change(screen.getByTestId('agent-reference-file-input'), {
@@ -2893,7 +3047,7 @@ describe('SkillChatWorkbench', () => {
       onImportReferenceImage,
     });
 
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     const composer = screen.getByTestId('agent-composer-input');
     fireEvent.change(composer, { target: { value: '@' } });
     expect(screen.getByRole('menu', { name: 'Reference images' })).toBeVisible();
@@ -3283,6 +3437,7 @@ describe('SkillChatWorkbench', () => {
     });
     const composer = screen.getByTestId('agent-composer-input');
     fireEvent.change(composer, { target: { value: '前缀 后缀' } });
+    composer.focus();
     const textNode = composer.firstChild!;
     const selection = window.getSelection()!;
     const range = document.createRange();
@@ -3290,6 +3445,7 @@ describe('SkillChatWorkbench', () => {
     range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
 
     fireEvent.paste(composer, {
       clipboardData: {
@@ -3464,7 +3620,7 @@ describe('SkillChatWorkbench', () => {
     });
     await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(oldImage));
     fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     fireEvent.paste(screen.getByTestId('agent-composer-input'), {
       clipboardData: { files: [freshImage], items: [], getData: () => '' },
     });
@@ -3698,7 +3854,7 @@ it('shows no media warning initially and clears it after switching to a vision m
     ],
     referenceImages: [{ assetId: 'asset-vision-1', label: 'Reference one', displayUrl: 'novus-asset://asset-vision-1' }],
   });
-  fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+  fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
@@ -3721,7 +3877,8 @@ it('keeps only one transient composer popover open and closes it on send', async
   expect(screen.getAllByRole('dialog')).toHaveLength(1);
   fireEvent.click(screen.getByTestId('agent-model-trigger'));
   expect(screen.queryByRole('dialog', { name: '选择知识库' })).not.toBeInTheDocument();
-  expect(screen.getAllByRole('dialog')).toHaveLength(1);
+  expect(screen.getAllByRole('dialog').filter((dialog) => !dialog.parentElement?.closest('[role="dialog"]'))).toHaveLength(1);
+  expect(screen.getByRole('dialog', { name: '模型设置' })).toContainElement(screen.getByRole('dialog', { name: '选择聊天模型' }));
 
   fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
   expect(screen.queryByRole('dialog', { name: '选择聊天模型' })).not.toBeInTheDocument();
@@ -3751,7 +3908,7 @@ it('shows one selectable chat route for the same visible model name without expo
       { provider: 'relayme', modelRoute: 'relayme-shared-chat', modelId: 'shared-chat', displayName: 'Shared Chat', capabilities: ['chat'] },
     ],
   });
-  fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+  fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
   fireEvent.click(screen.getByTestId('agent-model-trigger'));
   const dialog = screen.getByRole('dialog', { name: '选择聊天模型' });
@@ -3766,7 +3923,7 @@ it('shows only model names for unique chat models', () => {
       { provider: 'relayme', modelRoute: 'relay-chat', modelId: 'relay-chat', displayName: 'Relay Chat', capabilities: ['chat'] },
     ],
   });
-  fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+  fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
   fireEvent.click(screen.getByTestId('agent-model-trigger'));
   const dialog = screen.getByRole('dialog', { name: '选择聊天模型' });
@@ -3785,7 +3942,7 @@ it('keeps action-shaped language as ordinary conversation in chat mode', async (
     executeCanvasAction,
   } as never);
 
-  fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+  fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
   fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '帮我生成一张产品主图' } });
   fireEvent.submit(screen.getByTestId('agent-composer-input').closest('form')!);
 
@@ -3799,7 +3956,7 @@ it.each(['生成一个8秒产品视频', '反推当前参考图的提示词'])('
   const executeCanvasAction = vi.fn(async () => true);
   const chat = vi.fn(async () => ({ message: '需要先确认素材与内容', modelRoute: 'chat/creative', sources: [] }));
   renderWorkbench({ chat, executeCanvasAction });
-  fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+  fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
   fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: command } });
   fireEvent.click(screen.getByRole('button', { name: '发送' }));
   expect(await screen.findByText('需要先确认素材与内容')).toBeVisible();

@@ -1,6 +1,13 @@
 import { createProviderBridgeError } from './provider-contracts.js';
 import { decodeProviderInlineImage } from './provider-inline-image.js';
 
+export function normalizeImageTaskProgress(value: unknown): number | undefined {
+  const percentage = typeof value === 'string' && /^\d+(?:\.\d+)?%$/u.test(value.trim());
+  const number = typeof value === 'number' ? value : percentage ? Number(value.trim().slice(0, -1)) : NaN;
+  if (!Number.isFinite(number) || number < 0 || number > 100) return undefined;
+  return percentage || number > 1 ? number / 100 : number;
+}
+
 export function parseDirectProviderImageResponse(value: unknown): { readonly inlineBytes?: Uint8Array; readonly resultUrl?: string } | undefined {
   const first = findFirstProviderImageResult(value);
   if (first === undefined) return undefined;

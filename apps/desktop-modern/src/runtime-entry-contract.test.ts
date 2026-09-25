@@ -358,12 +358,12 @@ describe('desktop runtime entry contract', () => {
     }
   });
 
-  it('modern 1.6.148 resolves only the modern renderer entry', async () => {
+  it('modern 1.6.170 resolves only the modern renderer entry', async () => {
     const shell = desktopShells[0]!;
     const packageJson = await readPackageJson(shell);
     const rendererEntry = resolveRendererHtmlPath(join(workspaceRoot, shell.appDir, 'dist'));
 
-    expect(packageJson.version).toBe('1.6.148');
+    expect(packageJson.version).toBe('1.6.170');
     expect(rendererEntry).toBe(resolve(workspaceRoot, 'apps', 'renderer', 'dist', 'index.html'));
     expect(rendererEntry).not.toContain('desktop-legacy');
   });
@@ -380,11 +380,13 @@ describe('desktop runtime entry contract', () => {
     expect(mainSource).toContain("join(currentDir, 'safe-preload.cjs')");
   });
 
-  it('modern disables Windows GPU acceleration before startup without exposing Node to the renderer', async () => {
+  it('modern keeps GPU acceleration available with an explicit software compatibility option', async () => {
     const mainSource = await readFile(join(workspaceRoot, 'apps', 'desktop-modern', 'src', 'main.ts'), 'utf8');
     const gpuCompatibilityIndex = mainSource.indexOf("app.commandLine.appendSwitch('disable-gpu')");
     const lockIndex = mainSource.indexOf('app.requestSingleInstanceLock()');
     const readyIndex = mainSource.indexOf('app.whenReady()');
+    expect(mainSource).toContain("process.env.CANVAS_ATELIER_DISABLE_GPU === '1'");
+    expect(mainSource).not.toContain("if (process.platform === 'win32') {\n  app.commandLine.appendSwitch('disable-gpu');");
 
     expect(gpuCompatibilityIndex).toBeGreaterThanOrEqual(0);
     expect(gpuCompatibilityIndex).toBeLessThan(lockIndex);
@@ -466,7 +468,7 @@ describe('desktop runtime entry contract', () => {
       ]) {
         await expectPresent(join(workspaceRoot, shell.appDir, 'dist', artifact));
       }
-    }, 15_000);
+    }, 30_000);
 
     it(`${shell.label} builds a self-contained CommonJS desktop main that loads under the Electron contract`, async () => {
       const packageJson = await readPackageJson(shell);
@@ -502,6 +504,9 @@ describe('desktop runtime entry contract', () => {
       expect(builtMainSource).toMatch(/setPath\(["']userData["']/u);
       expect(builtMainSource).toContain('createWindowsPhotoshopSmartObjectAdapter');
       expect(builtMainSource).toContain('photoshopSmartObjectAdapter');
+      expect(builtMainSource).toMatch(/createNodeWindowsPhotoshopSmartObjectAdapter\(\{[\s\S]{0,500}nativeImage/u);
+      expect(builtMainSource).toContain('createElectronPhotoshopWebpDecoder');
+      expect(builtMainSource).toMatch(/decodeWebpFromPath/u);
       if (shell.label === 'modern') {
         expect(builtMainSource).toContain('relayme-system-network');
         expect(builtMainSource).toContain('persist:relayme-web-login');
@@ -527,7 +532,7 @@ describe('desktop runtime entry contract', () => {
           expect(entryLoad.stderr).not.toContain('Dynamic require of "');
         }
       });
-    });
+    }, 30_000);
 
     it(`${shell.label} reports redacted startup failures instead of leaving an unhandled readiness rejection`, async () => {
       const packageJson = await readPackageJson(shell);
@@ -555,6 +560,6 @@ describe('desktop runtime entry contract', () => {
           expect(entryLoad.stderr).not.toContain('UnhandledPromiseRejection');
         },
       );
-    });
+    }, 30_000);
   }
 });

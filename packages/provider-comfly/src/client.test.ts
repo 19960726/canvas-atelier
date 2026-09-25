@@ -22,7 +22,7 @@ describe('ComflyClient', () => {
     const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch, generationTimeoutMs: 180_000 });
     await client.editImage({ model: 'gpt-image-2.5-sunburst-2k', prompt: 'Keep product geometry', async: true, size: '2K', aspect_ratio: '16:9', quality: 'auto', output_format: 'webp', background: 'transparent', image: [{ mediaType: 'image/png', bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]) }, { mediaType: 'image/jpeg', bytes: Uint8Array.from([0xff, 0xd8, 0xff]) }] });
     const [url, init] = fetch.mock.calls[0]!;
-    expect(url).toBe('https://ai.comfly.org/v1/images/edits');
+    expect(url).toBe('https://ai.comfly.org/v1/images/edits?async=true');
     expect(init?.timeoutMs).toBe(180_000);
     expect(init?.headers?.['content-type']).toMatch(/^multipart\/form-data; boundary=/u);
     expect(init?.body).toBeInstanceOf(Uint8Array);
@@ -38,6 +38,20 @@ describe('ComflyClient', () => {
     expect(images.map((image) => image.type)).toEqual(['image/png', 'image/jpeg']);
     expect(new Uint8Array(await images[0]!.arrayBuffer())).toEqual(Uint8Array.from([0x89, 0x50, 0x4e, 0x47]));
   });
+  it.each(['gpt-image-2.5-flare-4k', 'gpt-image-2.5-sunburst-4k', 'edit-model'])('submits %s edits asynchronously and polls the returned task without resubmission', async (model) => {
+    const fetch = vi.fn<ComflyFetch>(async (url) => jsonResponse(url.includes('/tasks/')
+      ? { task_id: 'async-edit', status: 'SUCCESS', data: { data: [{ url: 'https://cdn.example.com/done.png' }] } }
+      : { task_id: 'async-edit' }));
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
+    const image = model === 'edit-model' ? 'https://example.com/reference.png' : [{ mediaType: 'image/png', bytes: Uint8Array.from([137, 80, 78, 71]) }];
+    await expect(client.editImage({ model, prompt: 'preserve warm scene', async: true, image })).resolves.toMatchObject({ taskId: 'async-edit', status: 'queued' });
+    expect(fetch.mock.calls[0]![0]).toBe('https://ai.comfly.org/v1/images/edits?async=true');
+    if (model === 'edit-model') expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string)).not.toHaveProperty('async');
+    await expect(client.getImageTask('async-edit')).resolves.toMatchObject({ status: 'SUCCESS' });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1]![0]).toBe('https://ai.comfly.org/v1/images/tasks/async-edit');
+  });
+
   it('maps supported tiers by orientation and rejects unsupported native 4K', () => {
     expect(mapComflyImageResolutionTier('1K', '16:9')).toBe('1024x1024');
     expect(mapComflyImageResolutionTier('2K', '16:9')).toBe('1536x1024');

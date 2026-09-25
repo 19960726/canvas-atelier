@@ -128,7 +128,14 @@ export function buildProfessionalReverseRequest(
       : 'single_image';
   const userPreference = normalizeReverseRolePreference(run.agentConfig?.role ?? '');
   const analysisDepth = run.agentConfig?.analysisDepth ?? 'standard';
-  const modeInstructions = [reverseDepthInstruction(analysisDepth), ...(analysisMode === 'video'
+  const modeInstructions = [reverseDepthInstruction(analysisDepth), ...(analysisDepth === 'fast'
+    ? [
+      '逐素材给出主体、构图、光线、材质和职责的关键可见证据；每项最多一句，素材编号和用户指定的保留/修改约束不能遗漏。',
+      hasVideo
+        ? '视频只概括已观察到的关键镜头、主要动作与连续性约束，不扩写逐层制作教程，不把未采样到的时间段写成事实。'
+        : '图片优先给出可直接执行的提示词和关键保留项，不扩写逐层制作教程。',
+    ]
+    : analysisMode === 'video'
     ? [
       '按时间轴逐镜头拆解视频，镜头边界不得只按均匀时长猜测；说明切镜依据。',
       '逐镜头分析景别、估计焦距、机位、推拉摇移跟、升降环绕、手持/稳定器、速度曲线、稳定方式、主体动作、转场和关键帧。',
@@ -142,7 +149,7 @@ export function buildProfessionalReverseRequest(
         '列出继承关系、冲突关系和裁决理由，最终提示词中的关键要求必须能追溯到具体素材。',
       ]
       : [
-        '对单张素材做深度取证：空间结构、主体/模特/食物位置与比例、前中后景、景深、焦点、纹理材质、灯光、焦距、机位和透视。',
+        '对单张素材按所选强度取证：空间结构、主体/模特/食物位置与比例、前中后景、景深、焦点、纹理材质、灯光、焦距、机位和透视。',
         '检查所有可见特效、流体和光效，逐层说明用途、实现和白底产品适配，不得只罗列风格形容词。',
       ])];
 
@@ -172,7 +179,7 @@ export function buildProfessionalReverseRequest(
 }
 
 function reverseDepthInstruction(depth: 'fast' | 'standard' | 'deep'): string {
-  if (depth === 'fast') return '快速取证：优先主体、构图、光线、材质和可执行提示词，保留完整输出字段但内容简洁。';
+  if (depth === 'fast') return '快速取证：优先主体、构图、光线、材质和可执行提示词，保留完整输出字段但内容简洁。下列证据规则用于核对而非要求全部展开：每项最多一句；不可见或不适用的数组留空，文本明确写不适用或未知，不为填字段虚构内容。优先保证 JSON 完整闭合和中英文提示词可直接使用。';
   if (depth === 'deep') return '深度反推：逐素材证据、冲突裁决、空间与材质细节、复现步骤需要充分展开。';
   return '标准反推：覆盖完整合同并说明关键取舍。';
 }

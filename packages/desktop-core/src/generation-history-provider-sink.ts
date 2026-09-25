@@ -1,4 +1,8 @@
 import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Readable } from 'node:stream';
 import { inflateSync } from 'node:zlib';
 
@@ -18,6 +22,18 @@ const MAX_PROVIDER_HISTORY_ASSET_BYTES = {
   video: 512 * 1024 * 1024,
 } as const;
 const MAX_DECODED_IMAGE_BYTES = 256 * 1024 * 1024;
+const TRUSTED_WEBP_DECODE_SCRIPT = `(() => {
+  const image = document.images.item(0);
+  if (image === null || !image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 1;
+  canvas.height = 1;
+  const context = canvas.getContext('2d');
+  if (context === null) return null;
+  context.drawImage(image, 0, 0, 1, 1);
+  const pixel = context.getImageData(0, 0, 1, 1).data;
+  return { width: image.naturalWidth, height: image.naturalHeight, pixel: Array.from(pixel) };
+})()`;
 
 export type GenerationHistoryFailureCode =
   | 'provider_failed'
@@ -75,6 +91,20 @@ export interface ElectronNativeImageLike {
 }
 
 export type TrustedImageDecoder = (bytes: Uint8Array, image: InspectedImage) => boolean | Promise<boolean>;
+
+export interface TrustedImageDecodeWindow {
+  readonly webContents: {
+    executeJavaScript<T>(script: string): Promise<T>;
+  };
+  loadURL(url: string): Promise<void>;
+  destroy(): void;
+  isDestroyed(): boolean;
+}
+
+export interface ElectronTrustedImageDecoderOptions {
+  readonly createWebpDecodeWindow?: () => TrustedImageDecodeWindow;
+  readonly temporaryDirectoryRoot?: string;
+}
 
 export class GenerationHistoryProviderSink implements GenerationHistoryProviderSinkContract {
   private readonly now: () => number;
@@ -295,13 +325,55 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
   }
 }
 
-export function createElectronTrustedImageDecoder(nativeImage: ElectronNativeImageLike): TrustedImageDecoder {
-  return (bytes, image) => {
-    const decoded = nativeImage.createFromBuffer(Buffer.from(bytes));
-    if (decoded.isEmpty()) return false;
-    const size = decoded.getSize();
-    return size.width === image.width && size.height === image.height;
+export function createElectronTrustedImageDecoder(
+  nativeImage: ElectronNativeImageLike,
+  options: ElectronTrustedImageDecoderOptions = {},
+): TrustedImageDecoder {
+  return async (bytes, image) => {
+    const source = Buffer.isBuffer(bytes)
+      ? bytes
+      : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const decoded = nativeImage.createFromBuffer(source);
+    if (!decoded.isEmpty()) {
+      const size = decoded.getSize();
+      if (size.width === image.width && size.height === image.height) return true;
+    }
+    const createWebpDecodeWindow = options.createWebpDecodeWindow;
+    if (image.mediaType !== 'image/webp' || createWebpDecodeWindow === undefined) return false;
+    return decodeWebpWithTrustedBrowser(source, image, createWebpDecodeWindow, options.temporaryDirectoryRoot);
   };
+}
+
+async function decodeWebpWithTrustedBrowser(
+  bytes: Buffer,
+  image: InspectedImage,
+  createWebpDecodeWindow: () => TrustedImageDecodeWindow,
+  temporaryDirectoryRoot: string | undefined,
+): Promise<boolean> {
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_PROVIDER_HISTORY_ASSET_BYTES.image) return false;
+  const inspected = inspectWebp(bytes);
+  if (inspected === null || inspected.width !== image.width || inspected.height !== image.height) return false;
+  let directory: string | undefined;
+  let window: TrustedImageDecodeWindow | undefined;
+  try {
+    directory = await mkdtemp(join(temporaryDirectoryRoot ?? tmpdir(), 'novus-history-webp-'));
+    const sourcePath = join(directory, 'source.webp');
+    await writeFile(sourcePath, bytes, { flag: 'wx' });
+    window = createWebpDecodeWindow();
+    await window.loadURL(pathToFileURL(sourcePath).href);
+    const result = await window.webContents.executeJavaScript<unknown>(TRUSTED_WEBP_DECODE_SCRIPT);
+    return isRecord(result)
+      && result.width === image.width
+      && result.height === image.height
+      && Array.isArray(result.pixel)
+      && result.pixel.length === 4
+      && result.pixel.every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255);
+  } catch {
+    return false;
+  } finally {
+    if (window !== undefined && !window.isDestroyed()) window.destroy();
+    if (directory !== undefined) await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 function terminalFromRecord(record: GenerationHistoryRecord): GenerationHistoryDurableTerminal | null {
@@ -703,6 +775,10 @@ function inspectWebp(bytes: Buffer): InspectedImage | null {
 
 function readUInt24LE(bytes: Buffer, offset: number): number {
   return bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function pngRowBytes(width: number, colorType: number, bitDepth: number): number {

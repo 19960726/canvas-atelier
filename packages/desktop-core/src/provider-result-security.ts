@@ -1,5 +1,54 @@
 import { BlockList, isIP } from 'node:net';
+import type { ComflyFetch } from '@agent-canvas/provider-comfly';
 import { createProviderBridgeError } from './provider-contracts.js';
+
+const PROVIDER_RESULT_DOWNLOAD_TIMEOUT_MS = 300_000;
+const PROVIDER_IMAGE_RESULT_MAX_BYTES = 256 * 1024 * 1024;
+const PROVIDER_VIDEO_RESULT_MAX_BYTES = 512 * 1024 * 1024;
+
+export async function downloadSafeProviderResult(
+  rawUrl: string | undefined,
+  kind: 'image' | 'video',
+  fetch: ComflyFetch,
+  resolveResultHost: ((hostname: string) => Promise<readonly string[]>) | undefined,
+): Promise<Uint8Array> {
+  const url = parseSafeProviderResultUrl(rawUrl);
+  if (resolveResultHost === undefined) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
+  }
+  let addresses: readonly string[];
+  try {
+    addresses = await resolveResultHost(url.hostname);
+  } catch {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
+  }
+  if (addresses.length === 0 || addresses.some((address) => !isPublicProviderAddress(address))) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
+  }
+  let response;
+  try {
+    response = await fetch(url.toString(), {
+      maxResponseBytes: kind === 'image' ? PROVIDER_IMAGE_RESULT_MAX_BYTES : PROVIDER_VIDEO_RESULT_MAX_BYTES,
+      timeoutMs: PROVIDER_RESULT_DOWNLOAD_TIMEOUT_MS,
+      trustedResolvedAddress: addresses[0],
+    });
+  } catch (error) {
+    if (error instanceof TypeError) throw createProviderBridgeError('PROVIDER_ERROR', 'Provider result download failed', true);
+    throw error;
+  }
+  if (response.status === 429 || response.status >= 500) {
+    throw createProviderBridgeError('PROVIDER_ERROR', 'Provider result download is temporarily unavailable', true);
+  }
+  if (!response.ok || response.arrayBuffer === undefined) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
+  }
+  try {
+    return new Uint8Array(await response.arrayBuffer());
+  } catch (error) {
+    if (error instanceof TypeError) throw createProviderBridgeError('PROVIDER_ERROR', 'Provider result download failed', true);
+    throw error;
+  }
+}
 
 export function parseSafeProviderResultUrl(value: string | undefined): URL {
   if (value === undefined) {

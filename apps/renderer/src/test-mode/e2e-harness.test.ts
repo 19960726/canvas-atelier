@@ -9,6 +9,44 @@ afterEach(() => {
 });
 
 describe('renderer E2E harness', () => {
+  it('keeps configured result fixtures after another canvas transaction', async () => {
+    installRendererE2EHarness();
+    await window.__NOVUS_E2E__!.resetEmpty();
+    await window.__NOVUS_E2E__!.createModule('image_generation');
+    await window.__NOVUS_E2E__!.configureModule('image_generation', { config: { resultState: 'fresh' }, execution: { state: 'completed' } });
+    await window.__NOVUS_E2E__!.createModule('image_input');
+    const node = useAppStore.getState().project.nodes.find((item) => item.type === 'module' && item.data.moduleType === 'image_generation');
+    expect(node?.data).toMatchObject({ config: { resultState: 'fresh' }, execution: { state: 'completed' } });
+  });
+  it('finishes persistence hydration before an empty acceptance canvas can be edited', async () => {
+    installRendererE2EHarness();
+    await window.__NOVUS_E2E__!.resetEmpty();
+    expect(useAppStore.getState().persistenceReady).toBe(true);
+    expect(useAppStore.getState().project.nodes).toHaveLength(0);
+    expect(useAppStore.getState().saveErrorCode).toBeNull();
+  });
+
+  it.each(['reset', 'resetEmpty'] as const)('seeds and reopens a durable stress graph in the active project after %s', async (reset) => {
+    installRendererE2EHarness();
+    await window.__NOVUS_E2E__![reset]();
+    const activeProjectId = useAppStore.getState().project.id;
+    const commitCount = window.__NOVUS_E2E__!.commitCount;
+
+    expect(await window.__NOVUS_E2E__!.seedModuleStressGraph(300, 500)).toBe(true);
+    expect(window.__NOVUS_E2E__!.commitCount).toBe(commitCount + 1);
+
+    for (const reopen of [false, true]) {
+      if (reopen) await window.__NOVUS_E2E__!.reopenProject();
+      const state = useAppStore.getState();
+      expect(state.project.id).toBe(activeProjectId);
+      expect(state.project.nodes).toHaveLength(300);
+      expect(state.project.edges).toHaveLength(500);
+      expect(state.project.assets).toHaveLength(80);
+      expect(state.projectImages).toHaveLength(80);
+      expect(state.saveErrorCode).toBeNull();
+    }
+  });
+
   it('round-trips a bounded MCP request through the renderer acceptance bridge', async () => {
     installRendererE2EHarness();
     window.novusDesktop!.mcpRuntime.onRequest(({ requestId, request }) => {

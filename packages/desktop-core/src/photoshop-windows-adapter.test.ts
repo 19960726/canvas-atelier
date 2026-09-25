@@ -1,9 +1,14 @@
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  applyPhotoshopColorCorrectionToBgraPixels,
+  createElectronPhotoshopWebpDecoder,
   createNodeWindowsPhotoshopSmartObjectAdapter,
+  createNodePhotoshopTemporaryFiles,
   createWindowsPhotoshopSmartObjectAdapter,
 } from './photoshop-windows-adapter.js';
 
@@ -163,7 +168,347 @@ function temporaryFiles() {
   };
 }
 
+function nativeImages(options: {
+  readonly bitmap?: Uint8Array;
+  readonly height?: number;
+  readonly pathEmpty?: boolean;
+  readonly png?: Uint8Array;
+  readonly width?: number;
+} = {}) {
+  const bitmap = Buffer.from(options.bitmap ?? new Uint8Array([80, 100, 120, 255]));
+  const png = options.png ?? new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const sourceToBitmap = vi.fn(() => bitmap);
+  return {
+    bitmap,
+    createFromPath: vi.fn().mockReturnValue({
+      getSize: () => ({ width: options.width ?? 1, height: options.height ?? 1 }),
+      isEmpty: () => options.pathEmpty === true,
+      toBitmap: sourceToBitmap,
+    }),
+    createFromBitmap: vi.fn().mockReturnValue({
+      isEmpty: () => false,
+      toPNG: () => Buffer.from(png),
+    }),
+    sourceToBitmap,
+  };
+}
+
+function rendererCorrectedBgra(
+  premultipliedBgra: readonly [number, number, number, number],
+  correction: { readonly temperature: number; readonly tint: number; readonly saturation: number; readonly contrast: number; readonly brightness: number },
+): number[] {
+  const [premultipliedBlue, premultipliedGreen, premultipliedRed, alpha] = premultipliedBgra;
+  if (alpha === 0) return [0, 0, 0, 0];
+  const straightScale = alpha === 255 ? 1 : 255 / alpha;
+  const redSource = premultipliedRed * straightScale;
+  const greenSource = premultipliedGreen * straightScale;
+  const blueSource = premultipliedBlue * straightScale;
+  const temperature = correction.temperature * 0.004;
+  const tint = correction.tint * 0.002;
+  const redGain = Math.min(1.18, Math.max(0.82, 1 + temperature + tint));
+  const greenGain = Math.min(1.18, Math.max(0.82, 1 - (correction.tint * 0.004)));
+  const blueGain = Math.min(1.18, Math.max(0.82, 1 - temperature + tint));
+  let red = redSource * redGain;
+  let green = greenSource * greenGain;
+  let blue = blueSource * blueGain;
+  const luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+  red = luminance + ((red - luminance) * correction.saturation / 100);
+  green = luminance + ((green - luminance) * correction.saturation / 100);
+  blue = luminance + ((blue - luminance) * correction.saturation / 100);
+  const correct = (value: number) => Math.min(255, Math.max(0,
+    ((value - 128) * correction.contrast / 100 + 128) * correction.brightness / 100,
+  ));
+  const premultipliedScale = alpha === 255 ? 1 : alpha / 255;
+  return [...new Uint8ClampedArray([
+    correct(blue) * premultipliedScale,
+    correct(green) * premultipliedScale,
+    correct(red) * premultipliedScale,
+    alpha,
+  ])];
+}
+
 describe('Windows Photoshop smart object adapter', () => {
+  it('decodes a managed WebP in a disposable browser and canonicalizes it through nativeImage', async () => {
+    const pngDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    const decoded = {
+      getSize: () => ({ width: 2, height: 1 }),
+      isEmpty: () => false,
+      toBitmap: () => Buffer.alloc(8),
+    };
+    const destroy = vi.fn();
+    const executeJavaScript = vi.fn().mockResolvedValue({ dataUrl: pngDataUrl, width: 2, height: 1 });
+    const loadURL = vi.fn().mockResolvedValue(undefined);
+    const createFromDataURL = vi.fn().mockReturnValue(decoded);
+    const decodeWebpFromPath = createElectronPhotoshopWebpDecoder({
+      createWindow: () => ({
+        destroy,
+        isDestroyed: () => false,
+        loadURL,
+        webContents: { executeJavaScript },
+      }),
+      nativeImage: { createFromDataURL },
+    });
+
+    const sourcePath = 'E:/managed/source.webp';
+    await expect(decodeWebpFromPath(sourcePath, { width: 2, height: 1 }))
+      .resolves.toBe(decoded);
+    expect(loadURL).toHaveBeenCalledOnce();
+    expect(new URL(loadURL.mock.calls[0]![0])).toMatchObject({
+      protocol: 'file:', host: '', pathname: '/' + sourcePath, search: '', hash: '',
+    });
+    expect(executeJavaScript).toHaveBeenCalledOnce();
+    expect(createFromDataURL).toHaveBeenCalledWith(pngDataUrl);
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  it('destroys the disposable browser when Chromium returns dimensions that differ from the managed WebP', async () => {
+    const destroy = vi.fn();
+    const decodeWebpFromPath = createElectronPhotoshopWebpDecoder({
+      createWindow: () => ({
+        destroy,
+        isDestroyed: () => false,
+        loadURL: vi.fn().mockResolvedValue(undefined),
+        webContents: {
+          executeJavaScript: vi.fn().mockResolvedValue({
+            dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+            width: 3,
+            height: 1,
+          }),
+        },
+      }),
+      nativeImage: { createFromDataURL: vi.fn() },
+    });
+
+    await expect(decodeWebpFromPath('E:/managed/source.webp', { width: 2, height: 1 }))
+      .rejects.toThrow('dimensions did not match');
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  it('applies renderer-equivalent correction to opaque premultiplied BGRA pixels', () => {
+    const pixel = [80, 100, 120, 255] as const;
+    const correction = { temperature: 10, tint: -5, saturation: 110, contrast: 105, brightness: 95 };
+    expect([...applyPhotoshopColorCorrectionToBgraPixels(new Uint8Array(pixel), correction)])
+      .toEqual(rendererCorrectedBgra(pixel, correction));
+  });
+
+  it('unpremultiplies translucent BGRA before correction and premultiplies with the original alpha', () => {
+    const pixel = [100, 75, 20, 128] as const;
+    const correction = { temperature: 10, tint: -5, saturation: 110, contrast: 105, brightness: 95 };
+    expect([...applyPhotoshopColorCorrectionToBgraPixels(new Uint8Array(pixel), correction)])
+      .toEqual(rendererCorrectedBgra(pixel, correction));
+  });
+
+  it('zeros RGB for fully transparent pixels and preserves zero alpha', () => {
+    const pixel = [77, 88, 99, 0] as const;
+    const correction = { temperature: 10, tint: -5, saturation: 110, contrast: 105, brightness: 95 };
+    expect([...applyPhotoshopColorCorrectionToBgraPixels(new Uint8Array(pixel), correction)])
+      .toEqual(rendererCorrectedBgra(pixel, correction));
+  });
+
+  it('corrects the copied Electron bitmap in place instead of allocating another full pixel buffer', () => {
+    const bitmap = Buffer.from([80, 100, 120, 255]);
+    const corrected = applyPhotoshopColorCorrectionToBgraPixels(bitmap, {
+      temperature: 10,
+      tint: -5,
+      saturation: 110,
+      contrast: 105,
+      brightness: 95,
+    });
+
+    expect(corrected.buffer).toBe(bitmap.buffer);
+    expect(corrected.byteOffset).toBe(bitmap.byteOffset);
+    expect(corrected.byteLength).toBe(bitmap.byteLength);
+  });
+
+  it('decodes the managed source, encodes corrected pixels and points Photoshop at the temporary PNG', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'photoshop-corrected-test-'));
+    const jsxResourcePath = join(root, 'place.jsx');
+    const encodedPng = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
+    const images = nativeImages({
+      bitmap: new Uint8Array([80, 100, 120, 255, 100, 75, 20, 128]),
+      width: 2,
+      height: 1,
+      png: encodedPng,
+    });
+    const colorCorrection = { temperature: 10, tint: -5, saturation: 110, contrast: 105, brightness: 95 };
+    await writeFile(jsxResourcePath, 'jsx source');
+    let temporaryDirectory: string | undefined;
+    try {
+      const files = await createNodePhotoshopTemporaryFiles({
+        absolutePath: 'E:/managed/original.jpg',
+        layerName: 'Corrected layer',
+        colorCorrection,
+      }, {
+        jsxResourcePath,
+        nativeImage: images,
+        runnerResourcePath: 'C:/app/photoshop-windows-runner.js',
+        temporaryDirectoryRoot: root,
+      });
+      temporaryDirectory = files.directory;
+      expect(images.createFromPath).toHaveBeenCalledWith('E:/managed/original.jpg');
+      expect(images.createFromBitmap).toHaveBeenCalledWith(
+        Buffer.from([67, 95, 119, 255, 95, 74, 13, 128]),
+        { width: 2, height: 1, scaleFactor: 1 },
+      );
+      expect(new Uint8Array(await readFile(join(files.directory, 'corrected.png')))).toEqual(encodedPng);
+      const payload = JSON.parse(await readFile(files.payloadPath, 'utf8')) as Record<string, unknown>;
+      expect(Buffer.from(String(payload.imagePathBase64), 'base64').toString('utf8'))
+        .toBe(join(files.directory, 'corrected.png'));
+    } finally {
+      if (temporaryDirectory !== undefined) await rm(temporaryDirectory, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps original imports on the managed path without decoding or re-encoding them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'photoshop-original-test-'));
+    const jsxResourcePath = join(root, 'place.jsx');
+    const images = nativeImages();
+    await writeFile(jsxResourcePath, 'jsx source');
+    let temporaryDirectory: string | undefined;
+    try {
+      const files = await createNodePhotoshopTemporaryFiles({
+        absolutePath: 'E:/managed/original.jpg',
+        layerName: 'Original layer',
+      }, {
+        jsxResourcePath,
+        nativeImage: images,
+        runnerResourcePath: 'C:/app/photoshop-windows-runner.js',
+        temporaryDirectoryRoot: root,
+      });
+      temporaryDirectory = files.directory;
+      const payload = JSON.parse(await readFile(files.payloadPath, 'utf8')) as Record<string, unknown>;
+      expect(Buffer.from(String(payload.imagePathBase64), 'base64').toString('utf8'))
+        .toBe('E:/managed/original.jpg');
+      expect(images.createFromPath).not.toHaveBeenCalled();
+      expect(images.createFromBitmap).not.toHaveBeenCalled();
+    } finally {
+      if (temporaryDirectory !== undefined) await rm(temporaryDirectory, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the trusted main-process WebP decoder for a real managed file and verifies its full dimensions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'photoshop-webp-test-'));
+    const jsxResourcePath = join(root, 'place.jsx');
+    const sourcePath = join(root, 'managed.webp');
+    const webpBytes = Buffer.from('UklGRh4CAABXRUJQVlA4WAoAAAAwAAAAAQAAAAAASUNDUMgBAAAAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADZBTFBIAwAAAAD/gABWUDggJAAAAJABAJ0BKgIAAQABQCYlAE6AG6B2hgD+RogeBxUcnXrS3NuIAA==', 'base64');
+    const images = nativeImages({
+      pathEmpty: true,
+    });
+    const decodedBitmap = Buffer.from([80, 100, 120, 255, 80, 100, 120, 255]);
+    const decodeWebpFromPath = vi.fn().mockResolvedValue({
+      getSize: () => ({ width: 2, height: 1 }),
+      isEmpty: () => false,
+      toBitmap: () => decodedBitmap,
+    });
+    await Promise.all([
+      writeFile(jsxResourcePath, 'jsx source'),
+      writeFile(sourcePath, webpBytes),
+    ]);
+    let temporaryDirectory: string | undefined;
+    try {
+      const files = await createNodePhotoshopTemporaryFiles({
+        absolutePath: sourcePath,
+        layerName: 'WebP layer',
+        mediaType: 'image/webp',
+        colorCorrection: { temperature: 10, tint: -5, saturation: 110, contrast: 105, brightness: 95 },
+      }, {
+        jsxResourcePath,
+        decodeWebpFromPath,
+        nativeImage: images,
+        runnerResourcePath: 'C:/app/photoshop-windows-runner.js',
+        temporaryDirectoryRoot: root,
+      });
+      temporaryDirectory = files.directory;
+      expect(images.createFromPath).toHaveBeenCalledWith(sourcePath);
+      expect(decodeWebpFromPath).toHaveBeenCalledWith(sourcePath, { width: 2, height: 1 });
+      expect(images.createFromBitmap).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        { width: 2, height: 1, scaleFactor: 1 },
+      );
+      expect(images.createFromBitmap.mock.calls[0]![0]).toHaveLength(8);
+    } finally {
+      if (temporaryDirectory !== undefined) await rm(temporaryDirectory, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects corrected images above the maximum side before allocating a bitmap', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'photoshop-size-limit-test-'));
+    const jsxResourcePath = join(root, 'place.jsx');
+    const images = nativeImages({ width: 8_193, height: 1 });
+    await writeFile(jsxResourcePath, 'jsx source');
+    try {
+      await expect(createNodePhotoshopTemporaryFiles({
+        absolutePath: 'E:/managed/too-large.png',
+        layerName: 'Too large',
+        mediaType: 'image/png',
+        colorCorrection: { temperature: 1, tint: 0, saturation: 100, contrast: 100, brightness: 100 },
+      }, {
+        jsxResourcePath,
+        nativeImage: images,
+        runnerResourcePath: 'C:/app/photoshop-windows-runner.js',
+        temporaryDirectoryRoot: root,
+      })).rejects.toThrow('dimensions are invalid');
+      expect(images.sourceToBitmap).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('removes its temporary directory when trusted managed-image decoding fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'photoshop-correction-failure-test-'));
+    const jsxResourcePath = join(root, 'place.jsx');
+    const images = nativeImages();
+    images.createFromPath.mockReturnValue({
+      getSize: () => ({ width: 0, height: 0 }),
+      isEmpty: () => true,
+      toBitmap: () => Buffer.alloc(0),
+    });
+    await writeFile(jsxResourcePath, 'jsx source');
+    try {
+      await expect(createNodePhotoshopTemporaryFiles({
+        absolutePath: 'E:/managed/broken.jpg',
+        layerName: 'Broken layer',
+        colorCorrection: { temperature: 1, tint: 0, saturation: 100, contrast: 100, brightness: 100 },
+      }, {
+        jsxResourcePath,
+        nativeImage: images,
+        runnerResourcePath: 'C:/app/photoshop-windows-runner.js',
+        temporaryDirectoryRoot: root,
+      })).rejects.toThrow('could not be decoded');
+      const entries = await readdir(root, { withFileTypes: true });
+      expect(entries.filter((entry) => entry.isDirectory())).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects decoded images above the bounded correction working set before reading their bitmap', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'photoshop-correction-size-test-'));
+    const jsxResourcePath = join(root, 'place.jsx');
+    const images = nativeImages({ width: 4_000, height: 3_000 });
+    await writeFile(jsxResourcePath, 'jsx source');
+    try {
+      await expect(createNodePhotoshopTemporaryFiles({
+        absolutePath: 'E:/managed/oversized.png',
+        layerName: 'Oversized layer',
+        colorCorrection: { temperature: 1, tint: 0, saturation: 100, contrast: 100, brightness: 100 },
+      }, {
+        jsxResourcePath,
+        nativeImage: images,
+        runnerResourcePath: 'C:/app/photoshop-windows-runner.js',
+        temporaryDirectoryRoot: root,
+      })).rejects.toThrow('dimensions are invalid');
+      expect(images.createFromPath.mock.results[0]?.value.toBitmap).not.toHaveBeenCalled();
+      const entries = await readdir(root, { withFileTypes: true });
+      expect(entries.filter((entry) => entry.isDirectory())).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('fits and centers a small fallback image as one proportional Smart Object without clipboard transfer', async () => {
     const result = await runWindowsPlacementFallback({
       primaryError: 'place-layer failed',
@@ -193,6 +538,7 @@ describe('Windows Photoshop smart object adapter', () => {
     const adapter = createNodeWindowsPhotoshopSmartObjectAdapter({
       platform: 'darwin',
       jsxResourcePath: '/app/photoshop-place-smart-object.jsx',
+      nativeImage: nativeImages(),
       runnerResourcePath: '/app/photoshop-windows-runner.js',
     });
     expect(adapter.place).toBeTypeOf('function');
@@ -220,6 +566,30 @@ describe('Windows Photoshop smart object adapter', () => {
       jsxPath: 'C:/temp/novus-photoshop-1/place.jsx',
       payloadPath: 'C:/temp/novus-photoshop-1/payload.json',
     }));
+    expect(files.remove).toHaveBeenCalledWith('C:/temp/novus-photoshop-1');
+  });
+
+  it('forwards color-correction parameters to trusted temporary-file creation and removes them after placement', async () => {
+    const files = temporaryFiles();
+    const colorCorrection = { temperature: -4, tint: 7, saturation: 108, contrast: 102, brightness: 99 };
+    const adapter = createWindowsPhotoshopSmartObjectAdapter({
+      platform: 'win32',
+      discoverInstallations: vi.fn().mockResolvedValue([{ majorVersion: 25, executablePath: 'new.exe' }]),
+      inspectRunningInstance: vi.fn().mockResolvedValue({ majorVersion: 25, activeDocument: true }),
+      execute: vi.fn().mockResolvedValue({ kind: 'success', layerName: 'Corrected layer' }),
+      temporaryFiles: files,
+    });
+
+    await expect(adapter.place({
+      absolutePath: 'E:/managed/original.jpg',
+      layerName: 'Corrected layer',
+      colorCorrection,
+    })).resolves.toEqual({ ok: true, layerName: 'Corrected layer' });
+    expect(files.create).toHaveBeenCalledWith({
+      absolutePath: 'E:/managed/original.jpg',
+      layerName: 'Corrected layer',
+      colorCorrection,
+    });
     expect(files.remove).toHaveBeenCalledWith('C:/temp/novus-photoshop-1');
   });
 

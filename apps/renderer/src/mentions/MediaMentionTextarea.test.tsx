@@ -64,6 +64,83 @@ function canonicalCaretOffset(editor: HTMLElement): number {
 }
 
 describe('MediaMentionTextarea', () => {
+  it('does not read the document selection while focus is outside the composer', () => {
+    const selection = vi.spyOn(window, 'getSelection');
+    try {
+      render(<div><button type="button">画布操作</button><MediaMentionTextarea aria-label="Prompt" value="" onChange={vi.fn()} /></div>);
+      screen.getByRole('button', { name: '画布操作' }).focus();
+      selection.mockClear();
+
+      fireEvent(document, new Event('selectionchange'));
+
+      expect(selection).not.toHaveBeenCalled();
+    } finally {
+      selection.mockRestore();
+    }
+  });
+
+  it('continues publishing canonical caret changes while the composer has focus', () => {
+    const onSelection = vi.fn();
+    render(<MediaMentionTextarea aria-label="Prompt" value="hello" onChange={vi.fn()} onCanonicalSelectionChange={onSelection} />);
+    const editor = screen.getByRole('textbox', { name: 'Prompt' });
+    editor.focus();
+    setCaret(editor.firstChild!, 3);
+    onSelection.mockClear();
+
+    fireEvent(document, new Event('selectionchange'));
+
+    expect(onSelection).toHaveBeenLastCalledWith({ start: 3, end: 3 });
+  });
+
+  it('does not inspect browser selection when rebuilding a blurred composer', () => {
+    const selection = vi.spyOn(window, 'getSelection');
+    try {
+      const { rerender } = render(<div>
+        <button type="button">画布操作</button>
+        <MediaMentionTextarea aria-label="Prompt" value="初稿" onChange={vi.fn()} />
+      </div>);
+      screen.getByRole('button', { name: '画布操作' }).focus();
+      selection.mockClear();
+
+      rerender(<div>
+        <button type="button">画布操作</button>
+        <MediaMentionTextarea aria-label="Prompt" value="更新后的初稿" onChange={vi.fn()} />
+      </div>);
+
+      expect(selection).not.toHaveBeenCalled();
+    } finally {
+      selection.mockRestore();
+    }
+  });
+
+  it('reads the caret beside media references without cloning image or video DOM on every input', () => {
+    const onSelection = vi.fn();
+    render(<MediaMentionTextarea aria-label="Prompt" value="前文 @图片1 @视频1 后文" mentions={[
+      {token: '@图片1', kind: 'image', label: '参考图片', displayUrl: 'novus-asset://project/image'},
+      {token: '@视频1', kind: 'video', label: '参考视频', displayUrl: 'novus-asset://project/video'},
+    ]} onCanonicalSelectionChange={onSelection} onChange={vi.fn()} />);
+    const editor = screen.getByRole('textbox', { name: 'Prompt' });
+    const text = editor.lastChild!;
+    setCaret(text, 3);
+    const clone = vi.spyOn(Range.prototype, 'cloneContents');
+    try {
+      fireEvent.input(editor);
+      expect(onSelection).toHaveBeenLastCalledWith({start: 15, end: 15});
+      expect(clone).not.toHaveBeenCalled();
+    } finally { clone.mockRestore(); }
+  });
+  it('preserves canonical caret offsets through nested multiline content and mention chips', () => {
+    const onSelection = vi.fn();
+    render(<MediaMentionTextarea aria-label="Prompt" value="" onCanonicalSelectionChange={onSelection} onChange={vi.fn()} />);
+    const editor = screen.getByRole('textbox', { name: 'Prompt' });
+    editor.innerHTML = '<div>前文<span data-token="@图片1" contenteditable="false">图片1</span></div><div><b>后文</b><br>末尾</div>';
+    setCaret(editor.querySelector('b')!.firstChild!, 2);
+    fireEvent.input(editor);
+    expect(onSelection).toHaveBeenLastCalledWith({start: 9, end: 9});
+    setCaret(editor.lastChild!, 2);
+    fireEvent.input(editor);
+    expect(onSelection).toHaveBeenLastCalledWith({start: 10, end: 10});
+  });
   it('renders canonical mentions as inline chips without a visible @', () => {
     const { container } = render(<MediaMentionTextarea
       aria-label="Prompt"
@@ -262,6 +339,7 @@ describe('MediaMentionTextarea', () => {
       onChange={vi.fn()}
     />);
     const editor = screen.getByRole('textbox', { name: 'Prompt' });
+    editor.focus();
     setCaret(editor, editor.childNodes.length);
     const expectedOffset = '前@图片1中@视频1'.length;
 

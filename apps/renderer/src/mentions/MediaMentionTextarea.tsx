@@ -123,13 +123,14 @@ export const MediaMentionTextarea = forwardRef<MediaMentionTextareaHandle, Media
     if (editor === null || composingRef.current) return;
     const previewChanged = renderedPreviewSignatureRef.current !== previewSignature;
     if (serializeEditor(editor) === value && !previewChanged) return;
-    const selection = captureCanonicalSelection(editor) ?? lastCanonicalSelectionRef.current;
+    const editorHasFocus = document.activeElement === editor || editor.contains(document.activeElement);
+    const selection = (editorHasFocus ? captureCanonicalSelection(editor) : null) ?? lastCanonicalSelectionRef.current;
     const focusedToken = mentionChip(document.activeElement)?.dataset.token;
     rebuildEditor(editor, value, previews, setActiveToken);
     renderedPreviewSignatureRef.current = previewSignature;
     if (selection !== null) restoreCanonicalSelection(editor, selection);
     if (focusedToken !== undefined) findMentionChip(editor, focusedToken)?.focus();
-    publishCanonicalSelection(editor);
+    if (editorHasFocus) publishCanonicalSelection(editor);
   }, [previewSignature, value]);
 
   useLayoutEffect(() => {
@@ -143,14 +144,18 @@ export const MediaMentionTextarea = forwardRef<MediaMentionTextareaHandle, Media
       lastEmittedValueRef.current = nextValue;
       emitTextareaChange(onChangeRef.current, nextValue);
     };
-    const handleSelectionChange = () => publishCanonicalSelection(editor);
+    const handleSelectionChange = () => {
+      if (document.activeElement !== editor && !editor.contains(document.activeElement)) return;
+      publishCanonicalSelection(editor);
+    };
     Object.defineProperty(editor, 'value', {
       configurable: true,
       get: () => serializeEditor(editor),
       set: (nextValue: unknown) => {
         const canonicalValue = String(nextValue ?? '');
         if (serializeEditor(editor) === canonicalValue) return;
-        const selection = captureCanonicalSelection(editor);
+        const editorHasFocus = document.activeElement === editor || editor.contains(document.activeElement);
+        const selection = (editorHasFocus ? captureCanonicalSelection(editor) : null) ?? lastCanonicalSelectionRef.current;
         rebuildEditor(editor, canonicalValue, previewsRef.current, setActiveToken);
         if (selection !== null) restoreCanonicalSelection(editor, selection);
       },
@@ -340,11 +345,14 @@ function serializeEditor(editor: HTMLElement): string {
   return serializeChildren(editor).replace(/\r\n?/gu, '\n');
 }
 
-function serializeChildren(parent: Node): string {
+function serializeChildren(parent: Node, end?: { node: Node; offset: number }): string {
   let value = '';
-  for (const node of Array.from(parent.childNodes)) {
+  const children = Array.from(parent.childNodes);
+  const limit = end?.node === parent ? end.offset : children.length;
+  for (const node of children.slice(0, limit)) {
     if (node.nodeType === Node.TEXT_NODE) {
-      value += node.textContent ?? '';
+      value += end?.node === node ? (node.textContent ?? '').slice(0, end.offset) : node.textContent ?? '';
+      if (end?.node === node) break;
       continue;
     }
     if (node.nodeType !== Node.ELEMENT_NODE) continue;
@@ -352,15 +360,17 @@ function serializeChildren(parent: Node): string {
     const token = element.dataset.token;
     if (token !== undefined) {
       value += token;
+      if (end && element.contains(end.node)) break;
       continue;
     }
     if (element.tagName === 'BR') {
       value += '\n';
       continue;
     }
-    const content = serializeChildren(element);
+    const content = serializeChildren(element, end);
     if (BLOCK_ELEMENTS.has(element.tagName) && value.length > 0 && !value.endsWith('\n')) value += '\n';
     value += content;
+    if (end && element.contains(end.node)) break;
   }
   return value;
 }
@@ -437,21 +447,15 @@ function captureCanonicalSelection(editor: HTMLDivElement): CanonicalSelection |
   const selection = window.getSelection();
   if (selection === null || selection.rangeCount === 0) return null;
   if (!editor.contains(selection.anchorNode) || !editor.contains(selection.focusNode)) return null;
-  return {
-    start: canonicalOffsetToPoint(editor, selection.anchorNode, selection.anchorOffset),
-    end: canonicalOffsetToPoint(editor, selection.focusNode, selection.focusOffset),
-  };
+  const start = canonicalOffsetToPoint(editor, selection.anchorNode, selection.anchorOffset);
+  return { start, end: selection.isCollapsed ? start : canonicalOffsetToPoint(editor, selection.focusNode, selection.focusOffset) };
 }
 
 function canonicalOffsetToPoint(editor: HTMLDivElement, node: Node | null, offset: number): number {
   if (node === null) return 0;
-  const range = document.createRange();
-  range.selectNodeContents(editor);
-  range.setEnd(node, offset);
-  const fragment = range.cloneContents();
-  const holder = document.createElement('div');
-  holder.append(fragment);
-  return serializeEditor(holder).length;
+  // Reading a caret must not clone referenced media: cloned video/image nodes
+  // allocate decoders and reload sources on every input and selectionchange.
+  return serializeChildren(editor, { node, offset }).replace(/\r\n?/gu, '\n').length;
 }
 
 function restoreCanonicalSelection(editor: HTMLDivElement, selection: CanonicalSelection): void {

@@ -1,4 +1,8 @@
-import type { PhotoshopImportRequest, PhotoshopImportResult } from './photoshop-contract.js';
+import type {
+  PhotoshopColorCorrection,
+  PhotoshopImportRequest,
+  PhotoshopImportResult,
+} from './photoshop-contract.js';
 
 export interface PhotoshopManagedAsset {
   readonly absolutePath: string;
@@ -7,14 +11,18 @@ export interface PhotoshopManagedAsset {
 }
 
 export interface PhotoshopManagedAssetResolver {
-  resolve(request: PhotoshopImportRequest): Promise<PhotoshopManagedAsset | null>;
+  resolve(request: Pick<PhotoshopImportRequest, 'sessionId' | 'assetId'>): Promise<PhotoshopManagedAsset | null>;
+}
+
+export interface PhotoshopSmartObjectPlacementInput {
+  readonly absolutePath: string;
+  readonly layerName: string;
+  readonly mediaType?: string;
+  readonly colorCorrection?: PhotoshopColorCorrection;
 }
 
 export interface PhotoshopSmartObjectAdapter {
-  place(input: {
-    readonly absolutePath: string;
-    readonly layerName: string;
-  }): Promise<PhotoshopImportResult>;
+  place(input: PhotoshopSmartObjectPlacementInput): Promise<PhotoshopImportResult>;
 }
 
 export class PhotoshopSmartObjectService {
@@ -31,12 +39,14 @@ export class PhotoshopSmartObjectService {
     this.inFlight.add(key);
 
     try {
-      const asset = await this.assets.resolve(request);
+      const asset = await this.assets.resolve({ sessionId: request.sessionId, assetId: request.assetId });
       if (asset === null) return { ok: false, code: 'asset_not_found' };
       if (!asset.mediaType.startsWith('image/')) return { ok: false, code: 'unsupported_media' };
       return await this.adapter.place({
         absolutePath: asset.absolutePath,
         layerName: sanitizeLayerName(asset.label),
+        mediaType: asset.mediaType,
+        ...(request.colorCorrection === undefined ? {} : { colorCorrection: request.colorCorrection }),
       });
     } catch {
       return { ok: false, code: 'placement_failed' };

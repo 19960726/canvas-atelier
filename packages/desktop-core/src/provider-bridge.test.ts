@@ -1496,7 +1496,7 @@ describe('Comfly provider service', () => {
     });
     await service.configure({ token });
     await expect(service.submitImageJob({ jobId: 'gpt-edit-job', provider: 'comfly', modelRoute: 'comfly-gpt-image-2-5-flare', prompt: 'Preserve reference geometry', conversationId: 'gpt-edit-conversation', sessionId: 'desktop-session-gpt-edit', referenceAssetIds: ['1'.repeat(16)], resolution: '4K', aspectRatio: '16:9', quality: 'auto', imageOutputFormat: 'png', imageBackground: 'auto', outputCount: 1 })).resolves.toEqual({ providerTaskId: expect.stringMatching(/^provider-job-/u) });
-    expect(fetch).toHaveBeenCalledWith('https://ai.comfly.org/v1/images/edits', expect.objectContaining({ headers: expect.objectContaining({ 'content-type': expect.stringMatching(/^multipart\/form-data/u) }) }));
+    expect(fetch).toHaveBeenCalledWith('https://ai.comfly.org/v1/images/edits?async=true', expect.objectContaining({ headers: expect.objectContaining({ 'content-type': expect.stringMatching(/^multipart\/form-data/u) }) }));
     expect(storeGeneratedImage).toHaveBeenCalledTimes(responseKind === 'direct' ? 1 : 0);
     await cleanupTempRoot(appDataRoot);
   });
@@ -1818,6 +1818,21 @@ describe('Comfly provider service', () => {
     expect(refreshedProfiles).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ modelId: 'first-image-model' }),
     ]));
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('checks authentication without downloading the pricing catalog first', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/v1/models')) return jsonResponse({ object: 'list', data: [{ id: 'gpt-image-2' }] });
+      return jsonResponse({ data: { version: 'catalog', models: [] } });
+    });
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch, discoverModelCatalog: true });
+    await service.configure({ token });
+    await expect(service.checkConnection()).resolves.toMatchObject({ status: 'connected' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0]![0]).toMatch(/\/v1\/models$/u);
     await cleanupTempRoot(appDataRoot);
   });
 
@@ -2237,7 +2252,7 @@ describe('Comfly provider service', () => {
       prompt: 'draw a product photo', conversationId: 'conversation-documented-image', referenceAssetIds: [],
     });
     await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId }))
-      .resolves.toEqual({ status: 'running', progress: undefined });
+      .resolves.toEqual({ status: 'running', progress: 0.4 });
     await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId }))
       .resolves.toEqual({ status: 'completed', progress: 1, result: { assetId: '1234567890abcdef', width: 3840, height: 2160 } });
     expect(fetch).toHaveBeenNthCalledWith(
@@ -2327,6 +2342,116 @@ describe('Comfly provider service', () => {
       model: 'veo3.1', prompt: 'A product rotates on a clean studio table',
       aspect_ratio: '16:9',
     });
+    await cleanupTempRoot(appDataRoot);
+  });
+  it('terminates a Comfly video task when the provider result is not an MP4', async () => {
+    const appDataRoot = await makeTempRoot();
+    const invalidVideo = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/v2/videos/generations')) return jsonResponse({ task_id: 'invalid-video-task' });
+      if (url.endsWith('/v2/videos/generations/invalid-video-task')) return jsonResponse({
+        task_id: 'invalid-video-task', status: 'SUCCESS', progress: 100,
+        data: { output: 'https://assets.example/invalid-video.mp4' },
+      });
+      if (url === 'https://assets.example/invalid-video.mp4') return {
+        ok: true, status: 200, json: async () => ({}),
+        arrayBuffer: async () => invalidVideo.buffer,
+      };
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const storeGeneratedVideo = vi.fn(async () => ({ assetId: 'fedcba9876543210' }));
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [{ provider: 'comfly', modelRoute: 'veo-video', modelId: 'veo3.1', displayName: 'Veo 3.1', capabilities: ['video_generation', 'async_tasks'] }],
+      resolveResultHost: async () => ['93.184.216.34'],
+      storeGeneratedVideo,
+    });
+    await service.configure({ token });
+    const submitted = await service.submitVideoJob!({
+      jobId: 'model-job-v2-video-invalid-result', provider: 'comfly', modelRoute: 'veo-video',
+      prompt: 'A product rotates', conversationId: 'video-session-invalid-result', referenceAssetIds: [],
+    });
+
+    const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+    const result = await service.pollVideoJob!(request);
+    expect(result).toMatchObject({ status: 'failed', error: { code: 'PROVIDER_INVALID_RESPONSE' } });
+    await expect(service.pollVideoJob!(request)).resolves.toEqual(result);
+    expect(storeGeneratedVideo).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    await cleanupTempRoot(appDataRoot);
+  });
+  it('terminates a Comfly video task when SUCCESS has no result URL', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/v2/videos/generations')) return jsonResponse({ task_id: 'missing-video-output' });
+      if (url.endsWith('/v2/videos/generations/missing-video-output')) return jsonResponse({
+        task_id: 'missing-video-output', status: 'SUCCESS', progress: 100, data: {},
+      });
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [{ provider: 'comfly', modelRoute: 'veo-video', modelId: 'veo3.1', displayName: 'Veo 3.1', capabilities: ['video_generation', 'async_tasks'] }],
+    });
+    await service.configure({ token });
+    const submitted = await service.submitVideoJob!({
+      jobId: 'model-job-v2-video-missing-output', provider: 'comfly', modelRoute: 'veo-video',
+      prompt: 'A product rotates', conversationId: 'video-session-missing-output', referenceAssetIds: [],
+    });
+
+    const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+    const result = await service.pollVideoJob!(request);
+    expect(result).toMatchObject({ status: 'failed', error: { code: 'PROVIDER_INVALID_RESPONSE' } });
+    await expect(service.pollVideoJob!(request)).resolves.toEqual(result);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await cleanupTempRoot(appDataRoot);
+  });
+  it.each(['network', 'http-503', 'body-stream'] as const)('keeps a video result download retryable after a temporary %s failure', async (failure) => {
+    const appDataRoot = await makeTempRoot();
+    const mp4 = Uint8Array.from([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    let downloads = 0;
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/v2/videos/generations')) return jsonResponse({ task_id: 'temporary-video-download' });
+      if (url.endsWith('/v2/videos/generations/temporary-video-download')) return jsonResponse({
+        task_id: 'temporary-video-download', status: 'SUCCESS', progress: 100,
+        data: { output: 'https://assets.example/temporary-video.mp4' },
+      });
+      if (url === 'https://assets.example/temporary-video.mp4') {
+        downloads += 1;
+        if (downloads === 1 && failure === 'network') throw new TypeError('fetch failed');
+        if (downloads === 1 && failure === 'http-503') return {
+          ok: false, status: 503, json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0),
+        };
+        if (downloads === 1 && failure === 'body-stream') return {
+          ok: true, status: 200, json: async () => ({}), arrayBuffer: async (): Promise<ArrayBuffer> => { throw new TypeError('body stream interrupted'); },
+        };
+        return { ok: true, status: 200, json: async () => ({}), arrayBuffer: async () => mp4.buffer };
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const storeGeneratedVideo = vi.fn(async () => ({ assetId: 'fedcba9876543210' }));
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [{ provider: 'comfly', modelRoute: 'veo-video', modelId: 'veo3.1', displayName: 'Veo 3.1', capabilities: ['video_generation', 'async_tasks'] }],
+      resolveResultHost: async () => ['93.184.216.34'],
+      storeGeneratedVideo,
+    });
+    await service.configure({ token });
+    const submitted = await service.submitVideoJob!({
+      jobId: 'model-job-v2-video-temporary-download', provider: 'comfly', modelRoute: 'veo-video',
+      prompt: 'A product rotates', conversationId: 'video-session-temporary-download', referenceAssetIds: [],
+    });
+    const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+    await expect(service.pollVideoJob!(request)).rejects.toMatchObject({ code: 'PROVIDER_ERROR', retryable: true });
+    await expect(service.pollVideoJob!(request)).resolves.toMatchObject({ status: 'completed' });
+    expect(storeGeneratedVideo).toHaveBeenCalledOnce();
+    expect(downloads).toBe(2);
     await cleanupTempRoot(appDataRoot);
   });
   it('forwards schema-validated image controls to the Comfly image request', async () => {

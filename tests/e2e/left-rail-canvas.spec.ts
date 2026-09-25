@@ -26,7 +26,7 @@ const canvasRailIcons = [
 // UI Gate 425:152 uses these glyphs, not the generic icon-library drawings.
 // Keeping the actual rendered glyphs in the assertion prevents the legacy
 // Lucide rail from returning while the dimensions still happen to match.
-const canvasRailGlyphs = ['⌖', '＋', '▦', '↶', null, '✦', '◷', null] as const;
+const canvasRailGlyphs = ['⌖', '＋', '▦', '↶', null, null, '◷', null] as const;
 
 for (const theme of ['dark', 'light'] as const) {
   test(`matches the Canvas eight-action left rail in ${theme}`, async ({ page }, testInfo) => {
@@ -59,7 +59,9 @@ for (const theme of ['dark', 'light'] as const) {
         'data-rail-icon',
         canvasRailIcons[index],
       );
-      if (canvasRailGlyphs[index] === null) {
+      if (testId === 'agent-toggle') {
+        await expect(button.locator('.canvas-ai-orb--rail')).toBeVisible();
+      } else if (canvasRailGlyphs[index] === null) {
         await expect(button.locator('[data-rail-icon] svg')).toBeVisible();
       } else {
         await expect(button.locator('[data-rail-icon]')).toHaveText(canvasRailGlyphs[index]!);

@@ -47,6 +47,8 @@ export interface ModelJobRequest {
   durationSeconds?: number;
   audioEnabled?: boolean;
   outputCount?: 1 | 2 | 3 | 4;
+  layeringGroupId?: string;
+  layeringLayerId?: string;
 }
 
 export interface EnqueueConfirmedJobsInput {
@@ -367,6 +369,8 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
           durationSeconds: job.durationSeconds,
           audioEnabled: job.audioEnabled,
           outputCount: job.outputCount as 1 | 2 | 3 | 4 | undefined,
+          layeringGroupId: job.layeringGroupId,
+          layeringLayerId: job.layeringLayerId,
         });
         const retryRecord = { ...retry, retryCount: job.retryCount + 1 };
         await bulkPutJobs([
@@ -703,6 +707,38 @@ function createResultMaterialization(
   result: ModelJobResult,
   project: CanvasProject | undefined,
 ): ResultMaterialization {
+  if (job.layeringGroupId !== undefined && job.layeringLayerId !== undefined) {
+    const layerNode = project?.nodes.find((candidate): candidate is Extract<CanvasNode, { type: 'module' }> => candidate.type === 'module'
+      && candidate.id === job.promptNodeId && candidate.data.moduleType === 'image_layer'
+      && candidate.data.config.groupId === job.layeringGroupId
+      && candidate.data.config.layerId === job.layeringLayerId
+      && candidate.data.config.jobId === job.id);
+    if (layerNode === undefined) throw new Error('The owned image layer for this task is no longer available.');
+    const nextNode: CanvasNode = {
+      ...layerNode,
+      data: {
+        ...layerNode.data,
+        config: {
+          ...layerNode.data.config,
+          resultAssetId: result.assetId,
+          ...(result.width === undefined ? {} : { resultWidth: result.width }),
+          ...(result.height === undefined ? {} : { resultHeight: result.height }),
+          resultJobId: job.id,
+          qualityStatus: 'pending',
+          status: 'validating',
+        },
+        execution: { ...layerNode.data.execution, state: 'running' },
+      },
+    };
+    return {
+      resultNodeId: layerNode.id,
+      transaction: {
+        id: `model-job-layer-result-${job.id}`,
+        label: `保存图片图层结果 ${job.layeringLayerId}`,
+        operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+      },
+    };
+  }
   const isVideo = job.kind === 'video';
   const sourceNode = findFormalGenerationSourceNode(project, job.promptNodeId, job.kind);
   if (sourceNode !== undefined) {
@@ -974,6 +1010,15 @@ function isSameTerminalJob(candidate: ModelJob | undefined, expected: ModelJob):
 }
 
 function findExistingResult(project: CanvasProject | undefined, job: ModelJob, result: ModelJobResult): CanvasNode | undefined {
+  if (job.layeringGroupId !== undefined && job.layeringLayerId !== undefined) {
+    return project?.nodes.find((candidate) => candidate.type === 'module'
+      && candidate.id === job.promptNodeId && candidate.data.moduleType === 'image_layer'
+      && candidate.data.config.groupId === job.layeringGroupId
+      && candidate.data.config.layerId === job.layeringLayerId
+      && candidate.data.config.jobId === job.id
+      && candidate.data.config.resultJobId === job.id
+      && candidate.data.config.resultAssetId === result.assetId);
+  }
   const sourceNode = findFormalGenerationSourceNode(project, job.promptNodeId, job.kind);
   if (sourceNode !== undefined) {
     const stored = job.kind === 'video'

@@ -97,23 +97,31 @@ export type {
   PhotoshopManagedAsset,
   PhotoshopManagedAssetResolver,
   PhotoshopSmartObjectAdapter,
+  PhotoshopSmartObjectPlacementInput,
 } from './photoshop-smart-object-service.js';
 export { createPhotoshopPlacementPayload } from './photoshop-script.js';
 export type { PhotoshopPlacementPayloadInput } from './photoshop-script.js';
 export {
+  createElectronPhotoshopWebpDecoder,
   createNodeWindowsPhotoshopSmartObjectAdapter,
   createWindowsPhotoshopSmartObjectAdapter,
+  discoverPhotoshopInstallations,
 } from './photoshop-windows-adapter.js';
 export type {
   PhotoshopInstallation,
+  PhotoshopManagedWebpDecoder,
+  PhotoshopDecodedImage,
   PhotoshopRunningInstance,
   PhotoshopTemporaryFiles,
+  PhotoshopNativeImageFactory,
   PhotoshopWindowsExecutionResult,
+  PhotoshopWebpDecodeWindow,
   WindowsPhotoshopAdapterDependencies,
   NodeWindowsPhotoshopAdapterOptions,
 } from './photoshop-windows-adapter.js';
 export type {
   PhotoshopCapability,
+  PhotoshopColorCorrection,
   PhotoshopImportErrorCode,
   PhotoshopImportRequest,
   PhotoshopImportResult,
@@ -187,10 +195,12 @@ export type {
 export { GenerationHistoryProviderSink, createElectronTrustedImageDecoder } from './generation-history-provider-sink.js';
 export type {
   ElectronNativeImageLike,
+  ElectronTrustedImageDecoderOptions,
   GenerationHistoryDurableTerminal,
   GenerationHistoryFailureCode,
   GenerationHistoryProviderSinkContract,
   TrustedImageDecoder,
+  TrustedImageDecodeWindow,
 } from './generation-history-provider-sink.js';
 export { isHistoryNetworkPath } from './history-network-path.js';
 export {

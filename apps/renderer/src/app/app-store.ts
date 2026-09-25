@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { flushEditorDrafts } from './editor-draft-boundary';
 import { reverseFailureMessage } from './reverse-failure';
 import type { Connection } from '@xyflow/react';
 import type {
@@ -113,6 +114,12 @@ import {
 } from './provider-profiles';
 import { isGptImageQualityIdentity, normalizeImageQuality, supportsGptImageQuality } from './image-generation-quality';
 import { resolveImageResolutionRoute } from './image-resolution-routing';
+import { analyzeImageLayering as analyzeImageLayeringRequest } from './layering-analysis';
+import type { LayeringConfirmation, LayeringPlan } from './layering-plan';
+import { matchesLayeringConfirmation } from './layering-plan';
+import { buildDistantLayeringRepairTransaction, buildLayeringGraphTransaction } from './layering-graph';
+import { buildLayeringJobRequests } from './layering-jobs';
+import { eligibleForLayeringRoute, getLayeringRouteContract, PRODUCTION_LAYERING_ROUTE_EVIDENCE, type LayeringRouteEvidence } from './layering-route-evidence';
 import { buildReverseAgentCanvasPlan } from '../agent/reverse-workflow-proposal';
 import type { ReverseAnalysisResult } from '../agent/reverse-workflow-contract';
 import { supportsGenerationReferences, type GenerationParameters } from '../agent/generation-preferences';
@@ -144,6 +151,7 @@ let modelJobProcessingBarrierToken = 0;
 const modelJobDispatchHolds = new Set<string>();
 const activeReverseAgentRuns = new Map<string, string>();
 let pendingAgentConfirmation: PendingAgentConfirmation | null = null;
+let layeringRouteEvidenceTestOverride: readonly LayeringRouteEvidence[] | null = null;
 let pendingAgentJobRetry: Promise<void> | null = null;
 let pendingProjectOpenBoundary: Promise<boolean> | null = null;
 const AGENT_MODEL_CONVERSATION_ID = 'agent-conversation-shared';
@@ -265,7 +273,7 @@ interface VideoPreviewNodeInput {
 }
 type GenerationNodeDraftConfig = Pick<ImageGenerationNodeInput, 'prompt' | 'modelRoute' | 'aspectRatio' | 'resolution' | 'imageQuality' | 'imageOutputFormat' | 'imageBackground' | 'outputCount'>
   & Partial<Pick<VideoPreviewNodeInput, 'keyframe' | 'durationSeconds' | 'audioEnabled'>>
-  & { readonly colorCorrection?: ImageColorCorrection };
+  & { readonly colorCorrection?: ImageColorCorrection; readonly imageColorCorrections?: Readonly<Record<string, ImageColorCorrection>> };
 export interface AgentGenerationWorkflowPlacement {
   readonly generationNodeId: string;
   readonly workflowNodeIds: readonly string[];
@@ -350,6 +358,25 @@ interface AppState {
     readonly media: readonly ManagedReversePromptMediaIdentity[];
   }) => Promise<ReversePromptResult>;
   chatSkill: (input: SkillChatRequest) => Promise<ChatSkillBridgeResult>;
+  analyzeImageLayering: (input: {
+    readonly sourceAssetId: string;
+    readonly provider: ProviderBridgeProfile['provider'];
+    readonly modelRoute: string;
+    readonly width: number;
+    readonly height: number;
+    readonly mode?: 'auto' | 'custom';
+    readonly targetLayerCount?: number;
+  }) => Promise<LayeringPlan>;
+  createConfirmedLayeringGroup: (input: {
+    readonly plan: LayeringPlan;
+    readonly confirmation: LayeringConfirmation;
+    readonly groupId: string;
+  }) => Promise<boolean>;
+  startConfirmedLayering: (input: {
+    readonly plan: LayeringPlan;
+    readonly confirmation: LayeringConfirmation;
+    readonly groupId: string;
+  }) => Promise<boolean>;
   cancelChatSkill: (requestId: string) => Promise<boolean>;
   hydratePersistence: () => Promise<void>;
   openProject: (recentProjectId?: string) => Promise<boolean>;
@@ -1439,7 +1466,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const moduleNodes = state.project.nodes.filter((node): node is CanvasModuleNode => node.type === 'module');
     if (moduleNodes.length === 0) return false;
     const updates = arrangeCanvasNodePositions(
-      moduleNodes.map((node) => ({ id: node.id, moduleType: node.data.moduleType, position: node.position })),
+      moduleNodes.map((node) => ({
+        id: node.id, moduleType: node.data.moduleType, position: node.position,
+        groupId: typeof node.data.config.groupId === 'string' ? node.data.config.groupId : undefined,
+        order: typeof node.data.config.order === 'number' ? node.data.config.order : undefined,
+      })),
       state.project.edges,
     );
     const nextPositions = new Map(updates.map((update) => [update.nodeId, update.position]));
@@ -1643,6 +1674,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         imageOutputFormat: nextImageQuality === undefined ? undefined : normalizeImageOutputFormat(config.imageOutputFormat),
         imageBackground: nextImageQuality === undefined ? undefined : normalizeImageBackground(config.imageBackground),
         ...(config.colorCorrection === undefined ? {} : { colorCorrection: config.colorCorrection }),
+        ...(config.imageColorCorrections === undefined ? {} : { imageColorCorrections: config.imageColorCorrections }),
       } : {}),
       outputCount: normalizeImageOutputCount(typeof config.outputCount === 'number' ? config.outputCount : undefined, node.data.moduleType === 'image_generation') ?? 1,
       ...(node.data.moduleType === 'video_generation' ? {
@@ -1763,6 +1795,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     return persistReverseAgentRunPatch(set, get, nodeId, { reverseAgentResult: merged }, 'Update reverse Agent result');
   },
   preparePersistenceForClose: async () => {
+    if (get().recoveryRequired) return false;
+    // Read-only viewers may close without attempting to persist initialization drafts.
+    if (get().saveStatus === 'read_only') return true;
+    const editorFlush = flushEditorDrafts();
+    if (editorFlush !== true && !await editorFlush) return false;
     let state = get();
     if (state.recoveryRequired) return false;
     if (state.saveStatus !== 'read_only') {
@@ -1888,6 +1925,119 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (chatSkill === undefined) throw new Error('Skill chat is unavailable');
     return chatSkill(input);
   },
+  analyzeImageLayering: async (input) => {
+    const snapshot = get();
+    if (!snapshot.projectImages.some((asset) => asset.assetId === input.sourceAssetId)) {
+      throw new Error('The selected source image is no longer available in this project.');
+    }
+    const bridge = globalThis.window?.novusDesktop?.provider;
+    if (bridge === undefined) throw new Error('Provider image-analysis bridge is unavailable.');
+    const profiles = await listRunnableProviderProfiles(bridge);
+    const profile = profiles.find((candidate) => candidate.provider === input.provider
+      && candidate.modelRoute === input.modelRoute
+      && candidate.capabilities.includes('vision'));
+    if (profile === undefined) throw new Error('The selected visual-analysis model is unavailable.');
+    const plan = await analyzeImageLayeringRequest({ ...input, profile }, get().chatSkill);
+    if (get().project.id !== snapshot.project.id
+      || !get().projectImages.some((asset) => asset.assetId === input.sourceAssetId)) {
+      throw new Error('The project or source image changed during visual analysis. Please analyze again.');
+    }
+    return plan;
+  },
+  createConfirmedLayeringGroup: async ({ plan, confirmation, groupId }) => {
+    const provider = confirmation.provider;
+    if (!(await matchesLayeringConfirmation(confirmation, plan, provider, confirmation.modelRoute, confirmation.resolution))) {
+      throw new Error('The layering plan or selected route changed after confirmation. Please review and confirm again.');
+    }
+    const confirmedProjectId = get().project.id;
+    if (!get().projectImages.some((asset) => asset.assetId === confirmation.sourceAssetId)) {
+      throw new Error('The selected source image is no longer available in this project.');
+    }
+    return enqueueStableProjectOperation(set, get, async (commitNow) => {
+      const current = get();
+      if (current.project.id !== confirmedProjectId
+        || !current.projectImages.some((asset) => asset.assetId === confirmation.sourceAssetId)) {
+        throw new Error('The project or source image changed before the layering group could be saved.');
+      }
+      const transaction = buildLayeringGraphTransaction(current.project, plan, confirmation, groupId);
+      return commitNow(transaction, { kind: 'canvas' });
+    });
+  },
+  startConfirmedLayering: async ({ plan, confirmation, groupId }) => {
+    if (!(await matchesLayeringConfirmation(confirmation, plan, confirmation.provider, confirmation.modelRoute, confirmation.resolution))) {
+      throw new Error('The selected source, layer plan, model route, or resolution changed after confirmation. Review and confirm again.');
+    }
+    const initialState = get();
+    const expectedProjectId = initialState.project.id;
+    const routeEvidence = layeringRouteEvidenceTestOverride ?? PRODUCTION_LAYERING_ROUTE_EVIDENCE;
+    if (!initialState.projectImages.some((asset) => asset.assetId === confirmation.sourceAssetId)) {
+      throw new Error('The selected source image is no longer available in this project.');
+    }
+    const bridge = globalThis.window?.novusDesktop?.provider;
+    if (bridge === undefined) throw new Error('Provider model catalog is unavailable.');
+    const profiles = await listRunnableProviderProfiles(bridge);
+    const profile = profiles.find((candidate) => candidate.provider === confirmation.provider
+      && candidate.modelRoute === confirmation.modelRoute);
+    if (profile === undefined || !eligibleForLayeringRoute(profile, routeEvidence)) {
+      throw new Error('The selected GPT Image route does not support transparent image-edit requests.');
+    }
+    const requests = await buildLayeringJobRequests(plan, confirmation, profile, groupId, routeEvidence, createModelJobRunId);
+    const projectSessionId = await resolveModelExecutionSessionId();
+    const jobStore = getModelJobStore();
+    holdGenerationJobDispatch(requests);
+    let jobs: ModelJob[] = [];
+    try {
+      jobs = await jobStore.enqueueConfirmedJobs({
+        conversationId: `image-layering-${groupId}`,
+        projectId: expectedProjectId,
+        projectSessionId,
+        confirmedAt: confirmation.confirmedAt,
+        requests,
+      });
+      const bound = await enqueueStableProjectOperation(set, get, async (commitNow) => {
+        const state = get();
+        if (modelJobProcessingSuspended || state.project.id !== expectedProjectId
+          || !state.projectImages.some((asset) => asset.assetId === confirmation.sourceAssetId)) return false;
+        const group = state.project.nodes.find((node): node is CanvasModuleNode => node.type === 'module'
+          && node.data.moduleType === 'image_layering' && node.data.config.groupId === groupId);
+        const layerNodes = state.project.nodes.filter((node): node is CanvasModuleNode => node.type === 'module'
+          && node.data.moduleType === 'image_layer' && node.data.config.groupId === groupId);
+        if (group?.type !== 'module' || layerNodes.length !== jobs.length
+          || group.data.config.sourceAssetId !== confirmation.sourceAssetId) return false;
+        const updatedLayers = layerNodes.map((node) => {
+          const job = jobs.find((candidate) => candidate.layeringLayerId === node.data.config.layerId);
+          if (job === undefined || node.data.config.status !== 'planned') throw new Error('The confirmed layering group changed before its jobs could be bound.');
+          return { ...node, data: { ...node.data, config: { ...node.data.config, jobId: job.id, status: 'queued' } } };
+        });
+        const updatedGroup = {
+          ...group,
+          data: { ...group.data, config: { ...group.data.config, status: 'queued', requestCount: jobs.length } },
+        };
+        const transaction: ProjectTransaction = {
+          id: `bind-image-layering-jobs-${groupId}`,
+          label: `保存图片分层任务 ${groupId}`,
+          operations: [
+            ...updatedLayers.map((node) => ({ kind: 'canvas' as const, operation: { kind: 'update_node' as const, node } })),
+            { kind: 'canvas', operation: { kind: 'update_node', node: updatedGroup } },
+          ],
+        };
+        return commitNow(transaction, { kind: 'canvas' });
+      });
+      const modelJobs = await jobStore.listJobs();
+      set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
+      if (!bound) {
+        await cancelHeldGenerationJobs(jobStore, requests);
+        return false;
+      }
+      releaseGenerationJobDispatch(requests);
+      void jobStore.processQueue();
+      return true;
+    } catch (error) {
+      if (jobs.length > 0) await cancelHeldGenerationJobs(jobStore, requests);
+      else releaseGenerationJobDispatch(requests);
+      throw error;
+    }
+  },
   cancelChatSkill: async (requestId) => {
     const cancelChatSkill = projectPersistenceClient.cancelChatSkill;
     return cancelChatSkill === undefined ? false : cancelChatSkill(requestId);
@@ -1993,6 +2143,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
     if (hydrated.lifecycle === 'durable') await reconcilePendingClipboardMedia(get().project.id);
+    if (hydrated.lifecycle === 'durable' && hydrated.recoveryRequired !== true && get().saveStatus === 'saved') {
+      const repair = buildDistantLayeringRepairTransaction(get().project);
+      if (repair !== null) await get().commitProjectTransaction(repair, { kind: 'system' });
+    }
     if (hydrated.recoveryRequired !== true) {
       await recoverModelJobsInBackground(jobStore);
     }
@@ -2055,6 +2209,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().migrateLegacyStarterProjectToCanvasWorkbench();
     }
     await reconcilePendingClipboardMedia(opened.project.id);
+    if (opened.lifecycle === 'durable' && opened.recoveryRequired !== true && get().saveStatus === 'saved') {
+      const repair = buildDistantLayeringRepairTransaction(get().project);
+      if (repair !== null) await get().commitProjectTransaction(repair, { kind: 'system' });
+    }
     if (opened.recoveryRequired !== true) {
       await recoverModelJobsInBackground(jobStore, { preserveOutOfScopeJobs: true, resumeOwnedJobs: true });
     }
@@ -2597,8 +2755,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     const initialSource = initialSourceNode.type === 'module' ? initialSourceNode : undefined;
     const hasFormalSource = initialSource !== undefined
       && (initialSource.data.moduleType === 'image_generation' || initialSource.data.moduleType === 'video_generation');
+    const hasLayeringSource = initialSource !== undefined && layeringRetryMatches(initialState.project, job, initialSource);
+    if ((job.layeringGroupId !== undefined || job.layeringLayerId !== undefined) && !hasLayeringSource) return;
     if (hasFormalSource && (!projectOwnsModelResult(initialState.project, job)
       || !formalGenerationJobMatchesNodeDraft(job, initialSource))) return;
+    if (hasLayeringSource) {
+      const bridge = globalThis.window?.novusDesktop?.provider;
+      if (bridge === undefined) throw new Error('Provider model catalog is unavailable for this layer retry.');
+      const profiles = await listRunnableProviderProfiles(bridge);
+      const routeEvidence = layeringRouteEvidenceTestOverride ?? PRODUCTION_LAYERING_ROUTE_EVIDENCE;
+      const profile = profiles.find((candidate) => candidate.provider === job.provider && candidate.modelRoute === job.modelRoute
+        && candidate.modelId === job.modelId);
+      if (profile === undefined || !getLayeringRouteContract(profile, routeEvidence)?.resolutions.includes(job.resolution as '1K' | '2K' | '4K')) {
+        throw new Error('The exact layer retry route does not support this transparent image-edit request.');
+      }
+    }
 
     const expectedProjectId = initialState.project.id;
     const projectSessionId = await resolveModelExecutionSessionId();
@@ -2613,6 +2784,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         || !projectOwnsModelResult(sessionState.project, job)
         || !formalGenerationJobMatchesNodeDraft(job, currentSource)) return;
     }
+    if (hasLayeringSource) {
+      const currentSource = getModuleNode(sessionState.project.nodes, job.promptNodeId);
+      if (currentSource === undefined || !layeringRetryMatches(sessionState.project, job, currentSource)
+        || !sessionState.projectImages.some((asset) => asset.assetId === job.referenceAssetIds[0])) return;
+    }
 
     const jobStore = getModelJobStore();
     const retryId = createModelJobRunId();
@@ -2624,11 +2800,33 @@ export const useAppStore = create<AppState>((set, get) => ({
         projectSessionId,
       });
 
-      if (hasFormalSource) {
-        const bound = await enqueueStableProjectOperation(set, get, async (commitNow) => {
+      if (hasFormalSource || hasLayeringSource) {
+        let bound = false;
+        try {
+          bound = await enqueueStableProjectOperation(set, get, async (commitNow) => {
           const state = get();
           if (state.project.id !== expectedProjectId || !modelJobBelongsToActiveProject(state.project, job)) return false;
           const source = getModuleNode(state.project.nodes, job.promptNodeId);
+          if (hasLayeringSource) {
+            if (source === undefined || !layeringRetryMatches(state.project, job, source)) return false;
+            const group = state.project.nodes.find((node): node is CanvasModuleNode => node.type === 'module'
+              && node.data.moduleType === 'image_layering' && node.data.config.groupId === job.layeringGroupId);
+            if (group === undefined) return false;
+            const nextLayer: CanvasModuleNode = { ...source, data: { ...source.data, config: {
+              ...source.data.config, jobId: retry.id, status: 'queued', qualityStatus: 'pending', qualityReason: undefined,
+              resultAssetId: undefined, resultJobId: undefined, resultWidth: undefined, resultHeight: undefined,
+            }, execution: { ...source.data.execution, state: 'queued' } } };
+            const nextGroup: CanvasModuleNode = { ...group, data: { ...group.data, config: {
+              ...group.data.config, status: 'queued', resultState: 'validating',
+            } } };
+            const transaction: ProjectTransaction = {
+              id: `retry-image-layer-${retry.id}`, label: 'Retry image layer job', operations: [
+                { kind: 'canvas', operation: { kind: 'update_node', node: nextLayer } },
+                { kind: 'canvas', operation: { kind: 'update_node', node: nextGroup } },
+              ],
+            };
+            return commitNow(transaction, { kind: 'canvas' });
+          }
           if (source === undefined
             || (source.data.moduleType !== 'image_generation' && source.data.moduleType !== 'video_generation')
             || !projectOwnsModelResult(state.project, job)
@@ -2660,7 +2858,15 @@ export const useAppStore = create<AppState>((set, get) => ({
             nextProject: applyProjectTransaction(state.project, transaction),
             retainRetryableFailure: false,
           });
-        }, { throwOnRecovery: true });
+          }, { throwOnRecovery: true });
+        } catch (error) {
+          if (hasLayeringSource) {
+            await jobStore.cancelQueuedJob(retry.id).catch(() => undefined);
+            const modelJobs = await jobStore.listJobs();
+            set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
+          }
+          throw error;
+        }
         if (!bound) {
           await jobStore.cancelQueuedJob(retry.id).catch(() => undefined);
           const modelJobs = await jobStore.listJobs();
@@ -3700,6 +3906,10 @@ export function replaceModelJobStorageForTests(storage: ModelJobStorage): void {
   modelJobStore = null;
 }
 
+export function replaceLayeringRouteEvidenceForTests(evidence: readonly LayeringRouteEvidence[] | null): void {
+  layeringRouteEvidenceTestOverride = evidence;
+}
+
 function enqueueStableProjectOperation(
   set: (partial: Partial<AppState>) => void,
   get: () => AppState,
@@ -3798,6 +4008,7 @@ async function commitProjectTransactionNow(
 }
 
 export function resetAppStoreForTests(options: { project?: 'empty' | 'starter' } = { project: 'starter' }): void {
+  layeringRouteEvidenceTestOverride = null;
   modelJobProcessingSuspended = false;
   modelJobProcessingBarrierToken += 1;
   modelJobDispatchHolds.clear();
@@ -4417,9 +4628,34 @@ async function recoverModelJobsInBackground(
   }
 }
 
+function layeringRetryMatches(project: CanvasProject, job: ModelJob, source: CanvasModuleNode): boolean {
+  if ((job.status !== 'failed' && job.status !== 'cancelled') || job.layeringGroupId === undefined
+    || job.layeringLayerId === undefined || source.data.moduleType !== 'image_layer'
+    || source.id !== job.promptNodeId || source.data.config.groupId !== job.layeringGroupId
+    || source.data.config.layerId !== job.layeringLayerId || source.data.config.jobId !== job.id
+    || source.data.config.sourceAssetId !== job.referenceAssetIds[0]
+    || source.data.config.modelRoute !== job.modelRoute || source.data.config.provider !== job.provider
+    || source.data.config.resolution !== job.resolution || source.data.config.qualityStatus === 'passed') return false;
+  return project.nodes.some((node) => node.type === 'module' && node.data.moduleType === 'image_layering'
+    && node.data.config.groupId === job.layeringGroupId && node.data.config.sourceAssetId === job.referenceAssetIds[0]);
+}
+
 function projectOwnsModelResult(project: CanvasProject, ownerJob: ModelJob): boolean {
   const sourceNode = project.nodes.find((node) => node.id === ownerJob.promptNodeId);
   if (sourceNode?.type !== 'module') return false;
+  if (ownerJob.layeringGroupId !== undefined || ownerJob.layeringLayerId !== undefined) {
+    return ownerJob.layeringGroupId !== undefined
+      && ownerJob.layeringLayerId !== undefined
+      && sourceNode.data.moduleType === 'image_layer'
+      && sourceNode.data.config.groupId === ownerJob.layeringGroupId
+      && sourceNode.data.config.layerId === ownerJob.layeringLayerId
+      && sourceNode.data.config.jobId === ownerJob.id
+      && sourceNode.data.config.sourceAssetId === ownerJob.referenceAssetIds[0]
+      && (sourceNode.data.config.status === 'queued'
+        || sourceNode.data.config.status === 'running'
+        || sourceNode.data.config.status === 'validating'
+        || sourceNode.data.config.status === 'completed');
+  }
   if (ownerJob.kind === 'video') {
     if (sourceNode.data.moduleType !== 'video_generation') return false;
   } else if (sourceNode.data.moduleType !== 'image_generation') {
@@ -4437,6 +4673,9 @@ function modelJobCanCommitToActiveProject(project: CanvasProject, job: ModelJob)
   if (!modelJobBelongsToActiveProject(project, job)) return false;
   const sourceNode = project.nodes.find((node) => node.id === job.promptNodeId);
   if (sourceNode === undefined) return false;
+  if (sourceNode.type === 'module' && sourceNode.data.moduleType === 'image_layer') {
+    return projectOwnsModelResult(project, job);
+  }
   if (sourceNode?.type === 'module'
     && (sourceNode.data.moduleType === 'image_generation' || sourceNode.data.moduleType === 'video_generation')) {
     return projectOwnsModelResult(project, job);
@@ -6077,6 +6316,14 @@ async function flushPendingProjectSave(
   set: (partial: Partial<AppState>) => void,
   reason: Exclude<AutosaveFlushReason, 'idle'>,
 ): Promise<boolean> {
+  const editorFlush = flushEditorDrafts();
+  if (editorFlush !== true) {
+    const editorFlushed = await withProjectPersistenceTimeout(Promise.resolve(editorFlush));
+    if (!editorFlushed) {
+      markProjectSaveRetryRequired(set, get);
+      return false;
+    }
+  }
   if (get().recoveryRequired) return false;
   if (pendingFailedProjectCommit !== null) {
     markProjectSaveRetryRequired(set, get);
@@ -6095,7 +6342,21 @@ async function flushPendingProjectSave(
     const persistStablePoint = async () => {
       const generation = projectPersistenceGeneration;
       const projectId = get().project.id;
-      const stablePoint = await withProjectPersistenceTimeout(projectPersistenceClient.stablePoint());
+      let stablePoint: Awaited<ReturnType<ProjectPersistenceClient['stablePoint']>>;
+      try {
+        stablePoint = await withProjectPersistenceTimeout(projectPersistenceClient.stablePoint());
+      } catch (error) {
+        const code = readErrorCode(error, 'UNKNOWN');
+        const retryable = error !== null && typeof error === 'object' && 'retryable' in error
+          && (error as { retryable?: unknown }).retryable === true;
+        if (get().persistenceMode !== 'desktop' || !retryable
+          || !['DURABLE_WRITE_FAILED', 'PROJECT_WRITE_FAILED', 'PERMISSION_DENIED'].includes(code)
+          || generation !== projectPersistenceGeneration || get().project.id !== projectId) throw error;
+        // Windows can briefly hold an archive or manifest while an indexer scans it.
+        // Reuse the same stable boundary once; the desktop snapshot writer is serialized.
+        await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 120));
+        stablePoint = await withProjectPersistenceTimeout(projectPersistenceClient.stablePoint());
+      }
       if (generation !== projectPersistenceGeneration || get().project.id !== projectId) return false;
       const state = get();
       const nextLifecycle = stablePoint.lifecycle ?? state.projectLifecycle;

@@ -1,0 +1,97 @@
+/* Color-only bridge for legacy canvas tokens and body-mounted portals.
+   Import last: geometry stays in the owning component stylesheets. */
+:root[data-theme],
+:root[data-theme] .workspace--canvas-layout,
+:root[data-theme] .image-layering-dialog-backdrop {
+  --gate-card: var(--surface);
+  --gate-card-muted: var(--surface-muted);
+  --gate-preview-surface: var(--canvas);
+  --gate-control-surface: var(--surface-muted);
+  --gate-border: var(--border);
+  --gate-border-strong: var(--border-strong);
+  --gate-image-border: var(--border-strong);
+  --gate-rail-surface: var(--surface);
+  --gate-rail-border: var(--border);
+  --gate-agent-surface: var(--surface);
+  --gate-topbar-surface: var(--surface);
+  --gate-panel-surface: var(--surface);
+  --gate-text: var(--text);
+  --gate-muted: var(--muted);
+  --gate-ink: var(--on-accent);
+  --gate-on-accent: var(--on-accent);
+  --gate-accent: var(--accent);
+  --gate-accent-soft: var(--accent-soft);
+  --gate-accent-border: var(--accent-soft-border);
+  --gate-reverse-control: var(--surface-muted);
+  --gate-reverse-control-border: var(--border);
+  --gate-reverse-media: var(--surface-muted);
+  --gate-reverse-media-connected: var(--accent-soft);
+}
+
+/* The settings reference now reads the same colors as every other surface. */
+:root[data-theme] body .workspace--canvas-layout .settings-drawer {
+  --settings-paper: var(--surface);
+  --settings-rail: var(--canvas);
+  --settings-field: var(--surface-muted);
+  --settings-line: var(--border);
+  --settings-ink: var(--text);
+  --settings-muted: var(--muted);
+  --accent: inherit;
+  --settings-accent: var(--accent);
+  --settings-selected: var(--accent-soft);
+}
+
+:root[data-theme] :is(.agent-panel--skill-chat, .skill-chat-workbench__image-lightbox) {
+  --agent-action: var(--accent);
+  --agent-on-action: var(--on-accent);
+  --agent-action-soft: var(--accent-soft);
+  --agent-action-text: var(--accent);
+  --agent-action-border: var(--accent-soft-border);
+}
+
+:root[data-theme] .generated-image-action-menu {
+  color: var(--text) !important;
+  background: var(--surface) !important;
+  border-color: var(--border) !important;
+}
+
+:root[data-theme] .workspace--canvas-layout :is(.settings-provider-panel, .settings-model-group) {
+  background: var(--surface) !important;
+  border-color: var(--border) !important;
+}
+
+:root[data-theme] .workspace--canvas-layout :is(.topbar-canvas-action--primary, .save-project-control__toggle) {
+  background: var(--accent) !important;
+  color: var(--on-accent) !important;
+  border-color: var(--accent-border) !important;
+}
+:root[data-theme] .workspace--canvas-layout :is(.topbar-canvas-action--primary, .save-project-control__toggle):hover:not(:disabled) {
+  background: var(--accent-hover) !important;
+}
+:root[data-theme] .workspace--canvas-layout .save-project-control__feedback[data-save-state='saved'] { color: var(--success); }
+:root[data-theme] .workspace--canvas-layout .save-project-control__feedback:is([data-save-state='pending'], [data-save-state='saving']) { color: var(--warning); }
+
+:root[data-theme] .workspace--canvas-layout .module-node[data-module-type='reverse_agent'] :is(.module-node__knowledge-trigger, .module-node__knowledge-options > label, .module-node__knowledge-picker > footer) {
+  background: var(--surface-muted) !important;
+  color: var(--text) !important;
+  border-color: var(--border) !important;
+}
+:root[data-theme] :is(.image-layering__actions button:last-child, .image-layering-dialog__button--primary) {
+  color: var(--on-accent);
+}
+
+/* Conversation surfaces use the same quiet palette as settings. */
+:root[data-theme] .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--user {
+  background: var(--accent-soft) !important;
+  border-color: var(--accent-soft-border) !important;
+  color: var(--text) !important;
+}
+:root[data-theme] .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--user > span {
+  color: var(--text-secondary) !important;
+}
+:root[data-theme] .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer {
+  border-color: var(--border-strong) !important;
+}
+:root[data-theme] .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer:focus-within {
+  border-color: var(--accent) !important;
+}

@@ -37,4 +37,25 @@ describe('CodexReasoningPopover', () => {
     expect(screen.getByRole('slider')).toBeDisabled();
     expect(screen.getByRole('slider')).toHaveAttribute('aria-valuetext', '高');
   });
+
+  it('keeps the reasoning surface compact while preserving a usable slider hit area', () => {
+    render(<Control efforts={['low', 'medium', 'high', 'xhigh', 'max']} />);
+    fireEvent.click(screen.getByRole('button', { name: '思考能力：中' }));
+    const popup = screen.getByRole('dialog', { name: '思考能力设置' });
+    expect(popup).toHaveAttribute('data-density', 'compact');
+    expect(screen.getByRole('slider', { name: '思考能力' })).toHaveAttribute('aria-valuetext', '中');
+  });
+
+  it('combines a vision model with reverse depth in the same compact control', () => {
+    const onReverseDepthChange = vi.fn();
+    render(<CodexReasoningPopover modelLabel="Vision chat" efforts={[]} value="medium" open
+      onChange={vi.fn()} onToggle={vi.fn()} onClose={vi.fn()} onSelectModel={vi.fn()}
+      reverseDepth={{ value: 'standard', onChange: onReverseDepthChange }} />);
+    expect(screen.getByRole('button', { name: '反推强度：标准反推' })).toBeEnabled();
+    const popup = screen.getByRole('dialog', { name: '模型与反推强度设置' });
+    expect(popup).toContainElement(screen.getByRole('group', { name: '反推强度' }));
+    expect(screen.queryByRole('slider', { name: '思考能力' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '深度反推' }));
+    expect(onReverseDepthChange).toHaveBeenCalledWith('deep');
+  });
 });

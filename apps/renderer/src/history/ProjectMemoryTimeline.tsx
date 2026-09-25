@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { Brain, History, RotateCcw } from 'lucide-react';
 import {
   selectActiveProjectMemoryEntries,
@@ -30,7 +30,7 @@ const MEMORY_LABELS: Record<ProjectMemoryEntry['kind'], string> = {
   decision: '决策',
 };
 
-export function ProjectMemoryTimeline({
+export const ProjectMemoryTimeline = memo(function ProjectMemoryTimeline({
   entries,
   promotionCandidates,
   availableSnapshotIds,
@@ -138,7 +138,7 @@ export function ProjectMemoryTimeline({
       )}
     </section>
   );
-}
+});
 
 function formatMemoryTime(value: string): string {
   return new Intl.DateTimeFormat('zh-CN', {

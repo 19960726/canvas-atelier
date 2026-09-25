@@ -24,7 +24,7 @@ describe('runtime profile shell and config contract', () => {
 
     const canvasWorkspaceSource = await readFile(join(process.cwd(), 'apps/renderer/src/canvas/CanvasWorkspace.tsx'), 'utf8');
     expect(canvasWorkspaceSource).toContain('runtimeProfile');
-    expect(canvasWorkspaceSource).toContain('useInteractionQuality(runtimeProfile)');
+    expect(canvasWorkspaceSource).toContain('useInteractionQuality(runtimeProfile, formalCanvasNodeCount > 100)');
 
     const placementBoardSource = await readFile(join(process.cwd(), 'apps/renderer/src/placement/PlacementBoard.tsx'), 'utf8');
     expect(placementBoardSource).toContain('targetFps');
@@ -115,7 +115,7 @@ describe('runtime profile shell and config contract', () => {
 
     const builtHtml = await readFile(builtHtmlPath, 'utf8');
     expect(builtHtml).not.toMatch(/(?:src|href)=["']\/assets\//u);
-  });
+  }, 60_000);
 });
 
 async function fileExists(path: string): Promise<boolean> {

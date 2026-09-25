@@ -111,21 +111,26 @@ export function createComflyVideoJobHandlers(options: {
       if (mapped.status === 'provider_completed') {
         if (options.storeGeneratedVideo === undefined || task.sessionId === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Generated video storage is unavailable');
         const bytes = await options.downloadResult(mapped.resultUrl);
-        assertMp4(bytes);
-        const stored = await options.storeGeneratedVideo(task.sessionId, bytes, 'video/mp4');
-        if (options.historySink !== undefined && task.historyId !== undefined) {
-          await options.historySink.succeeded(task.historyId, bytes, {
+        if (!hasMp4Signature(bytes)) {
+          result = { status: 'failed', error: normalizeProviderBridgeError(
+            createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid video result'),
+          ) };
+        } else {
+          const stored = await options.storeGeneratedVideo(task.sessionId, bytes, 'video/mp4');
+          if (options.historySink !== undefined && task.historyId !== undefined) {
+            await options.historySink.succeeded(task.historyId, bytes, {
+              ...(stored.width == null ? {} : { width: stored.width }),
+              ...(stored.height == null ? {} : { height: stored.height }),
+              ...(mapped.durationSeconds === undefined ? {} : { durationSeconds: mapped.durationSeconds }),
+            });
+          }
+          result = { status: 'completed', progress: 1, result: {
+            assetId: stored.assetId,
             ...(stored.width == null ? {} : { width: stored.width }),
             ...(stored.height == null ? {} : { height: stored.height }),
             ...(mapped.durationSeconds === undefined ? {} : { durationSeconds: mapped.durationSeconds }),
-          });
+          } };
         }
-        result = { status: 'completed', progress: 1, result: {
-          assetId: stored.assetId,
-          ...(stored.width == null ? {} : { width: stored.width }),
-          ...(stored.height == null ? {} : { height: stored.height }),
-          ...(mapped.durationSeconds === undefined ? {} : { durationSeconds: mapped.durationSeconds }),
-        } };
       } else result = mapped;
       if (result.status === 'failed' && options.historySink !== undefined && task.historyId !== undefined) {
         await options.historySink.failed(task.historyId, 'provider_failed');
@@ -176,7 +181,11 @@ function mapTaskState(value: ComflyVideoTaskState): MappedVideoTaskState {
       : `Provider video task failed: ${reason}`;
     return { status: 'failed', error: normalizeProviderBridgeError(createProviderBridgeError('PROVIDER_ERROR', message, true)) };
   }
-  if (status !== 'SUCCESS' || typeof value.data?.output !== 'string') throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid video task response');
+  if (status !== 'SUCCESS' || typeof value.data?.output !== 'string') {
+    return { status: 'failed', error: normalizeProviderBridgeError(
+      createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid video task response'),
+    ) };
+  }
   return { status: 'provider_completed', resultUrl: value.data.output, ...(typeof value.data.duration === 'number' && value.data.duration > 0 ? { durationSeconds: value.data.duration } : {}) };
 }
 
@@ -193,8 +202,8 @@ function terminalToCancel(record: ProviderTaskMappingRecord): CancelVideoJobBrid
   return result;
 }
 
-function assertMp4(bytes: Uint8Array): void {
-  if (bytes.byteLength < 12 || Buffer.from(bytes.buffer, bytes.byteOffset + 4, 4).toString('ascii') !== 'ftyp') throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid video result');
+function hasMp4Signature(bytes: Uint8Array): boolean {
+  return bytes.byteLength >= 12 && Buffer.from(bytes.buffer, bytes.byteOffset + 4, 4).toString('ascii') === 'ftyp';
 }
 
 function assertComfly(provider: string): asserts provider is 'comfly' {

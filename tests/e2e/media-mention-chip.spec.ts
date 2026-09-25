@@ -21,20 +21,24 @@ for (const theme of ['light', 'dark'] as const) {
 
     await openAgentPanel(page);
     const panel = page.getByTestId('agent-panel');
-    await panel.getByRole('tab', { name: '对话' }).click();
+    await panel.getByLabel('Agent 模式').selectOption('chat');
     await panel.getByTestId('agent-model-trigger').click();
     await panel.getByRole('button', { name: '使用 gpt-5.6-sol' }).first().click();
+
+    await expect(panel.getByRole('group', { name: '反推强度' })).toHaveCount(0);
 
     const input = panel.getByTestId('agent-composer-input');
     await input.fill('@');
     const menu = panel.getByRole('menu', { name: 'Reference images' });
-    await menu.getByRole('button', { name: '浏览项目图片' }).click();
     await expect(menu.getByRole('menuitem', { name: 'Mention Chip product' })).toBeVisible();
     await expect(menu.getByRole('menuitem', { name: 'Mention Chip motion' })).toHaveCount(0);
     await expect(menu).not.toContainText('Chip motion');
     await menu.getByRole('menuitem', { name: 'Mention Chip product' }).click();
     await expect(input).toContainText('图片1');
     await expect(input).not.toContainText('@');
+    await expect(panel.getByRole('button', { name: '反推强度：标准反推' })).toBeVisible();
+    await panel.getByRole('button', { name: '反推强度：标准反推' }).click();
+    await expect(panel.getByRole('dialog', { name: '模型与反推强度设置' }).getByRole('group', { name: '反推强度' })).toBeVisible();
 
     const imageChip = input.locator('[data-media-mention="image"]', { hasText: '图片1' });
     await expect(imageChip).toBeVisible();

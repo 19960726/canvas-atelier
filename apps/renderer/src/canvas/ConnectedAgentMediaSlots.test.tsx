@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConnectedAgentMediaSlots, type ConnectedAgentMediaSlotItem } from './ConnectedAgentMediaSlots';
@@ -22,6 +22,16 @@ describe('ConnectedAgentMediaSlots', () => {
     expect(screen.getByRole('img', { name: 'Image A' })).toBeVisible();
     expect(screen.getByLabelText('Video A 视频封面')).toBeVisible();
     expect(screen.getByLabelText('Agent media slot 4')).toHaveTextContent('4');
+  });
+
+  it('opens an image reference preview on double click without treating video slots as images', () => {
+    const onPreview = vi.fn();
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} onPreview={onPreview} />);
+
+    fireEvent.doubleClick(screen.getByRole('img', { name: 'Image A' }));
+    expect(onPreview).toHaveBeenCalledWith(media[0], 0);
+    fireEvent.doubleClick(screen.getByLabelText('Video A 视频封面'));
+    expect(onPreview).toHaveBeenCalledTimes(1);
   });
 
   it('hydrates thumbnail metadata when a restored slot keeps the same durable identity', () => {
@@ -64,6 +74,22 @@ describe('ConnectedAgentMediaSlots', () => {
 
     expect(screen.getByLabelText('Agent media slot 3')).toHaveAttribute('title', '3. Video B');
     expect(screen.getByLabelText('Video B 视频封面')).toHaveAttribute('src', 'blob:video-b');
+  });
+
+  it('restores the acknowledged order when a reorder is rejected', async () => {
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} onReorder={async () => false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Move Image A right' }));
+    await waitFor(() => expect(screen.getByLabelText('Agent media slot 1')).toHaveAttribute('title', '1. Image A'));
+    expect(screen.getByRole('alert')).toHaveTextContent('换位未保存');
+  });
+
+  it('cancels a pointer reorder released outside the tray', () => {
+    const onReorder = vi.fn();
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} onReorder={onReorder} />);
+    fireEvent.pointerDown(screen.getByLabelText('Agent media slot 1'), { button: 0 });
+    fireEvent.pointerUp(document.body);
+    fireEvent.pointerUp(screen.getByLabelText('Agent media slot 3'));
+    expect(onReorder).not.toHaveBeenCalled();
   });
 
   it('renders only connected media instead of inventing empty slot thumbnails', () => {
@@ -240,14 +266,14 @@ describe('ConnectedAgentMediaSlots', () => {
     expect(css).toContain('pointer-events: none !important;');
     expect(css).toMatch(/module-node__agent-media-slot-row::-webkit-scrollbar\s*\{[^}]*height:\s*6px/isu);
   });
-  it('marks the tray as overflowing after ten slots so the scrollbar rail is explicit', () => {
-    const elevenMedia = Array.from({ length: 11 }, (_, index): ConnectedAgentMediaSlotItem => ({
+  it('shows an explicit scrollbar as soon as the material tray exceeds seven slots', () => {
+    const eightMedia = Array.from({ length: 8 }, (_, index): ConnectedAgentMediaSlotItem => ({
       edgeId: `edge-${index + 1}`,
       kind: 'image',
       assetId: `image-${index + 1}`,
       label: `Image ${index + 1}`,
     }));
-    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" slotRowAriaLabel="Scrollable media slots" media={elevenMedia} />);
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" slotRowAriaLabel="Scrollable media slots" media={eightMedia} />);
 
     const row = screen.getByLabelText('Scrollable media slots');
     expect(row).toHaveAttribute('data-overflow', 'true');
@@ -270,7 +296,9 @@ describe('ConnectedAgentMediaSlots', () => {
     Object.defineProperty(row, 'clientWidth', { configurable: true, value: 180 });
     Object.defineProperty(row, 'scrollWidth', { configurable: true, value: 520 });
     Object.defineProperty(row, 'scrollLeft', { configurable: true, writable: true, value: 0 });
-    fireEvent.wheel(row, { deltaX: 0, deltaY: 64 });
+    const wheel = new WheelEvent('wheel', { deltaX: 0, deltaY: 64, bubbles: true, cancelable: true });
+    fireEvent(row, wheel);
+    expect(wheel.defaultPrevented).toBe(true);
     expect(row.scrollLeft).toBe(64);
   });
   it('keeps reorder controls inside their own slot hit area', () => {

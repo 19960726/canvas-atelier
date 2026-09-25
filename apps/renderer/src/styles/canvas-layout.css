@@ -9096,6 +9096,11 @@
   gap: 2px;
   width: 226px;
 }
+.workspace--canvas-layout .generation-parameter-popover__menu[data-layout='ratio-grid'] > button:disabled {
+  opacity: .42;
+  cursor: not-allowed;
+  filter: grayscale(.45);
+}
 .workspace--canvas-layout .generation-parameter-popover__menu[data-layout='clarity-list'] {
   display: grid;
   gap: 2px;
@@ -12391,4 +12396,355 @@
   top: 224px !important;
   bottom: auto !important;
   transform: translateY(-50%) !important;
+}
+/* IMAGE GENERATION COLOR COMPARISON CONTRACT */
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] > .module-node__header {
+  display: contents !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] > .module-node__header > :is(
+  .module-node__icon,
+  .module-node__heading
+) {
+  display: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] > .module-node__header > [class~='module-node__lock'] {
+  position: absolute !important;
+  z-index: 245 !important;
+  top: -32px !important;
+  right: auto !important;
+  left: 64px !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  width: 24px !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  padding: 0 !important;
+  background: var(--gate-card) !important;
+  border: 1px solid var(--gate-border) !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) > .module-node__header > [class~='module-node__lock'] {
+  top: -43px !important;
+  left: 74px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false']
+) .module-node__generation-collapsed-title {
+  top: -30px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  width: max-content !important;
+  height: 20px !important;
+  min-height: 20px !important;
+  padding: 0 !important;
+  color: var(--gate-text) !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+  line-height: 20px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false']
+) .module-node__generation-collapsed-title::before {
+  display: none !important;
+  content: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false']
+) > .module-node__summary > .module-node__task-timing {
+  top: -30px !important;
+  right: 0 !important;
+  z-index: 8 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__workbench-header {
+  top: -36px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__workbench-header > b {
+  display: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__collapse-editor {
+  top: -43px !important;
+  right: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) > .module-node__summary > .module-node__task-timing {
+  top: -43px !important;
+  right: 54px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='true']
+) .module-node__generation-result-toolbar {
+  top: -45px !important;
+  left: 50% !important;
+  z-index: 240 !important;
+  width: max-content !important;
+  max-width: 430px !important;
+  transform: translateX(-50%) !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-result-toolbar .module-node__color-correction {
+  margin: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-result-toolbar .module-node__color-correction-bar {
+  display: flex !important;
+  gap: 0 !important;
+  min-height: 34px !important;
+  padding: 2px !important;
+  overflow: hidden !important;
+  background: color-mix(in srgb, var(--gate-card) 94%, transparent) !important;
+  border: 1px solid var(--gate-border-strong) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, .12) !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-result-toolbar .module-node__color-correction-bar > button {
+  min-height: 28px !important;
+  padding: 0 9px !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-right: 1px solid var(--gate-border) !important;
+  border-radius: 5px !important;
+  white-space: nowrap !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-result-toolbar .module-node__color-correction-bar > button:last-child {
+  border-right: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-result-toolbar .module-node__color-correction-bar > button:hover:not(:disabled),
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-result-toolbar .module-node__color-correction-trigger[aria-expanded='true'],
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-result-toolbar .module-node__color-correction-compare[aria-pressed='true'] {
+  color: var(--gate-accent) !important;
+  background: var(--gate-accent-soft) !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-result-toolbar .module-node__color-correction-reset {
+  width: 30px !important;
+  padding: 0 !important;
+  justify-content: center !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-result-toolbar .module-node__color-correction-reset > span {
+  display: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-result-toolbar .module-node__color-correction-panel {
+  position: absolute !important;
+  top: 39px !important;
+  left: 50% !important;
+  z-index: 260 !important;
+  box-sizing: border-box !important;
+  width: 400px !important;
+  max-width: calc(100vw - 32px) !important;
+  transform: translateX(-50%) !important;
+  border-radius: 8px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-result-toolbar .module-node__color-correction-panel > header {
+  align-items: center !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-result-toolbar .module-node__color-correction-panel > header span {
+  max-width: 260px !important;
+  line-height: 1.4 !important;
+  text-align: right !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-editor-preview {
+  isolation: isolate !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-comparison-stage {
+  position: relative !important;
+  z-index: 1 !important;
+  box-sizing: border-box !important;
+  width: 448px !important;
+  height: 100% !important;
+  min-width: 448px !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  border-radius: 12px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-comparison-stage > .module-node__generation-preview-gallery {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 448px !important;
+  height: 100% !important;
+  min-width: 448px !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-comparison-original {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 4 !important;
+  width: 100% !important;
+  height: 100% !important;
+  overflow: hidden !important;
+  clip-path: inset(0 calc(100% - var(--image-comparison-position)) 0 0) !important;
+  pointer-events: none !important;
+  border-radius: 12px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__generation-comparison-original > .module-node__generation-preview-gallery {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-range {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 7 !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  opacity: 0 !important;
+  appearance: none !important;
+  background: transparent !important;
+  pointer-events: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-range::-webkit-slider-thumb {
+  width: 30px !important;
+  height: 56px !important;
+  appearance: none !important;
+  cursor: ew-resize !important;
+  pointer-events: auto !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-range::-moz-range-thumb {
+  width: 30px !important;
+  height: 56px !important;
+  cursor: ew-resize !important;
+  pointer-events: auto !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-divider {
+  position: absolute !important;
+  z-index: 6 !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  width: 2px !important;
+  transform: translateX(-1px) !important;
+  background: rgba(255, 255, 255, .96) !important;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, .42), 0 0 10px rgba(15, 23, 42, .24) !important;
+  pointer-events: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-handle {
+  position: absolute !important;
+  top: 50% !important;
+  left: 50% !important;
+  display: block !important;
+  width: 22px !important;
+  height: 38px !important;
+  transform: translate(-50%, -50%) !important;
+  background: var(--gate-card) !important;
+  border: 1px solid rgba(15, 23, 42, .28) !important;
+  border-radius: 7px !important;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, .2) !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-handle::before,
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-handle::after {
+  position: absolute !important;
+  top: 11px !important;
+  width: 1px !important;
+  height: 14px !important;
+  content: '' !important;
+  background: var(--gate-muted) !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-handle::before { left: 8px !important; }
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-handle::after { right: 8px !important; }
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-range:focus-visible + .module-node__image-comparison-divider .module-node__image-comparison-handle {
+  outline: 2px solid var(--gate-accent) !important;
+  outline-offset: 2px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-label {
+  position: absolute !important;
+  top: 10px !important;
+  min-width: max-content !important;
+  padding: 3px 6px !important;
+  color: #fff !important;
+  background: rgba(15, 23, 42, .72) !important;
+  border-radius: 4px !important;
+  font-size: 10px !important;
+  font-weight: 650 !important;
+  line-height: 16px !important;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, .18) !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-label--original {
+  right: 10px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']
+  .module-node__image-comparison-label--corrected {
+  left: 10px !important;
 }

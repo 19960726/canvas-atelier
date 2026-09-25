@@ -4,6 +4,9 @@ export interface AutoLayoutNode {
   readonly id: string;
   readonly moduleType: CanvasModuleType;
   readonly position: { readonly x: number; readonly y: number };
+  readonly groupId?: string;
+  readonly order?: number;
+  readonly layoutSize?: { readonly width: number; readonly height: number };
 }
 
 export interface AutoLayoutEdge {
@@ -33,6 +36,8 @@ const NODE_SIZES: Partial<Record<CanvasModuleType, { readonly width: number; rea
   image_input: { width: 292, height: 326 },
   upload_image: { width: 292, height: 326 },
   video_input: { width: 138, height: 108 },
+  image_layer: { width: 320, height: 300 },
+  image_layering: { width: 440, height: 700 },
 };
 
 const FALLBACK_NODE_SIZE = { width: 420, height: 320 };
@@ -43,12 +48,88 @@ interface LayoutGroup {
   readonly height: number;
 }
 
+const LAYER_COLUMN_GAP = 36;
+const LAYER_ROW_GAP = 36;
+const LAYER_COMPOSITE_GAP = 88;
+
+export function canvasLayoutNodeSize(moduleType: CanvasModuleType): { readonly width: number; readonly height: number } {
+  return NODE_SIZES[moduleType] ?? FALLBACK_NODE_SIZE;
+}
+
+/** Reserve the same compact geometry for initial placement and Arrange Canvas. */
+export function layeringBundleGeometry(layerCount: number): {
+  readonly width: number;
+  readonly height: number;
+  readonly layerOffsets: readonly { readonly x: number; readonly y: number }[];
+  readonly compositeOffset: { readonly x: number; readonly y: number };
+} {
+  const count = Math.max(1, layerCount);
+  const columns = Math.min(3, Math.ceil(Math.sqrt(count)));
+  const rows = Math.ceil(count / columns);
+  const layerSize = canvasLayoutNodeSize('image_layer');
+  const compositeSize = canvasLayoutNodeSize('image_layering');
+  const layerHeight = rows * layerSize.height + (rows - 1) * LAYER_ROW_GAP;
+  const compositeHeight = Math.max(compositeSize.height, 420 + count * 40);
+  const height = Math.max(layerHeight, compositeHeight);
+  const gridWidth = columns * layerSize.width + (columns - 1) * LAYER_COLUMN_GAP;
+  return {
+    width: gridWidth + LAYER_COMPOSITE_GAP + compositeSize.width,
+    height,
+    layerOffsets: Array.from({ length: layerCount }, (_, index) => ({
+      x: (index % columns) * (layerSize.width + LAYER_COLUMN_GAP),
+      y: (height - layerHeight) / 2 + Math.floor(index / columns) * (layerSize.height + LAYER_ROW_GAP),
+    })),
+    compositeOffset: { x: gridWidth + LAYER_COMPOSITE_GAP, y: (height - compositeHeight) / 2 },
+  };
+}
+
+function bundleLayeringNodes(nodes: readonly AutoLayoutNode[], edges: readonly AutoLayoutEdge[]): {
+  nodes: AutoLayoutNode[];
+  edges: AutoLayoutEdge[];
+  offsets: ReadonlyMap<string, readonly { readonly id: string; readonly x: number; readonly y: number }[]>;
+} {
+  const members = new Map<string, string>();
+  const offsets = new Map<string, readonly { readonly id: string; readonly x: number; readonly y: number }[]>();
+  const virtualNodes: AutoLayoutNode[] = [];
+  for (const composite of nodes.filter((node) => node.moduleType === 'image_layering' && node.groupId)) {
+    const layers = nodes.filter((node) => node.moduleType === 'image_layer' && node.groupId === composite.groupId)
+      .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id));
+    if (layers.length === 0) continue;
+    const geometry = layeringBundleGeometry(layers.length);
+    const bundleId = `layout-bundle:${composite.id}`;
+    for (const member of [...layers, composite]) members.set(member.id, bundleId);
+    offsets.set(bundleId, [
+      ...layers.map((layer, index) => ({ id: layer.id, ...geometry.layerOffsets[index]! })),
+      { id: composite.id, ...geometry.compositeOffset },
+    ]);
+    virtualNodes.push({
+      id: bundleId, moduleType: 'image_layering', position: composite.position,
+      layoutSize: { width: geometry.width, height: geometry.height },
+    });
+  }
+  virtualNodes.push(...nodes.filter((node) => !members.has(node.id)));
+  const virtualEdges: AutoLayoutEdge[] = [];
+  const seen = new Set<string>();
+  for (const edge of edges) {
+    const source = members.get(edge.source) ?? edge.source;
+    const target = members.get(edge.target) ?? edge.target;
+    const key = `${source}\u0000${target}`;
+    if (source === target || seen.has(key)) continue;
+    seen.add(key);
+    virtualEdges.push({ source, target });
+  }
+  return { nodes: virtualNodes, edges: virtualEdges, offsets };
+}
+
 /** Arrange connected workflows as compact groups with left-to-right dependency layers. */
 export function arrangeCanvasNodePositions(
   nodes: readonly AutoLayoutNode[],
   edges: readonly AutoLayoutEdge[],
 ): AutoLayoutPosition[] {
   if (nodes.length === 0) return [];
+  const bundled = bundleLayeringNodes(nodes, edges);
+  nodes = bundled.nodes;
+  edges = bundled.edges;
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const outgoing = new Map<string, string[]>();
   const incoming = new Map<string, string[]>();
@@ -108,7 +189,7 @@ export function arrangeCanvasNodePositions(
   const columnOffsets = cumulativeOffsets(columnWidths, GROUP_COLUMN_GAP);
   const rowOffsets = cumulativeOffsets(rowHeights, GROUP_ROW_GAP);
 
-  return groups.flatMap((group, index) => {
+  const arranged = groups.flatMap((group, index) => {
     const column = index % groupColumnCount;
     const row = Math.floor(index / groupColumnCount);
     return group.positions.map(({ nodeId, position }) => ({
@@ -117,6 +198,13 @@ export function arrangeCanvasNodePositions(
         x: START_X + (columnOffsets[column] ?? 0) + position.x,
         y: START_Y + (rowOffsets[row] ?? 0) + position.y,
       },
+    }));
+  });
+  return arranged.flatMap(({ nodeId, position }) => {
+    const members = bundled.offsets.get(nodeId);
+    return members === undefined ? [{ nodeId, position }] : members.map((member) => ({
+      nodeId: member.id,
+      position: { x: position.x + member.x, y: position.y + member.y },
     }));
   });
 }
@@ -192,7 +280,7 @@ function layoutConnectedComponent(
 }
 
 function nodeSize(node: AutoLayoutNode): { readonly width: number; readonly height: number } {
-  return NODE_SIZES[node.moduleType] ?? FALLBACK_NODE_SIZE;
+  return node.layoutSize ?? canvasLayoutNodeSize(node.moduleType);
 }
 
 function cumulativeOffsets(sizes: readonly number[], gap: number): number[] {

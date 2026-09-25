@@ -128,6 +128,15 @@ const JOURNAL_PAYLOAD_KEYS = JOURNAL_RECORD_KEYS.filter((key) => key !== 'payloa
 
 const journalRegistry = new Map<string, JournalRegistryEntry>();
 
+// Current-project reads repeatedly visit the same durable history while typing.
+// Cache only successfully validated, exact serialized records; every read still
+// checks disk bytes, commit boundary and the caller's project/revision chain.
+const validatedJournalLines = new Map<string, JournalRecord>();
+// Cover the normal 200-record / 4 MiB rotation window without unbounded retention.
+const MAX_VALIDATED_JOURNAL_LINES = 256;
+const MAX_VALIDATED_JOURNAL_CHARACTERS = 8 * 1024 * 1024;
+let validatedJournalCharacters = 0;
+
 export class JournalWriter {
   private readonly activeJournalPath: string;
   private readonly fileSystem: FileSystem;
@@ -338,6 +347,8 @@ export class JournalWriter {
 
 export function resetJournalWriterRegistryForTests(): void {
   journalRegistry.clear();
+  validatedJournalLines.clear();
+  validatedJournalCharacters = 0;
 }
 
 export function releaseJournalState(activeJournalPath: string, projectId?: string): void {
@@ -702,6 +713,13 @@ export function replayJournal(
 }
 
 function parseJournalLine(line: string): JournalRecord {
+  const cached = validatedJournalLines.get(line);
+  if (cached !== undefined) {
+    validatedJournalLines.delete(line);
+    validatedJournalLines.set(line, cached);
+    // A caller may mutate its result; it must never change subsequent reads.
+    return structuredClone(cached);
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -723,7 +741,18 @@ function parseJournalLine(line: string): JournalRecord {
     throw corruptJournal('Journal record checksum is invalid');
   }
 
-  return parseJournalPayload(payload, payloadSha256);
+  const record = parseJournalPayload(payload, payloadSha256);
+  if (line.length <= MAX_VALIDATED_JOURNAL_CHARACTERS) {
+    while (validatedJournalLines.size >= MAX_VALIDATED_JOURNAL_LINES
+      || validatedJournalCharacters + line.length > MAX_VALIDATED_JOURNAL_CHARACTERS) {
+      const oldest = validatedJournalLines.keys().next().value!;
+      validatedJournalLines.delete(oldest);
+      validatedJournalCharacters -= oldest.length;
+    }
+    validatedJournalLines.set(line, structuredClone(record));
+    validatedJournalCharacters += line.length;
+  }
+  return record;
 }
 
 async function readJournalCommitBoundary(

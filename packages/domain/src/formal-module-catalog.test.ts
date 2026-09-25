@@ -17,6 +17,8 @@ const CURRENT_TYPES = [
   'text_prompt',
   'image_generation',
   'video_generation',
+  'image_layer',
+  'image_layering',
   'image_editor',
   'drawing_mask',
   'local_redraw',
@@ -81,6 +83,7 @@ describe('formal current module catalog', () => {
       ['mask', 'mask_asset', 'input', 'one', false],
       ['pose', 'pose_data', 'input', 'one', false],
       ['result', 'generation_result', 'output', 'one', true],
+      ['image', 'image_asset', 'output', 'one', false],
     ]);
     expect(portSnapshot('reverse_agent')).toEqual([
       ['references', 'media_asset', 'input', 'many', false],
@@ -119,6 +122,15 @@ describe('formal current module catalog', () => {
       ['workflow', 'sanitized_workflow', 'input', 'one', true],
       ['result', 'generation_result', 'output', 'one', true],
     ]));
+  });
+
+  it('advertises AI layering for generated image assets without replacing the generation result port', () => {
+    const imageGeneration = getCanvasModuleDefinition('image_generation');
+    expect(imageGeneration.ports).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'result', direction: 'output', dataType: 'generation_result' }),
+      expect.objectContaining({ id: 'image', direction: 'output', dataType: 'image_asset', required: false }),
+    ]));
+    expect(imageGeneration.recommendedDownstreamModuleTypes).toContain('image_layering');
   });
 
   it('keeps production renderer sources free of the historical Reverse Agent typo', () => {

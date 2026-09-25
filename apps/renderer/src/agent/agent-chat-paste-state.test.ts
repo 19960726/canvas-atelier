@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   attachPastedReference,
   createPasteImportState,
@@ -23,6 +23,22 @@ const image = (assetId: string, label: string, mentionPosition: number): PasteRe
 });
 
 describe('agent chat paste state', () => {
+  it('does not scan reference catalogs for plain typing and keeps unchanged citations stable', () => {
+    const readId = vi.fn(() => 'a');
+    const reference = { ...image('a', 'A', 0), get assetId() { return readId(); } };
+    const references = [reference];
+    const empty = { text: '', citations: [] };
+    expect(reducePasteComposer(empty, 'plain text', references).citations).toBe(empty.citations);
+    expect(readId).not.toHaveBeenCalled();
+    const current = { text: '@图片1', citations: [{ assetId:'a', label:'A' }] };
+    const first = reducePasteComposer(current, '@图片1 一', references);
+    const afterFirst = readId.mock.calls.length;
+    expect(first.citations).toBe(current.citations);
+    expect(reducePasteComposer(first, '@图片1 一条建议', references).citations).toBe(current.citations);
+    expect(readId).toHaveBeenCalledTimes(afterFirst);
+    expect(reducePasteComposer(first, '@图片1', [image('a', 'A new', 0)]).citations).toEqual([{assetId:'a',label:'A new'}]);
+    expect(reducePasteComposer(first, 'mention removed', references).citations).toEqual([]);
+  });
   it('matches complete mention tokens so 图片10 does not retain 图片1', () => {
     const references = [image('a', 'A', 0), image('b', 'B', 9)];
     const reduced = reducePasteComposer({

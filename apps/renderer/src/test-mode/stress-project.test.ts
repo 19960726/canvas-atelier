@@ -2,8 +2,28 @@ import { describe, expect, it } from 'vitest';
 import { validateCanvasModuleGraph } from '@agent-canvas/domain';
 
 import { createDurableCanvasStressProject } from './stress-project';
+import { auditedComflyCanvasProfiles } from './comfly-audited-models';
 
 describe('durable canvas stress fixture', () => {
+  it('uses supported offline video parameters without triggering a migration autosave during measurement', () => {
+    const fixture = createDurableCanvasStressProject();
+    const videos = fixture.project.nodes.filter((node) => node.type === 'module' && node.data.moduleType === 'video_generation');
+
+    expect(videos).toHaveLength(29);
+    for (const node of videos) {
+      if (node.type !== 'module') throw new Error('Expected a module node');
+      const profile = auditedComflyCanvasProfiles.find((candidate) => candidate.modelRoute === node.data.config.modelRoute);
+      expect(profile, `offline video route for ${node.id}`).toBeDefined();
+      expect(profile!.capabilities).toContain('video_generation');
+      expect(profile!.constraints?.video?.aspectRatios).toContain(node.data.config.aspectRatio);
+      expect(profile!.constraints?.video?.resolutions).toContain(node.data.config.resolution);
+      const duration = profile!.constraints?.video?.duration;
+      expect(duration?.mode).toBe('options');
+      if (duration?.mode !== 'options') throw new Error('Expected bounded duration options');
+      expect(duration.options).toContain(node.data.config.durationSeconds);
+    }
+  });
+
   it('creates the deterministic real 300-node and 500-edge acceptance graph', () => {
     const fixture = createDurableCanvasStressProject();
 

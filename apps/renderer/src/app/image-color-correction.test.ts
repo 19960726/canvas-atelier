@@ -9,6 +9,7 @@ import {
   imageColorCorrectionMatrix,
   normalizeImageColorCorrection,
   resolveImageColorCorrection,
+  resolveImageColorAnalysis,
   renderImageColorCorrectionBlob,
 } from './image-color-correction';
 
@@ -23,6 +24,31 @@ function chroma(pixel: ArrayLike<number>): number {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('image color correction', () => {
+  it.each([
+    [[232, 218, 191, 255], [186, 174, 153, 255]],
+    [[192, 214, 232, 255], [154, 171, 186, 255]],
+    [[200, 230, 201, 255], [160, 184, 161, 255]],
+  ])('gently reduces a highlight cast without neutralizing the scene lighting', (highlight, shadow) => {
+    const sample = pixels([highlight, shadow]);
+    const correction = analyzeImageColorCorrection(sample);
+    const output = applyImageColorCorrectionToPixels(sample, correction);
+    expect(chroma(output)).toBeLessThan(chroma(highlight));
+    expect(chroma(output)).toBeGreaterThan(chroma(highlight) * 0.65);
+    expect(correction.saturation).toBe(100);
+    expect(output[3]).toBe(255);
+  });
+  it('preserves warm kitchen lighting and product colors when pale surfaces are ambiguous white-balance references', () => {
+    const sample = pixels([
+      [232, 218, 191, 255], [224, 209, 184, 255], [218, 203, 180, 255],
+      [144, 97, 61, 255], [190, 26, 22, 255], [240, 224, 198, 255],
+    ]);
+    const output = applyImageColorCorrectionToPixels(sample, analyzeImageColorCorrection(sample));
+    for (let index = 0; index < sample.length; index++) {
+      expect(Math.abs(output[index]! - sample[index]!)).toBeLessThanOrEqual(5);
+    }
+    expect(output[0]! - output[2]!).toBeGreaterThanOrEqual(32);
+    expect(output[16]!).toBeGreaterThan(185);
+  });
   it('keeps new and legacy untouched results on their original pixels until the user opts in', () => {
     expect(normalizeImageColorCorrection(undefined).mode).toBe('original');
     expect(DEFAULT_IMAGE_COLOR_CORRECTION.mode).toBe('original');
@@ -174,6 +200,17 @@ describe('image color correction', () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn(), getImageData: () => ({ data: new Uint8ClampedArray([180, 180, 180, 255]) }), putImageData: vi.fn() } as never);
     vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback, type) => callback(new Blob(['png'], { type })));
     expect((await renderImageColorCorrectionBlob('novus-asset://analysis/neutral-jpeg', AUTO_IMAGE_COLOR_CORRECTION)).type).toBe('image/png');
+  });
+
+  it('reports an unreadable automatic analysis and retries instead of caching a false success', async () => {
+    let attempts = 0;
+    vi.stubGlobal('Image', class {
+      onerror: (() => void) | null = null;
+      set src(_value: string) { attempts++; queueMicrotask(() => this.onerror?.()); }
+    });
+    expect((await resolveImageColorAnalysis('novus-asset://analysis/retry-failure')).status).toBe('unavailable');
+    expect((await resolveImageColorAnalysis('novus-asset://analysis/retry-failure')).status).toBe('unavailable');
+    expect(attempts).toBe(2);
   });
 
   it('fails safely to unchanged pixels if image analysis cannot read the source', async () => {

@@ -63,7 +63,7 @@ for (const viewport of viewports) {
     await openAgentPanel(page);
     const agentPanel = page.getByTestId('agent-panel');
     await expect(page.getByTestId('agent-composer-input')).toBeVisible();
-    await expect(agentPanel).toHaveCSS('width', `${Math.min(560, viewport.width)}px`);
+    await expect(agentPanel).toHaveCSS('width', `${Math.min(440, viewport.width - 16)}px`);
     if (viewport.width >= 760) {
       const [canvasStageBox, agentPanelBox] = await Promise.all([
         page.getByTestId('canvas-stage').boundingBox(),
@@ -82,11 +82,9 @@ for (const viewport of viewports) {
     await expect(page.getByTestId('module-library')).toBeVisible();
     await page.evaluate(() => window.__NOVUS_E2E__?.createModule('image_generation', { x: 440, y: 120 }));
     const imageGenerationNode = page.locator('[data-module-type="image_generation"]').last();
-    await expect(imageGenerationNode).toHaveCSS('width', '654px');
-    await expect(imageGenerationNode).toHaveCSS('background-color', 'rgb(15, 20, 29)');
-    // Canvas UI Gate gives image generation its dedicated image-card border,
-    // while the reverse card keeps the shared neutral card border below.
-    await expect(imageGenerationNode).toHaveCSS('border-color', 'rgb(24, 169, 153)');
+    await expect(imageGenerationNode).toHaveCSS('width', '448px');
+    // The current generation card separates its preview surface from the
+    // transparent node shell; a shell color is no longer a layout invariant.
     await page.evaluate((position) => window.__NOVUS_E2E__?.createModule('reverse_agent', position), {
       x: viewport.width < 760 ? 16 : 900,
       y: 120,
@@ -100,7 +98,15 @@ for (const viewport of viewports) {
         `${Math.min(404, viewport.width - 32)}px`,
       );
     }
-    await expect(reverseAgentNode).toHaveCSS('border-color', 'rgb(58, 80, 101)');
+    const reverseBorder = await reverseAgentNode.evaluate((element) => {
+      const probe = document.createElement('div');
+      element.append(probe);
+      probe.style.borderColor = 'var(--gate-border)';
+      const color = getComputedStyle(probe).borderColor;
+      probe.remove();
+      return color;
+    });
+    await expect(reverseAgentNode).toHaveCSS('border-color', reverseBorder);
 
     await page.getByTestId('module-library-close').click();
     await expect(page.getByTestId('module-library')).toBeHidden();

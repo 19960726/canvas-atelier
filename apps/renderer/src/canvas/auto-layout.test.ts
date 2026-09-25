@@ -6,6 +6,28 @@ function node(id: string, moduleType: AutoLayoutNode['moduleType'], x: number, y
 }
 
 describe('arrangeCanvasNodePositions', () => {
+  it('keeps a seven-layer split beside its source in a compact grid when arranging a larger workflow', () => {
+    const source = node('source', 'image_generation', 100, 100);
+    const upstream = node('upstream', 'image_input', 0, 100);
+    const layers = Array.from({ length: 7 }, (_, index) => ({
+      ...node(`layer-${index}`, 'image_layer', 500, 200 + index * 400),
+      groupId: 'split', order: index,
+    }));
+    const composite = { ...node('composite', 'image_layering', 1500, 100), groupId: 'split' };
+    const output = node('output', 'result_output', 2100, 100);
+    const positions = arrangeCanvasNodePositions([upstream, source, ...layers, composite, output], [
+      { source: 'upstream', target: 'source' }, { source: 'source', target: 'composite' },
+      ...layers.map((layer) => ({ source: layer.id, target: 'composite' })),
+      { source: 'composite', target: 'output' },
+    ]);
+    const byId = new Map(positions.map((entry) => [entry.nodeId, entry.position]));
+    const splitPositions = layers.map((layer) => byId.get(layer.id)!);
+    expect(new Set(splitPositions.map((position) => position.x)).size).toBeGreaterThan(1);
+    expect(Math.max(...splitPositions.map((position) => position.y)) - Math.min(...splitPositions.map((position) => position.y))).toBeLessThan(1200);
+    expect(byId.get('source')!.x).toBeLessThan(Math.min(...splitPositions.map((position) => position.x)));
+    expect(byId.get('composite')!.x).toBeGreaterThan(Math.max(...splitPositions.map((position) => position.x)));
+    expect(byId.get('output')!.x).toBeGreaterThan(byId.get('composite')!.x);
+  });
   it('places a directed workflow in increasing dependency layers without duplicate positions', () => {
     const nodes = [
       node('result', 'reverse_result', 12, 700),

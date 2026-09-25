@@ -19,9 +19,11 @@ import type {
   ProjectHydrationResult,
   ProjectPersistenceClient,
 } from '../app/desktop-persistence';
-import { calculateModuleInsertionPosition, calculateModulePlacement, CanvasWorkspace, createCanvasConnectionValidator, getCompatibleQuickInsertModuleTypes, getCompatibleQuickInsertSourceModuleTypes, getModulePlacementSize, getWorkbenchFocusTarget, isCanvasModuleDropSurface, isValidCanvasConnection, resolveQuickInsertConnection, resolveSelectedMediaPasteTarget, selectAgentProjectMemoryIds, setConnectorPreviewQuality, shouldAutoFocusFlowNode, shouldCloseAgentForModuleLibrary, type ModulePlacementBounds } from './CanvasWorkspace';
+import { calculateModuleInsertionPosition, calculateModulePlacement, CanvasWorkspace, createCanvasConnectionValidator, getCompatibleQuickInsertModuleTypes, getCompatibleQuickInsertSourceModuleTypes, getModulePlacementSize, getWorkbenchFocusTarget, isCanvasModuleDropSurface, isValidCanvasConnection, resolveQuickInsertConnection, resolveVisibleImageGenerationConnection, resolveVisibleImageLayeringConnection, resolveSelectedMediaPasteTarget, selectAgentProjectMemoryIds, setConnectorPreviewQuality, shouldAutoFocusFlowNode, shouldCloseAgentForModuleLibrary, type ModulePlacementBounds } from './CanvasWorkspace';
 import { MODULE_DRAG_MIME } from './ModuleLibrary';
 import { CONNECTED_MEDIA_DRAG_MIME, encodeConnectedMediaDragPayload } from './connected-media-drag';
+import * as mcpSelection from '../app/mcp-canvas-selection';
+import * as canvasProviderProfiles from '../app/provider-profiles';
 
 const appStyles = readFileSync('apps/renderer/src/styles/app.css', 'utf8');
 const canvasHybridStyles = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
@@ -44,17 +46,96 @@ afterEach(() => {
 });
 
 describe('CanvasWorkspace', () => {
-  async function renderLargeGraph() {
+  it('does not rebuild model catalogs when a durable node position changes', async () => {
+    const buildRoutes = vi.spyOn(canvasProviderProfiles, 'buildCanvasProviderRouteSets');
+    const { store, nodes } = await renderLargeGraph();
+    buildRoutes.mockClear();
+
+    await act(async () => {
+      expect(await useAppStore.getState().commitNodePositions([
+        { nodeId: nodes[0]!.id, position: { x: 120, y: 140 } },
+      ])).toBe(true);
+    });
+
+    expect(store.getState().nodes.find((node) => node.id === nodes[0]!.id)?.position).toEqual({ x: 120, y: 140 });
+    expect(buildRoutes).not.toHaveBeenCalled();
+  });
+
+  it('refreshes saved image route variants when a node is added or its route changes', async () => {
+    const buildRoutes = vi.spyOn(canvasProviderProfiles, 'buildCanvasProviderRouteSets');
+    await renderLargeGraph();
+    const added = createCanvasModuleNode('saved-route-node', 'image_generation', { x: 8000, y: 100 });
+    added.data.config.modelRoute = 'comfly/saved-image-4k';
+    const duplicate = createCanvasModuleNode('saved-route-node-duplicate', 'image_generation', { x: 8400, y: 100 });
+    duplicate.data.config.modelRoute = 'comfly/saved-image-4k';
+    buildRoutes.mockClear();
+
+    act(() => useAppStore.getState().setProject({
+      ...useAppStore.getState().project,
+      nodes: [...useAppStore.getState().project.nodes, added, duplicate],
+    }));
+    expect(buildRoutes.mock.calls[buildRoutes.mock.calls.length - 1]?.[2]?.slice(-2)).toEqual(['comfly/saved-image-4k', 'comfly/saved-image-4k']);
+    buildRoutes.mockClear();
+
+    await act(async () => {
+      await useAppStore.getState().draftGenerationNodeConfig(duplicate.id, { prompt: '', modelRoute: 'comfly/saved-image-2k' });
+    });
+    expect(buildRoutes.mock.calls[buildRoutes.mock.calls.length - 1]?.[2]?.slice(-2)).toEqual(['comfly/saved-image-4k', 'comfly/saved-image-2k']);
+  });
+
+  it('keeps unrelated node data and model catalogs stable when a prompt draft changes', async () => {
+    const { store, nodes } = await renderLargeGraph();
+    const before = store.getState().nodes;
+    await act(async () => { await useAppStore.getState().draftGenerationNodeConfig(nodes[1]!.id, { prompt: '新的提示词' }); });
+    const after = store.getState().nodes;
+    expect(after.find(node => node.id === nodes[1]!.id)?.data.config).toMatchObject({ prompt: '新的提示词' });
+    expect(after.find(node => node.id === nodes[0]!.id)?.data).toBe(before.find(node => node.id === nodes[0]!.id)?.data);
+    expect(after.find(node => node.id === nodes[3]!.id)?.data).toBe(before.find(node => node.id === nodes[3]!.id)?.data);
+  });
+  it('does not rebuild external selection while a selected node only changes position', async () => {
+    const {store,nodes}=await renderLargeGraph();
+    act(()=>store.getState().onNodesChange?.([{id:nodes[0]!.id,type:'select',selected:true}]));
+    const selection=vi.spyOn(mcpSelection,'setMcpCanvasSelection');
+    for(let index=0;index<10;index++) act(()=>store.getState().onNodesChange?.([{id:nodes[0]!.id,type:'position',position:{x:100+index,y:100},dragging:true}]));
+    expect(selection).not.toHaveBeenCalled();
+    act(()=>store.getState().onNodesChange?.([{id:nodes[1]!.id,type:'select',selected:true}]));
+    expect(selection).toHaveBeenLastCalledWith(expect.objectContaining({nodeIds:expect.arrayContaining([nodes[0]!.id,nodes[1]!.id])}));
+  });
+  it('keeps connection validation stable across transient node position frames', async () => {
+    const { store, nodes } = await renderLargeGraph();
+    const validator = store.getState().isValidConnection;
+    expect(validator).toBeTypeOf('function');
+
+    for (let index = 0; index < 10; index += 1) {
+      act(() => store.getState().onNodesChange?.([{
+        id: nodes[0]!.id,
+        type: 'position',
+        position: { x: 100 + index, y: 100 },
+        dragging: true,
+      }]));
+      expect(store.getState().isValidConnection).toBe(validator);
+    }
+  });
+  async function renderLargeGraph(nodeCount = 42) {
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
       bottom: 600, height: 600, left: 0, right: 800, top: 0, width: 800, x: 0, y: 0,
       toJSON: () => ({}),
     } as DOMRect);
-    const nodes = Array.from({ length: 42 }, (_, index) => createCanvasModuleNode(
+    const nodes = Array.from({ length: nodeCount }, (_, index) => createCanvasModuleNode(
       `viewport-node-${index}`,
       index % 2 === 0 ? 'image_input' : 'image_generation',
       { x: index < 2 ? index * 350 : 5000 + index * 600, y: 20 },
     ));
-    const edges = Array.from({ length: 21 }, (_, index) => ({
+    // Keep initial image draft normalization out of the later position and
+    // viewport assertions, regardless of when its debounce timer fires.
+    for (const node of nodes) {
+      if (node.data.moduleType === 'image_generation') {
+        Object.assign(node.data.config, {
+          prompt: '', modelRoute: '', aspectRatio: '1:1', outputCount: 1, imageColorCorrections: {},
+        });
+      }
+    }
+    const edges = Array.from({ length: Math.floor(nodeCount / 2) }, (_, index) => ({
       id: `viewport-edge-${index}`,
       source: nodes[index * 2]!.id,
       sourcePortId: 'image',
@@ -104,12 +185,26 @@ describe('CanvasWorkspace', () => {
 
   it('retains the complete graph and minimap when native visibility culling hides distant node renderers', async () => {
     const { store, nodes, edges } = await renderLargeGraph();
+    await act(async () => new Promise<void>((resolve) => setTimeout(resolve, 450)));
 
     expect(store.getState().nodes.map((node) => node.id)).toEqual(nodes.map((node) => node.id));
     expect(store.getState().edges.map((edge) => edge.id)).toEqual(edges.map((edge) => edge.id));
     expect(document.querySelectorAll('.react-flow__minimap-node')).toHaveLength(nodes.length);
     expect(document.querySelectorAll('.react-flow__node').length).toBeLessThan(nodes.length);
     expect(store.getState().nodeLookup.has('viewport-node-41')).toBe(true);
+  });
+
+  it('keeps the minimap opt-in on a large canvas while preserving user access to it', async () => {
+    const { store, nodes } = await renderLargeGraph(120);
+
+    expect(store.getState().nodes).toHaveLength(nodes.length);
+    expect(document.querySelectorAll('.react-flow__minimap-node')).toHaveLength(0);
+    const toggle = screen.getByRole('button', { name: '显示大型画布导航地图' });
+    expect(toggle).toBeVisible();
+    fireEvent.click(toggle);
+    expect(document.querySelectorAll('.react-flow__minimap-node')).toHaveLength(nodes.length);
+    fireEvent.click(screen.getByRole('button', { name: '隐藏大型画布导航地图' }));
+    expect(document.querySelectorAll('.react-flow__minimap-node')).toHaveLength(0);
   });
 
   it('does not replace controlled graph arrays or workspace callbacks on each viewport frame', async () => {
@@ -144,6 +239,45 @@ describe('CanvasWorkspace', () => {
       'video_generation',
     ]));
     expect(getCompatibleQuickInsertModuleTypes(source, 'image')).not.toContain('video_result');
+  });
+
+  it('routes the single visible image-generation socket to each typed downstream input', () => {
+    const source = createCanvasModuleNode('generated-image', 'image_generation', { x: 0, y: 0 });
+    const imageTarget = createCanvasModuleNode('layer-image', 'image_layering', { x: 320, y: 0 });
+    const resultTarget = createCanvasModuleNode('result', 'result_output', { x: 320, y: 320 });
+    const nodes = [source, imageTarget, resultTarget].map((node) => ({ id: node.id, type: node.type, position: node.position, data: node.data }));
+    const toImage = { source: source.id, sourceHandle: 'result', target: imageTarget.id, targetHandle: 'image' };
+    const toResult = { source: source.id, sourceHandle: 'result', target: resultTarget.id, targetHandle: 'result' };
+
+    expect(resolveVisibleImageGenerationConnection(toImage, nodes).sourceHandle).toBe('image');
+    expect(resolveVisibleImageGenerationConnection(toResult, nodes).sourceHandle).toBe('result');
+    expect(isValidCanvasConnection(toImage, nodes, [])).toBe(true);
+    expect(isValidCanvasConnection(toResult, nodes, [])).toBe(true);
+    expect(getCompatibleQuickInsertModuleTypes(source, 'result')).toContain('image_layering');
+    expect(resolveQuickInsertConnection({ direction: 'from-source', nodeId: source.id, handleId: 'result', position: { x: 0, y: 0 } }, source, imageTarget)?.sourceHandle).toBe('image');
+  });
+
+  it('routes a single visible layering input to the original or independent layer collection', () => {
+    const original = createCanvasModuleNode('original', 'image_input', { x: 0, y: 0 });
+    const layerA = createCanvasModuleNode('layer-a', 'image_layer', { x: 0, y: 200 });
+    const layerB = createCanvasModuleNode('layer-b', 'image_layer', { x: 0, y: 400 });
+    const composite = createCanvasModuleNode('composite', 'image_layering', { x: 500, y: 0 });
+    layerA.data.config.groupId = 'same-layering-group';
+    layerB.data.config.groupId = 'same-layering-group';
+    composite.data.config.groupId = 'same-layering-group';
+    const nodes = [original, layerA, layerB, composite].map((node) => ({ id: node.id, type: node.type, position: node.position, data: node.data }));
+    const originalConnection = { source: original.id, sourceHandle: 'image', target: composite.id, targetHandle: 'image' };
+    const layerConnection = { source: layerA.id, sourceHandle: 'image', target: composite.id, targetHandle: 'image' };
+    const existingEdges: Edge[] = [{ id: 'original-edge', ...originalConnection }];
+
+    expect(resolveVisibleImageLayeringConnection(originalConnection, nodes).targetHandle).toBe('image');
+    expect(resolveVisibleImageLayeringConnection(layerConnection, nodes).targetHandle).toBe('layerImages');
+    const externalLayer = createCanvasModuleNode('external-layer', 'image_layer', { x: 0, y: 600 });
+    externalLayer.data.config.groupId = 'another-group';
+    expect(resolveVisibleImageLayeringConnection({ ...layerConnection, source: externalLayer.id }, [...nodes, { id: externalLayer.id, type: externalLayer.type, position: externalLayer.position, data: externalLayer.data }]).targetHandle).toBe('image');
+    expect(isValidCanvasConnection(layerConnection, nodes, existingEdges)).toBe(true);
+    expect(isValidCanvasConnection({ ...layerConnection, source: layerB.id }, nodes, [...existingEdges, { id: 'layer-a-edge', ...resolveVisibleImageLayeringConnection(layerConnection, nodes) }])).toBe(true);
+    expect(resolveQuickInsertConnection({ direction: 'from-source', nodeId: layerA.id, handleId: 'image', position: { x: 0, y: 0 } }, layerA, composite)?.targetHandle).toBe('layerImages');
   });
 
   it('offers compatible upstream modules when a target input port is released on blank canvas', () => {
@@ -1445,7 +1579,6 @@ describe('CanvasWorkspace', () => {
       const workspace = screen.getByTestId('workspace');
       const selectors: readonly [string, string][] = [
         ['.project-button', '5px'],
-        ['.icon-button', '7px'],
         ['.topbar-canvas-action', '8px'],
         ['.tool-button', '8px'],
       ];
@@ -1569,7 +1702,7 @@ describe('CanvasWorkspace', () => {
     const opener = screen.getByTestId('agent-toggle');
 
     fireEvent.click(opener);
-    fireEvent.click(screen.getByTestId('agent-panel-close'));
+    fireEvent.click(screen.getByTestId('agent-panel').querySelector('.floating-agent__header [data-testid="agent-panel-close"]')!);
 
     expect(screen.getByTestId('agent-panel')).not.toBeVisible();
     expect(opener).toHaveFocus();
@@ -3105,7 +3238,7 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('RelayMe Chat Active'));
     fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
@@ -3184,7 +3317,7 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('RelayMe Vision Chat'));
     fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
@@ -3216,7 +3349,7 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '打开设置' }));
     fireEvent.click(await screen.findByTestId('settings-drawer-close'));
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('RelayMe Chat After Save'));
   });
@@ -3225,7 +3358,7 @@ describe('CanvasWorkspace', () => {
     useAppStore.setState({ knowledgeBases: [knowledgeState()] });
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.click(screen.getByRole('button', { name: '展开上下文' }));
     expect(screen.getByText('scene-skill')).toBeVisible();
@@ -3437,7 +3570,7 @@ describe('CanvasWorkspace', () => {
     openAgent();
     expect(document.querySelector('.reference-order')).toBeNull();
     expect(screen.getByLabelText('Agent 对话工作台')).toBeVisible();
-    expect(within(screen.getByTestId('agent-panel')).getByText('Agent 对话', { selector: '.agent-panel__header strong' })).toBeVisible();
+    expect(within(screen.getByTestId('agent-panel')).getByText('Agent 对话', { selector: '.floating-agent__drag strong' })).toBeVisible();
     expect(screen.queryByText('anget对话')).not.toBeInTheDocument();
     expect(screen.queryByTestId('agent-tab-plan')).not.toBeInTheDocument();
     expect(screen.queryByTestId('agent-tab-memory')).not.toBeInTheDocument();
@@ -3486,7 +3619,7 @@ describe('CanvasWorkspace', () => {
     const edgesBefore = useAppStore.getState().project.edges;
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: 'Suggest a headline.' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -3564,7 +3697,7 @@ describe('CanvasWorkspace', () => {
       kind: 'update_node',
       node: { data: { prompt: '@Scene' } },
     });
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     expect(screen.getByLabelText('向 Agent 发送消息')).toHaveValue('');
 
     fireEvent.click(screen.getByRole('button', { name: '上移 Product / Move Product up' }));
@@ -3733,7 +3866,7 @@ describe('CanvasWorkspace', () => {
     const nodesBefore = useAppStore.getState().project.nodes;
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: 'Review this canvas.' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -3779,7 +3912,7 @@ describe('CanvasWorkspace', () => {
     ]);
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
     expect(screen.queryByRole('button', { name: '使用 Image only' })).not.toBeInTheDocument();
@@ -3817,7 +3950,7 @@ describe('CanvasWorkspace', () => {
     ]);
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('GPT-5.4'));
     fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
@@ -3845,7 +3978,7 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '生成一张产品主图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -3890,7 +4023,7 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '生成 GPT 产品主图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -3918,7 +4051,7 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '生成一张产品主图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -3943,7 +4076,7 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '生成一张产品主图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -3957,7 +4090,7 @@ describe('CanvasWorkspace', () => {
     const chat = installSkillChatBridgeForTests();
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'chat' } });
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: 'Only analyze this canvas.' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));

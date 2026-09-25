@@ -34,6 +34,7 @@ import {
   createElectronClipboardImageAdapter,
   createElectronClipboardVideoAdapter,
   createElectronNetComflyFetch,
+  createElectronPhotoshopWebpDecoder,
   createElectronTrustedImageDecoder,
   createNodeWindowsPhotoshopSmartObjectAdapter,
   createApprovedSnapshotSyncClientFromEnv,
@@ -93,9 +94,32 @@ const mcpBridgeEntryPath = app.isPackaged
 const photoshopResourceRoot = app.isPackaged
   ? join(process.resourcesPath, 'photoshop')
   : join(currentDir, 'photoshop');
+const createSandboxedImageDecodeWindow = () => {
+  const window = new BrowserWindow({
+    width: 1,
+    height: 1,
+    show: false,
+    skipTaskbar: true,
+    webPreferences: {
+      backgroundThrottling: false,
+      contextIsolation: true,
+      devTools: false,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  return window;
+};
+const photoshopWebpDecoder = createElectronPhotoshopWebpDecoder({
+  createWindow: createSandboxedImageDecodeWindow,
+  nativeImage,
+});
 const photoshopSmartObjectAdapter = createNodeWindowsPhotoshopSmartObjectAdapter({
+  decodeWebpFromPath: photoshopWebpDecoder,
   platform: process.platform,
   jsxResourcePath: join(photoshopResourceRoot, 'photoshop-place-smart-object.jsx'),
+  nativeImage,
   runnerResourcePath: join(photoshopResourceRoot, 'photoshop-windows-runner.js'),
 });
 const diagnosticsChannel = 'novus-desktop:safe-mode-failure';
@@ -299,7 +323,9 @@ app.whenReady().then(async () => {
   };
   const generationHistorySink = new GenerationHistoryProviderSink({
     store: generationHistoryStore,
-    trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage),
+    trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage, {
+      createWebpDecodeWindow: createSandboxedImageDecodeWindow,
+    }),
   });
   const providerDesktopHandlers = desktopHandlers;
   if (providerDesktopHandlers === null) throw new Error('Desktop provider storage is unavailable');

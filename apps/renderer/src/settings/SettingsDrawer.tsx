@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Cable, Check, Copy, Database, Eye, EyeOff, KeyRound, Layers3, Link2, RefreshCw, ShieldCheck, X } from 'lucide-react';
+import { Cable, Check, Copy, Database, Eye, EyeOff, KeyRound, Layers3, Link2, RefreshCw, ShieldCheck, SlidersHorizontal, X } from 'lucide-react';
 import { createCodexWorkflowContract, type McpPermissionFlags } from '@agent-canvas/domain';
 import type { ThemePreference } from '../theme/theme';
 import type {
@@ -226,6 +226,7 @@ export function SettingsDrawer({
   const [updateState, setUpdateState] = useState<UpdateState>({ status: 'idle' });
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>('api');
+  const settingsBodyRef = useRef<HTMLDivElement>(null);
   const codexWorkflowContract = createCodexWorkflowContract();
   const codexClientStatus = mcpClientStatuses.find((item) => item.client === 'codex');
   const highestCodexReasoningEffort = findHighestCodexReasoningEffort(codexCliProfiles ?? []);
@@ -813,6 +814,7 @@ export function SettingsDrawer({
       const result = await withProviderOperationTimeout(provider.checkConnection({ provider: providerId }), PROVIDER_CONNECTION_CHECK_TIMEOUT_MS);
       setConnectionState(result.status);
       if (result.status === 'connected') {
+        setMessage(`${providerName} 连接成功，正在同步模型目录…`);
         const refreshResult = await refreshAvailableModels(providerId);
         setMessage(refreshResult.ok
           ? refreshResult.reverseCount > 0
@@ -934,7 +936,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
     try {
       await onConfigureKnowledgeBase?.(knowledgeBaseId, displayName);
       await onRefreshKnowledge?.();
-      setMessage(`${displayName} 已完成本机同步检查`);
+      setMessage(`${displayName} 已完成本机版本检查`);
     } catch {
       setMessage(`${displayName} 同步失败，请检查桌面连接与网络状态`);
     } finally {
@@ -951,7 +953,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
         await onConfigureKnowledgeBase?.(item.knowledgeBaseId, item.displayName);
       }
       await onRefreshKnowledge?.();
-      setMessage('两个知识库已完成本机同步检查');
+      setMessage('两个知识库已完成本机版本检查');
     } catch {
       setMessage('知识库同步失败，请检查桌面连接与网络状态');
     } finally {
@@ -993,13 +995,13 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
 
   const cleanUnusedMedia = async () => {
     if (!bridge?.history?.purgeExpired || cleaningStorage) return;
-    if (typeof window !== 'undefined' && !window.confirm('将清理回收站中已过期且未被项目引用的媒体缓存，是否继续？')) return;
+    if (typeof window !== 'undefined' && !window.confirm('将清理回收站中已过期且未被项目引用的历史媒体，是否继续？')) return;
     setCleaningStorage(true);
     setMessage(null);
     try {
       const result = await bridge.history.purgeExpired({ operationId: `settings-cleanup-${Date.now()}` });
       setCapacity(await bridge.history.getCapacity());
-      setMessage(`已清理 ${result.purgedIds.length} 个未使用媒体项`);
+      setMessage(`已清理 ${result.purgedIds.length} 个到期的回收站媒体项`);
     } catch {
       setMessage('清理失败，媒体仍保留在本地存储中');
     } finally {
@@ -1011,39 +1013,53 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
   return <>
     <aside className="settings-drawer" aria-label="设置 / Settings" data-canvas-surface="settings" data-testid="settings-drawer">
       <header className="settings-drawer__header">
-        <div data-testid="settings-drawer-heading">
-          <strong>设置</strong>
-          <span>Settings</span>
+        <div className="settings-brand" data-testid="settings-drawer-heading">
+          <span className="settings-brand__icon" aria-hidden="true"><SlidersHorizontal size={19} /></span>
+          <div><strong>设置</strong><span>Canvas Atelier / Settings</span></div>
         </div>
         <button className="icon-button" type="button" data-testid="settings-drawer-close" aria-label="关闭设置" title="关闭设置" onClick={closeSettings}>
           <X size={16} />
         </button>
       </header>
-      <div className="settings-tabs" role="tablist" aria-label="设置分类" data-canvas-tabs="segmented">
+      <div className="settings-navigation">
+      <span className="settings-navigation__caption">工作空间</span>
+      <div className="settings-tabs" role="tablist" aria-label="设置分类" data-canvas-tabs="navigation">
         {([
-          ['api', 'API 与模型'],
-          ['storage', '存储与备份'],
-          ['mcp', 'MCP 联动'],
-          ['sync', '同步'],
-        ] as const).map(([id, label]) => (
+          ['api', 'API 与模型', KeyRound],
+          ['storage', '存储与备份', Database],
+          ['mcp', 'MCP 联动', Cable],
+          ['sync', '同步', RefreshCw],
+        ] as const).map(([id, label, Icon]) => (
           <button
             key={id}
             type="button"
             role="tab"
+            id={`settings-tab-${id}`}
+            aria-controls={`settings-panel-${id}`}
             aria-selected={activeTab === id}
             className={activeTab === id ? 'is-active' : undefined}
-            onClick={() => setActiveTab(id)}
+            onClick={() => {
+              setActiveTab(id);
+              if (settingsBodyRef.current) settingsBodyRef.current.scrollTop = 0;
+            }}
           >
-            {label}
+            <Icon size={17} aria-hidden="true" /><span>{label}</span>
           </button>
         ))}
       </div>
-      <div className="settings-drawer__body">
+      <div className="settings-navigation__footer"><ShieldCheck size={17} aria-hidden="true" /><span>本机安全存储<small>凭据由桌面端管理</small></span></div>
+      </div>
+      <div ref={settingsBodyRef} className="settings-drawer__body" role="tabpanel" id={`settings-panel-${activeTab}`} aria-labelledby={`settings-tab-${activeTab}`}>
+        <div className="settings-page-heading">
+          <span>偏好设置 / {({ api: '连接', storage: '数据', mcp: '扩展', sync: '知识' } as const)[activeTab]}</span>
+          <h2>{({ api: 'API 与模型', storage: '存储与备份', mcp: 'MCP 联动', sync: '知识库与同步' } as const)[activeTab]}</h2>
+          <p>{({ api: '连接你的 AI 服务，为每种创作选择合适的模型。', storage: '管理本机媒体、缓存位置与项目备份。', mcp: '让创作工具与画布协同，按需开放访问权限。', sync: '管理本机知识库，查看版本与连接状态。' } as const)[activeTab]}</p>
+        </div>
         {activeTab === 'api' && <>
         <section className="settings-section settings-provider-overview settings-layer" aria-labelledby="provider-settings-title" data-testid="settings-api-status-layer">
           <header>
             <span><KeyRound size={16} /></span>
-            <div><strong id="provider-settings-title">API 与模型</strong><small>四站独立凭据 · 按任务路由</small></div>
+            <div><strong id="provider-settings-title">供应商路由</strong><small>独立连接 · 按任务选择模型</small></div>
             <b data-provider-state={effectiveActiveProvider === null ? 'missing' : 'configured'}>{effectiveActiveProvider === null ? '尚未设置优先供应商' : `当前优先：${formatProviderName(effectiveActiveProvider)}`}</b>
           </header>
           <p>Comfly、RelayMe、巨轮 API 与 4D AI 各自保存连接和模型目录。巨轮只提供视频路由；连接检测不会执行付费生成。</p>
@@ -1145,28 +1161,29 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
               const key = createProviderProfileKey(profile);
               setEnabledProfileKeys((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
             }}
+            onToggleFamily={(members, nextEnabled) => {
+              const keys = new Set(members.map(createProviderProfileKey));
+              setEnabledProfileKeys((current) => nextEnabled
+                ? [...new Set([...current, ...keys])]
+                : current.filter((key) => !keys.has(key)));
+            }}
             onDefaultProfileChange={(capability, profileKey) => setDefaultProfileKeys((current) => ({ ...current, [capability]: profileKey }))}
           />
         </div>
-        <button className="settings-section__primary settings-model-save" type="button" disabled={!provider?.updateProfiles || savingDefaults || providerProfiles.length === 0} onClick={() => { void saveDefaultModels(); }}>{savingDefaults ? '保存中…' : `保存 ${formatProviderName(catalogProvider ?? selectedProvider)} 模型选择`}</button>
+        <div className="settings-model-save-row"><button className="settings-section__primary settings-model-save" type="button" disabled={!provider?.updateProfiles || savingDefaults || providerProfiles.length === 0} onClick={() => { void saveDefaultModels(); }}>{savingDefaults ? '保存中…' : `保存 ${formatProviderName(catalogProvider ?? selectedProvider)} 模型选择`}</button></div>
         <section className="settings-section settings-layer settings-diagnostics-layer" aria-label="诊断与更新" data-testid="settings-diagnostics-layer">
           <header><span><RefreshCw size={16} /></span><div><strong>诊断与更新</strong><small>快速确认连接、模型目录和桌面版本状态</small></div></header>
           <div className="settings-diagnostics-summary"><span data-connection-state={connectionState}>{connectionLabel(connectionState)}</span><span>{providerProfiles.length ? `${providerProfiles.length} 个模型已加载` : '模型目录待同步'}</span></div>
           <button className="settings-section__secondary" type="button" onClick={() => setActiveTab('sync')}>打开同步与应用更新</button>
         </section>
         </>}        {activeTab === 'storage' && <>
-        <section className="settings-section settings-download-directory settings-layer" aria-label="下载输出目录" data-testid="settings-storage-directory-layer">
-          <header><div><strong>下载输出目录</strong><small>固定目录开启后直接写入该目录；关闭后每次下载都会询问保存位置。</small></div><label className="settings-inline-switch"><input type="checkbox" aria-label="固定下载输出目录" /><i /></label></header>
-          <input aria-label="当前下载输出目录" value="系统下载目录" readOnly />
-          <div className="settings-directory-actions">
-            <button className="settings-section__secondary" type="button" disabled>打开下载目录</button>
-            <button className="settings-section__secondary" type="button" disabled>自定义下载目录</button>
-            <button className="settings-section__secondary" type="button">使用系统下载目录</button>
-          </div>
+        <section className="settings-section settings-download-directory settings-layer" aria-label="下载保存位置" data-testid="settings-storage-directory-layer">
+          <header><div><strong>下载保存位置</strong><small>导出图片或视频时，由系统保存窗口选择位置。</small></div></header>
+          <p className="settings-storage-mode"><Check size={15} aria-hidden="true" />下载时由系统窗口选择位置</p>
         </section>
 
         <section className="settings-section settings-local-storage settings-layer" aria-label="本地保存" data-testid="settings-storage-local-layer">
-          <header><span><Database size={16} /></span><div><strong>本地保存</strong><small>查看本机占用空间、下载位置和可再生成缓存。</small></div><button className="settings-section__secondary settings-storage-refresh" type="button" disabled={!bridge?.history} onClick={() => { void bridge?.history?.getCapacity().then(setCapacity); }}><span className="settings-action-content"><RefreshCw size={14} />刷新</span></button></header>
+          <header><span><Database size={16} /></span><div><strong>本地保存</strong><small>查看历史媒体占用与缓存存储路径。</small></div><button className="settings-section__secondary settings-storage-refresh" type="button" disabled={!bridge?.history} onClick={() => { void bridge?.history?.getCapacity().then(setCapacity); }}><span className="settings-action-content"><RefreshCw size={14} />刷新</span></button></header>
           <label className="settings-cache-directory-field">
             <span>缓存存储路径</span>
             <input aria-label="当前缓存路径" value={cacheDirectory?.path ?? (bridge?.storage ? '正在读取…' : '仅桌面版可选择缓存路径')} readOnly />
@@ -1179,22 +1196,14 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
           </div>
           {cacheError && <p className="settings-cache-directory-error" role="alert">{cacheError}</p>}
           <div className="settings-storage-stat-grid">
-            <article><span>画布原图</span><strong>{capacity ? formatBytes(capacity.activeBytes) : '—'}</strong><small>{capacity ? `${capacity.activeCount} 个文件` : '桌面服务连接后显示'}</small></article>
-            <article><span>作品输出</span><strong>{capacity ? formatBytes(capacity.activeBytes) : '—'}</strong><small>{capacity ? `${capacity.activeCount} 个文件` : '桌面服务连接后显示'}</small></article>
-            <article><span>运行缓存</span><strong>{capacity ? formatBytes(capacity.trashBytes) : '—'}</strong><small>可清理，不影响作品</small></article>
+            <article><span>历史媒体</span><strong>{capacity ? formatBytes(capacity.activeBytes) : '—'}</strong><small>{capacity ? `${capacity.activeCount} 个有效媒体项` : '桌面服务连接后显示'}</small></article>
+            <article><span>已移入回收站</span><strong>{capacity ? formatBytes(capacity.trashBytes) : '—'}</strong><small>{capacity ? `${capacity.trashCount} 个媒体项；仅到期项可清理` : '桌面服务连接后显示'}</small></article>
           </div>
         </section>
 
-        <section className="settings-section settings-clearable-cache settings-layer" aria-label="可清理缓存" data-testid="settings-storage-card" data-canvas-layout="storage">
-          <header><div><strong>可清理缓存</strong><small>只清理可再生成缓存，不删除作品或画布原图。</small></div><button className="settings-danger-button settings-cache-primary-action" type="button" disabled={!capacity || cleaningStorage} onClick={() => { void cleanUnusedMedia(); }}>{cleaningStorage ? '清理中…' : '清理全部缓存'}</button></header>
-          <div className="settings-cache-grid">
-            {[
-              ['输入缓存', '0 B', '0 个文件'],
-              ['缩略图缓存', capacity ? formatBytes(capacity.trashBytes) : '—', capacity ? `${capacity.trashCount} 个文件` : '桌面服务连接后显示'],
-              ['浏览器缓存', '0 B', '页面运行产生，可再生成'],
-              ['会话缓存', capacity ? formatBytes(capacity.activeBytes) : '—', '当前运行产生，可再生成'],
-            ].map(([label, size, summary]) => <article key={label}><span>{label}</span><strong>{size}</strong><small>{summary}</small><button className="settings-cache-item-action" type="button" disabled={!capacity || cleaningStorage} onClick={() => { void cleanUnusedMedia(); }}>{cleaningStorage ? '清理中…' : '清理'}</button></article>)}
-          </div>
+        <section className="settings-section settings-clearable-cache settings-layer" aria-label="过期回收站媒体" data-testid="settings-storage-card" data-canvas-layout="storage">
+          <header><div><strong>过期回收站媒体</strong><small>只处理已到期且未被项目引用的历史媒体；保留作品与画布原图。</small></div><button className="settings-danger-button settings-cache-primary-action" type="button" disabled={!capacity || cleaningStorage} onClick={() => { void cleanUnusedMedia(); }}>{cleaningStorage ? '清理中…' : '清理过期回收站媒体'}</button></header>
+          <p className="settings-storage-note">回收站中的媒体到期前仍可恢复。清理后会刷新上方容量。</p>
           {message && <p role="status">{message}</p>}
         </section>
         </>}
@@ -1313,28 +1322,22 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
         )}
         {activeTab === 'sync' && <>
         <section className="settings-section settings-sync-panel settings-layer" aria-labelledby="knowledge-sync-title" data-testid="settings-sync-card">
-          <header><span><RefreshCw size={16} /></span><div><strong id="knowledge-sync-title">同步与成长记忆</strong><small>Knowledge sync across devices</small></div><b data-provider-state="configured">已开启</b></header>
-          <p>离线时先存本机；恢复网络后同步知识库版本与成长记忆。</p>
+          <header><span><RefreshCw size={16} /></span><div><strong id="knowledge-sync-title">本机知识库</strong><small>版本与状态检查</small></div></header>
+          <p>检查场景 Skill 与电商知识库在本机的版本和状态。</p>
           <article className="settings-sync-primary">
-            <header><i /><strong>Canvas 同步（推荐）</strong><span>已开启</span></header>
-            <p>使用同步 ID 和恢复密钥跨设备保存知识库状态，不上传模型密钥。</p>
-            <small>最近状态 · {knowledgeSyncItems.some((item) => item.sync?.status === 'syncing') ? '同步中' : '本机已检查'}</small>
-            <button type="button" disabled={!onRefreshKnowledge || syncingAllKnowledge} onClick={() => { void syncAllKnowledge(); }}>{syncingAllKnowledge ? '同步中…' : '立即同步全部'}</button>
+            <header><i /><strong>知识库版本</strong><span>本机</span></header>
+            <p>按需检查两个知识库；结果以各自的状态和版本为准。</p>
+            <small>最近状态 · {knowledgeSyncItems.some((item) => item.sync?.status === 'syncing') ? '检查中' : '等待检查'}</small>
+            <button type="button" disabled={!onRefreshKnowledge || syncingAllKnowledge} onClick={() => { void syncAllKnowledge(); }}>{syncingAllKnowledge ? '检查中…' : '检查全部知识库'}</button>
           </article>
           <div className="settings-sync-knowledge-list" role="group" aria-label="知识库同步列表">
             {knowledgeSyncItems.map((item) => <article key={item.knowledgeBaseId}>
               <div><i data-sync-state={item.sync?.status ?? 'offline'} /><span><strong>{item.displayName}</strong><small>{item.description}</small></span></div>
               <div><span>{formatKnowledgeSyncState(item.state?.status, item.sync?.status)}</span><small>{item.state?.activeVersion ? `v${item.state.activeVersion}` : '待建立版本'}</small></div>
-              <button type="button" disabled={!onConfigureKnowledgeBase || syncingAllKnowledge || syncingKnowledgeBaseId !== null} onClick={() => { void syncKnowledgeBase(item.knowledgeBaseId, item.displayName); }}>{syncingKnowledgeBaseId === item.knowledgeBaseId ? '同步中…' : '同步'}</button>
+              <button type="button" disabled={!onConfigureKnowledgeBase || syncingAllKnowledge || syncingKnowledgeBaseId !== null} onClick={() => { void syncKnowledgeBase(item.knowledgeBaseId, item.displayName); }}>{syncingKnowledgeBaseId === item.knowledgeBaseId ? '检查中…' : '检查'}</button>
             </article>)}
           </div>
-          <span className="settings-sync-subtitle">其他同步方式</span>
-          <div className="settings-sync-methods">
-            <button type="button"><i className="is-local" /><span><strong>仅本机保存</strong><small>无需网络，数据只保留在此设备</small></span><b>›</b></button>
-            <button type="button" disabled><i /><span><strong>百度网盘同步</strong><small>使用已登录的百度网盘客户端同步</small></span><b>›</b></button>
-            <button type="button" disabled><i /><span><strong>WebDAV</strong><small>连接 NAS、坚果云或自建存储</small></span><b>›</b></button>
-          </div>
-          <p className="settings-sync-warning">恢复密钥仅由你保管；遗失后无法恢复云端数据。</p>
+          <p className="settings-sync-warning">当前页面不提供跨设备云同步。知识库文件仍由本机桌面服务管理。</p>
           {message && <p role="status">{message}</p>}
         </section>
 

@@ -1,10 +1,13 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { expect, test } from './helpers/e2e-test';
 import { openEmptyApp } from './helpers/app';
 
-const artifact = (name: string) => path.join(process.cwd(), 'artifacts', '2026-08-29-settings-audit', name);
+const artifactDirectory = path.join(process.cwd(), 'work', process.env.CANVAS_UPDATE_AUDIT_DIR ?? 'qa-settings-update');
+const artifact = (name: string) => path.join(artifactDirectory, name);
 
 test('shows the explicit local desktop update flow without automatic install', async ({ page }) => {
+  fs.mkdirSync(artifactDirectory, { recursive: true });
   await openEmptyApp(page);
   await page.getByTestId('settings-toggle').click();
   const settings = page.getByTestId('settings-drawer');

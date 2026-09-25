@@ -17,6 +17,7 @@ export interface StoredAgentRequestSummary {
   readonly references: readonly { readonly assetId: string; readonly label: string }[];
   readonly status: StoredAgentRequestStatus;
   readonly visualAnalysis?: boolean;
+  readonly reverseAnalysisDepth?: ReverseAnalysisDepth;
   readonly generationKind?: 'image' | 'video';
 }
 
@@ -308,6 +309,8 @@ function parseRequest(value: unknown): StoredAgentRequestSummary | null {
     references: references as Array<{ assetId: string; label: string }>,
     status: value.status,
     ...(value.visualAnalysis === undefined ? {} : { visualAnalysis: value.visualAnalysis }),
+    ...(value.reverseAnalysisDepth === 'fast' || value.reverseAnalysisDepth === 'standard' || value.reverseAnalysisDepth === 'deep'
+      ? { reverseAnalysisDepth: value.reverseAnalysisDepth } : {}),
     ...(value.generationKind === undefined ? {} : { generationKind: value.generationKind }),
   };
 }

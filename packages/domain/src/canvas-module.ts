@@ -10,7 +10,7 @@ export type CanvasPortDataType =
 
 export type CanvasModuleType =
   | 'image_input' | 'upload_image' | 'video_input' | 'canvas_library' | 'text_prompt'
-  | 'image_generation' | 'video_generation' | 'image_editor' | 'drawing_mask' | 'local_redraw'
+  | 'image_generation' | 'video_generation' | 'image_layer' | 'image_layering' | 'image_editor' | 'drawing_mask' | 'local_redraw'
   | 'image_compare' | 'openpose' | 'reverse_agent' | 'skill_agent'
   | 'detail_page_agent' | 'storyboard_sheet' | 'storyboard_chart'
   | 'line_art_material' | 'comfy_workflow' | 'music_generation'
@@ -143,6 +143,8 @@ const MODULE_COPY: Readonly<Record<CanvasModuleType, ModuleCopy>> = Object.freez
   canvas_library: copy('画布素材库', 'Canvas Library', '整理并输出有序的项目参考图集合。', '集中管理多张生成或分析参考图。', '勾选素材、调整顺序，再连接到支持多参考图的模块。', '最多使用项目允许的参考图数量。', ['素材库', '参考图库']),
   text_prompt: copy('文本提示词', 'Text Prompt', '编写可复用的生成或分析文本。', '向下游模块提供结构化提示词。', '填写文本后连接到生成或 Agent 模块。', '文本本身不会触发付费执行。', ['提示词', '文本']),
   image_generation: copy('图片生成', 'Image Generation', '根据提示词和模型能力生成图片。', '提供唯一的图片生成入口。', '连接必需提示词，可按兼容模型能力添加参考图、蒙版与姿态。', '运行前必须配置兼容模型并确认；V1/V2 仅作为旧项目迁移别名。', ['图像生成', '生图', 'image generation v1', 'image generation v2', 'generation v1', 'generation v2', 'v1', 'v2']),
+  image_layer: copy('图片图层', 'Image Layer', '保存图片分层任务生成的一张独立受管像素层。', '让背景和透明前景各自成为可操作的画布节点。', '等待 GPT 图像编辑任务完成后连接到图片分层合成节点。', '透明像素、尺寸和图层来源必须验证通过后才能导出完整 PSD。', ['独立图层', '透明图层', 'image layer']),
+  image_layering: copy('图片自动分层', 'Image Layering', '将一张受管图片拆分为可编辑的透明图层。', '保留真正的底图和独立透明像素层，支持合成与 PSD 导出。', '连接一张图片；供应商分层结果就绪后可检查图层并导出 PSD。', 'Comfly 分层提交接口尚未核实，暂不发起付费分层任务。', ['自动分层', '图层拆分', 'layer decomposition', 'PSD']),
   image_editor: copy('图片编辑', 'Image Editor', '组合图片、提示词与可选蒙版执行受控编辑。', '完成常规图片修改和编辑准备。', '连接原图及可选蒙版、提示词，再选择兼容编辑路线。', '具体模型执行能力由后续动态路由提供。', ['图像编辑', '图片修改']),
   drawing_mask: copy('绘制蒙版', 'Drawing Mask', '在受管图片上定义可编辑区域。', '为编辑和局部重绘提供受管蒙版。', '连接图片并在画布工具中绘制需要修改的区域。', '本任务只提供合同和节点状态，不实现完整绘制器。', ['蒙版绘制', 'mask drawing']),
   local_redraw: copy('局部重绘', 'Local Redraw', '使用图片、蒙版和提示词生成局部修改结果。', '把明确的局部编辑意图转为生成结果。', '连接原图、蒙版和提示词，确认兼容模型后执行。', '必须同时提供图片、蒙版和提示词。', ['局部编辑', 'inpaint', 'local edit']),
@@ -219,8 +221,8 @@ function cloneConfig(config: Readonly<Record<string, unknown>>): Record<string, 
 }
 
 export const CANVAS_MODULE_DEFINITIONS: readonly CanvasModuleDefinition[] = Object.freeze([
-  definition('image_input', 'input', 'image_input', 'local', [], [out('image', 'Image', 'image_asset')], ['image_editor', 'drawing_mask', 'image_compare', 'video_generation', 'reverse_agent', 'line_art_material']),
-  definition('upload_image', 'input', 'upload_image', 'local', [], [out('image', 'Image', 'image_asset')], ['canvas_library', 'image_editor', 'video_generation', 'reverse_agent']),
+  definition('image_input', 'input', 'image_input', 'local', [], [out('image', 'Image', 'image_asset')], ['image_editor', 'image_layering', 'drawing_mask', 'image_compare', 'video_generation', 'reverse_agent', 'line_art_material']),
+  definition('upload_image', 'input', 'upload_image', 'local', [], [out('image', 'Image', 'image_asset')], ['canvas_library', 'image_editor', 'image_layering', 'video_generation', 'reverse_agent']),
   definition('video_input', 'input', 'video_input', 'local', [], [out('video', 'Video', 'video_asset')], ['video_generation', 'reverse_agent']),
   definition('canvas_library', 'input', 'canvas_library', 'local', [], [out('images', 'Images', 'image_list')], ['image_generation', 'image_compare', 'reverse_agent']),
   definition('text_prompt', 'input', 'text_prompt', 'local', [], [out('prompt', 'Prompt', 'text_prompt')], ['image_generation', 'local_redraw', 'reverse_agent', 'music_generation', 'speech_generation']),
@@ -230,7 +232,8 @@ export const CANVAS_MODULE_DEFINITIONS: readonly CanvasModuleDefinition[] = Obje
     input('mask', 'Mask', 'mask_asset', false),
     input('pose', 'Pose', 'pose_data', false),
     out('result', 'Result', 'generation_result'),
-  ], ['result_output', 'image_compare', 'image_editor'], Object.freeze({ enabledInputCapabilities: ['references'], resolution: '2K', resultState: 'empty' })),
+    out('image', 'Image', 'image_asset', false),
+  ], ['result_output', 'image_compare', 'image_editor', 'image_layering'], Object.freeze({ enabledInputCapabilities: ['references'], resolution: '2K', resultState: 'empty' })),
   definition('video_generation', 'generation', 'video_generation', 'provider', ['video_generation'], [
     // A video prompt can combine ordered image references with one managed
     // source video.  The card and executor cap this ordered collection at the
@@ -254,6 +257,12 @@ export const CANVAS_MODULE_DEFINITIONS: readonly CanvasModuleDefinition[] = Obje
     resolution: '1080p',
     resultState: 'empty',
   })),
+  definition('image_layer', 'editing', 'image_layer', 'provider', ['image_edit'], [
+    out('image', 'Image', 'image_asset'),
+  ], ['image_layering'], Object.freeze({ status: 'planned' })),
+  definition('image_layering', 'editing', 'image_layering', 'provider', ['image_layering'], [
+    input('image', 'Image', 'image_asset'), inputMany('layerImages', 'Images', 'image_asset', false), out('layers', 'Images', 'image_list'),
+  ], ['image_compare'], Object.freeze({ layers: [], resultState: 'empty' })),
   definition('image_editor', 'editing', 'image_editor', 'composite', ['image_edit'], [
     input('image', 'Image', 'image_asset'), input('mask', 'Mask', 'mask_asset', false), input('prompt', 'Prompt', 'text_prompt', false),
     out('image', 'Image', 'image_asset'), out('mask', 'Mask', 'mask_asset', false),

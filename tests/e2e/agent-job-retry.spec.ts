@@ -4,7 +4,7 @@ import { e2eState, openAgentPanel, openApp } from './helpers/app';
 test('Skill chat shows a controlled error and allows a later retry without canvas changes', async ({ page }) => {
   await openApp(page);
   await openAgentPanel(page);
-  await page.getByRole('tab', { name: '对话' }).click();
+  await page.getByLabel('Agent 模式').selectOption('chat');
 
   const commitCount = (await e2eState(page)).commitCount;
   const composer = page.getByTestId('agent-composer-input');

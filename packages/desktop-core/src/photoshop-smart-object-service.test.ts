@@ -17,6 +17,27 @@ describe('PhotoshopSmartObjectService', () => {
     expect(place).toHaveBeenCalledTimes(1);
   });
 
+  it('validates the managed original before forwarding color-correction parameters', async () => {
+    const colorCorrection = { temperature: -4, tint: 7, saturation: 108, contrast: 102, brightness: 99 };
+    const place = vi.fn().mockResolvedValue({ ok: true, layerName: 'Nano Banana 2' });
+    const resolve = vi.fn().mockResolvedValue({
+      absolutePath: 'E:/managed/0123456789abcdef.jpg',
+      label: 'Nano Banana 2',
+      mediaType: 'image/jpeg',
+    });
+    const service = new PhotoshopSmartObjectService({ resolve }, { place });
+
+    await expect(service.import({ sessionId: 'session-1', assetId: '0123456789abcdef', colorCorrection }))
+      .resolves.toEqual({ ok: true, layerName: 'Nano Banana 2' });
+    expect(resolve).toHaveBeenCalledWith({ sessionId: 'session-1', assetId: '0123456789abcdef' });
+    expect(place).toHaveBeenCalledWith({
+      absolutePath: 'E:/managed/0123456789abcdef.jpg',
+      layerName: 'Nano Banana 2',
+      mediaType: 'image/jpeg',
+      colorCorrection,
+    });
+  });
+
   it('returns import_busy for a duplicate in-flight request', async () => {
     let finish: (() => void) | undefined;
     const place = vi.fn(() => new Promise<{ ok: true; layerName: string }>((resolve) => {
@@ -69,6 +90,7 @@ describe('PhotoshopSmartObjectService', () => {
     expect(place).toHaveBeenLastCalledWith({
       absolutePath: 'E:/managed/a.png',
       layerName: 'Generated Layer',
+      mediaType: 'image/png',
     });
   });
 });

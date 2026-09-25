@@ -227,6 +227,27 @@ describe('model job domain contract', () => {
     })).not.toHaveProperty('projectId');
   });
 
+  it('persists stable AI layering group and layer ownership through queue hydration', () => {
+    const job = createConfirmedModelJob({
+      id: 'layer-job-1', promptNodeId: 'image-layer-group-a-background', confirmedAt,
+      provider: 'comfly', modelRoute: 'comfly-gpt-image-2', displayName: 'GPT Image 2', modelId: 'gpt-image-2',
+      conversationId: 'image-layering-group-a', projectId: 'project-a', projectSessionId: 'session-a',
+      referenceAssetIds: ['source-asset'], imageOutputFormat: 'png', imageBackground: 'opaque', outputCount: 1,
+      layeringGroupId: 'group-a', layeringLayerId: 'background',
+    });
+
+    expect(modelJobSchema.parse(JSON.parse(JSON.stringify(job)))).toMatchObject({
+      layeringGroupId: 'group-a', layeringLayerId: 'background', referenceAssetIds: ['source-asset'],
+    });
+  });
+
+  it('rejects a partial AI layering ownership pair', () => {
+    expect(() => modelJobSchema.parse({
+      id: 'layer-job-orphan', modelId: 'gpt-image-2', status: 'queued', promptNodeId: 'layer-node',
+      layeringGroupId: 'group-a',
+    })).toThrow();
+  });
+
   it('persists provider terminal ACK state for crash recovery', () => {
     expect(modelJobSchema.parse({
       id: 'terminal-job',

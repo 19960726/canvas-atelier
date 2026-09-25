@@ -21,7 +21,7 @@ async function expectFourSettingsTabs(settings: import('@playwright/test').Locat
   const renderedColumnCount = await settings.locator('.settings-tabs').evaluate((element) => (
     getComputedStyle(element).gridTemplateColumns.split(/\s+/u).filter(Boolean).length
   ));
-  expect(renderedColumnCount).toBe(4);
+  expect(renderedColumnCount).toBe(1);
 }
 
 test('captures the redesigned settings surfaces in dark theme', async ({ page }) => {
@@ -32,7 +32,7 @@ test('captures the redesigned settings surfaces in dark theme', async ({ page })
   await expectFourSettingsTabs(settings);
 
   await settings.getByRole('tab', { name: 'API 与模型' }).click();
-  await expect(settings.getByRole('region', { name: 'API 与模型' })).toBeVisible();
+  await expect(settings.getByRole('region', { name: '供应商路由' })).toBeVisible();
   await expect(settings.getByRole('list', { name: '模型供应商' })).toBeVisible();
   await page.screenshot({ path: artifact('ui-check-settings-api-models-dark.png'), fullPage: true });
 
@@ -73,7 +73,7 @@ test('captures API and sync settings in light theme', async ({ page }) => {
   await expectFourSettingsTabs(settings);
 
   await settings.getByRole('tab', { name: 'API 与模型' }).click();
-  await expect(settings.getByRole('region', { name: 'API 与模型' })).toBeVisible();
+  await expect(settings.getByRole('region', { name: '供应商路由' })).toBeVisible();
   await page.screenshot({ path: artifact('ui-check-settings-api-models-light.png'), fullPage: true });
 
   await settings.getByRole('tab', { name: '同步' }).click();

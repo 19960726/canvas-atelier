@@ -36,11 +36,14 @@ export function resolveImageResolutionRoute<T extends ImageResolutionRoute>(
   const identityVariant = family.find((route) => identityResolutionTier(route) === resolution);
   if (identityVariant !== undefined) return identityVariant;
   if (resolution === '1K' && family.some((route) => identityResolutionTier(route) !== undefined)) {
-    const familyKey = imageResolutionFamilyKey(selected);
-    const baseVariant = family.find((route) => normalizedImageResolutionIdentity(route) === familyKey);
+    const baseVariant = family.find((route) => identityResolutionTier(route) === undefined
+      && (declaredResolutionTiers(route).length > 0
+        ? declaredResolutionTiers(route).includes('1K')
+        : implicitResolutionTiers(route).includes('1K')));
     if (baseVariant !== undefined) return baseVariant;
   }
-  const declaredMatch = family.find((route) => declaredResolutionTiers(route).includes(resolution));
+  const declaredMatch = declaredResolutionTiers(selected).includes(resolution)
+    ? selected : family.find((route) => declaredResolutionTiers(route).includes(resolution));
   if (declaredMatch !== undefined) return declaredMatch;
   return declaredResolutionTiers(selected).length === 0 && implicitResolutionTiers(selected).includes(resolution)
     ? selected
@@ -53,9 +56,20 @@ function resolutionFamilyRoutes<T extends ImageResolutionRoute>(routes: readonly
 }
 
 export function imageResolutionFamilyKey(route: ImageResolutionRoute): string {
-  return normalizedImageResolutionIdentity(route)
+  const modelIdentity = normalizedImageResolutionIdentity(route)
     .replace(/[._/\s·]+/gu, '-')
     .replace(/-(?:512px|1k|2k|4k)$/u, '');
+  const visibleIdentity = imageModelFamilyDisplayName(route).toLocaleLowerCase()
+    .replace(/[._/\s·]+/gu, '-');
+  // The provider catalog deliberately presents these known aliases as one
+  // model series. Keep one picker entry while retaining every exact route.
+  const familyIdentity = ['gpt-image-2', 'nano-banana-2', 'nano-banana-pro', 'seedream-5-pro'].includes(visibleIdentity)
+    ? visibleIdentity : modelIdentity;
+  return [familyIdentity, visibleIdentity].join('::');
+}
+
+export function imageModelFamilyDisplayName(route: Pick<ImageResolutionRoute, 'displayName'>): string {
+  return route.displayName.trim().replace(/(?:\s*[·-]?\s*)(?:512px|1K|2K|4K)$/iu, '').trim();
 }
 
 function normalizedImageResolutionIdentity(route: ImageResolutionRoute): string {

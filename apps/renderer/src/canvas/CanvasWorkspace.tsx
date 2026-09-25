@@ -17,6 +17,7 @@ import {
   ChevronDown,
   Clock3,
   LayoutTemplate,
+  Map as MapIcon,
   Plus,
   Save,
   Settings,
@@ -31,7 +32,8 @@ import { runtimeProfile } from '../app/runtime-profile';
 import { buildCanvasProviderRouteSets, listRunnableProviderProfiles } from '../app/provider-profiles';
 import { PlanPreview } from '../agent/PlanPreview';
 import { McpWorkflowPlanPreview } from '../agent/McpWorkflowPlanPreview';
-import { SkillChatWorkbench, type ReverseTimelineEntry, type SkillCanvasActionRequest } from '../agent/SkillChatWorkbench';
+import { SkillChatWorkbench, type ReverseTimelineEntry, type SkillCanvasActionRequest, type SkillWorkflowDraftRequest } from '../agent/SkillChatWorkbench';
+import { FloatingAgentWindow } from '../agent/FloatingAgentWindow';
 import { ProjectMemoryTimeline } from '../history/ProjectMemoryTimeline';
 import { JobStrip } from '../jobs/JobStrip';
 import { filterModelJobsForProject, filterModelJobsForTaskStrip } from '../jobs/project-model-jobs';
@@ -224,6 +226,51 @@ export function isValidCanvasConnection(
   return createCanvasConnectionValidator(nodes, edges)(connection);
 }
 
+function resolveVisibleImageGenerationSourcePort(
+  sourceNode: CanvasModuleNode,
+  sourcePortId: string,
+  targetNode: CanvasModuleNode,
+  targetPortId: string,
+): string {
+  if (sourceNode.data.moduleType !== 'image_generation' || sourcePortId !== 'result') return sourcePortId;
+  return canConnectCanvasPorts(sourceNode, 'image', targetNode, targetPortId).ok ? 'image' : sourcePortId;
+}
+
+function resolveVisibleImageLayeringTargetPort(
+  sourceNode: CanvasModuleNode,
+  sourcePortId: string,
+  targetNode: CanvasModuleNode,
+  targetPortId: string,
+): string {
+  if (targetNode.data.moduleType !== 'image_layering' || targetPortId !== 'image'
+    || sourceNode.data.moduleType !== 'image_layer' || sourcePortId !== 'image') return targetPortId;
+  const sourceGroupId = sourceNode.data.config.groupId;
+  return typeof sourceGroupId === 'string' && sourceGroupId.length > 0
+    && sourceGroupId === targetNode.data.config.groupId ? 'layerImages' : targetPortId;
+}
+
+export function resolveVisibleImageGenerationConnection(connection: Connection, nodes: readonly Node[]): Connection {
+  if (connection.sourceHandle !== 'result' || !connection.targetHandle) return connection;
+  const source = nodes.find((node) => node.id === connection.source);
+  const target = nodes.find((node) => node.id === connection.target);
+  if (!source || !target || source.type !== 'module' || target.type !== 'module') return connection;
+  const sourceHandle = resolveVisibleImageGenerationSourcePort(
+    toCanvasModuleNode(source), connection.sourceHandle, toCanvasModuleNode(target), connection.targetHandle,
+  );
+  return sourceHandle === connection.sourceHandle ? connection : { ...connection, sourceHandle };
+}
+
+export function resolveVisibleImageLayeringConnection(connection: Connection, nodes: readonly Node[]): Connection {
+  if (connection.targetHandle !== 'image' || !connection.sourceHandle) return connection;
+  const source = nodes.find((node) => node.id === connection.source);
+  const target = nodes.find((node) => node.id === connection.target);
+  if (!source || !target || source.type !== 'module' || target.type !== 'module') return connection;
+  const targetHandle = resolveVisibleImageLayeringTargetPort(
+    toCanvasModuleNode(source), connection.sourceHandle, toCanvasModuleNode(target), connection.targetHandle,
+  );
+  return targetHandle === connection.targetHandle ? connection : { ...connection, targetHandle };
+}
+
 export function createCanvasConnectionValidator(
   nodes: readonly Node[],
   edges: readonly Edge[],
@@ -248,20 +295,22 @@ export function createCanvasConnectionValidator(
   return (connection) => {
   const sourceId = connection.source;
   const targetId = connection.target;
-  const sourcePortId = connection.sourceHandle;
-  const targetPortId = connection.targetHandle;
-  if (!sourceId || !targetId || !sourcePortId || !targetPortId) return false;
+  const visibleSourcePortId = connection.sourceHandle;
+  const visibleTargetPortId = connection.targetHandle;
+  if (!sourceId || !targetId || !visibleSourcePortId || !visibleTargetPortId) return false;
 
   const source = nodesById.get(sourceId);
   const target = nodesById.get(targetId);
   if (!source || !target || source.type !== 'module' || target.type !== 'module') return false;
   if (isGhostFlowNode(source) || isGhostFlowNode(target)) return false;
+  const sourceNode = toCanvasModuleNode(source);
+  const targetNode = toCanvasModuleNode(target);
+  const targetPortId = resolveVisibleImageLayeringTargetPort(sourceNode, visibleSourcePortId, targetNode, visibleTargetPortId);
+  const sourcePortId = resolveVisibleImageGenerationSourcePort(sourceNode, visibleSourcePortId, targetNode, targetPortId);
   if (exactEdges.has(canvasEdgeKey(sourceId, sourcePortId, targetId, targetPortId))) return false;
   if (wouldCreateCanvasCycleFromAdjacency(adjacency, sourceId, targetId)) return false;
 
   try {
-    const sourceNode = toCanvasModuleNode(source);
-    const targetNode = toCanvasModuleNode(target);
     const validation = canConnectCanvasPorts(sourceNode, sourcePortId, targetNode, targetPortId);
     if (!validation.ok) return false;
     const targetPort = getCanvasModuleDefinition(targetNode.data.moduleType).ports.find((port) => (
@@ -371,12 +420,12 @@ export function getCompatibleQuickInsertModuleTypes(
   return listDiscoverableModuleDefinitions()
     .filter((definition) => definition.ports.some((targetPort) => (
       targetPort.direction === 'input'
-      && canConnectCanvasPorts(
-        sourceNode,
-        sourcePortId,
-        createCanvasModuleNode(`quick-insert-target-${definition.type}`, definition.type, { x: 0, y: 0 }),
-        targetPort.id,
-      ).ok
+      && (() => {
+        const targetNode = createCanvasModuleNode(`quick-insert-target-${definition.type}`, definition.type, { x: 0, y: 0 });
+        const resolvedTargetPortId = resolveVisibleImageLayeringTargetPort(sourceNode, sourcePortId, targetNode, targetPort.id);
+        const resolvedSourcePortId = resolveVisibleImageGenerationSourcePort(sourceNode, sourcePortId, targetNode, resolvedTargetPortId);
+        return canConnectCanvasPorts(sourceNode, resolvedSourcePortId, targetNode, resolvedTargetPortId).ok;
+      })()
     )))
     .map((definition) => definition.type);
 }
@@ -388,12 +437,11 @@ export function getCompatibleQuickInsertSourceModuleTypes(
   return listDiscoverableModuleDefinitions()
     .filter((definition) => definition.ports.some((sourcePort) => (
       sourcePort.direction === 'output'
-      && canConnectCanvasPorts(
-        createCanvasModuleNode(`quick-insert-source-${definition.type}`, definition.type, { x: 0, y: 0 }),
-        sourcePort.id,
-        targetNode,
-        targetPortId,
-      ).ok
+      && (() => {
+        const sourceNode = createCanvasModuleNode(`quick-insert-source-${definition.type}`, definition.type, { x: 0, y: 0 });
+        const resolvedTargetPortId = resolveVisibleImageLayeringTargetPort(sourceNode, sourcePort.id, targetNode, targetPortId);
+        return canConnectCanvasPorts(sourceNode, sourcePort.id, targetNode, resolvedTargetPortId).ok;
+      })()
     )))
     .map((definition) => definition.type);
 }
@@ -407,25 +455,29 @@ export function resolveQuickInsertConnection(
   const compatiblePort = pendingConnection.direction === 'from-source'
     ? createdDefinition.ports.find((targetPort) => (
       targetPort.direction === 'input'
-      && canConnectCanvasPorts(existingNode, pendingConnection.handleId, createdNode, targetPort.id).ok
+      && (() => {
+        const resolvedTargetPortId = resolveVisibleImageLayeringTargetPort(existingNode, pendingConnection.handleId, createdNode, targetPort.id);
+        const resolvedSourcePortId = resolveVisibleImageGenerationSourcePort(existingNode, pendingConnection.handleId, createdNode, resolvedTargetPortId);
+        return canConnectCanvasPorts(existingNode, resolvedSourcePortId, createdNode, resolvedTargetPortId).ok;
+      })()
     ))
     : createdDefinition.ports.find((sourcePort) => (
       sourcePort.direction === 'output'
-      && canConnectCanvasPorts(createdNode, sourcePort.id, existingNode, pendingConnection.handleId).ok
+      && canConnectCanvasPorts(createdNode, sourcePort.id, existingNode, resolveVisibleImageLayeringTargetPort(createdNode, sourcePort.id, existingNode, pendingConnection.handleId)).ok
     ));
   if (!compatiblePort) return null;
   return pendingConnection.direction === 'from-source'
     ? {
       source: pendingConnection.nodeId,
-      sourceHandle: pendingConnection.handleId,
+      sourceHandle: resolveVisibleImageGenerationSourcePort(existingNode, pendingConnection.handleId, createdNode, resolveVisibleImageLayeringTargetPort(existingNode, pendingConnection.handleId, createdNode, compatiblePort.id)),
       target: createdNode.id,
-      targetHandle: compatiblePort.id,
+      targetHandle: resolveVisibleImageLayeringTargetPort(existingNode, pendingConnection.handleId, createdNode, compatiblePort.id),
     }
     : {
       source: createdNode.id,
       sourceHandle: compatiblePort.id,
       target: pendingConnection.nodeId,
-      targetHandle: pendingConnection.handleId,
+      targetHandle: resolveVisibleImageLayeringTargetPort(createdNode, compatiblePort.id, existingNode, pendingConnection.handleId),
     };
 }
 
@@ -776,6 +828,7 @@ export function CanvasWorkspace() {
     reduceGenerationEditorState,
     initialGenerationEditorState,
   );
+  const [largeCanvasMiniMapEnabled, setLargeCanvasMiniMapEnabled] = useState(false);
   const [historyUnread, setHistoryUnread] = useState(false);
   const [providerStatus, setProviderStatus] = useState<ProviderConfigurationStatus | null>(null);
   const secondarySurface = activeSurface ?? (moduleLibraryOpen ? 'module-library' : quickInsert !== null ? 'quick-insert' : 'none');
@@ -945,15 +998,19 @@ export function CanvasWorkspace() {
     changeSurface(null);
     return await openProject(recentProjectId) ? 'opened' as const : 'unavailable' as const;
   }, [cancelClipboardImageImportBatch, changeSurface, openProject, prepareForProjectSwitch]);
+  // A position or prompt draft changes project.nodes without changing the
+  // saved model variants. Keep catalog arrays stable across those edits so
+  // every module does not receive a new runtime context after a drag commit.
+  const savedImageRoutesKey = JSON.stringify(project.nodes.flatMap((node) => (
+    node.type === 'module' && node.data.moduleType === 'image_generation' && typeof node.data.config.modelRoute === 'string'
+      ? [node.data.config.modelRoute] : []
+  )));
   const canvasProviderRoutes = useMemo(
     // The visible catalog is already scoped to the active supplier. Saved
     // routes remain durable in project data, while controls offer only models
     // from the supplier selected in Settings.
-    () => buildCanvasProviderRouteSets(providerProfiles, providerProfiles, project.nodes.flatMap((node) => (
-      node.type === 'module' && node.data.moduleType === 'image_generation' && typeof node.data.config.modelRoute === 'string'
-        ? [node.data.config.modelRoute] : []
-    ))),
-    [providerProfiles, project.nodes],
+    () => buildCanvasProviderRouteSets(providerProfiles, providerProfiles, JSON.parse(savedImageRoutesKey) as string[]),
+    [providerProfiles, savedImageRoutesKey],
   );
   const moduleNodeRuntimeContext = useMemo<ModuleNodeRuntimeContext>(() => ({
     imageGenerationRoutes: canvasProviderRoutes.imageGeneration,
@@ -1034,6 +1091,10 @@ export function CanvasWorkspace() {
   const flowEdges = flowEdgeState.edges;
   const formalCanvasNodeCount = flowNodes.length;
   const enableReactFlowVisibilityCulling = formalCanvasNodeCount > 20;
+  const largeCanvasMiniMap = formalCanvasNodeCount > 100;
+  useEffect(() => {
+    if (!largeCanvasMiniMap) setLargeCanvasMiniMapEnabled(false);
+  }, [largeCanvasMiniMap]);
   const formalCanvasEdgeCount = flowEdges.length;
   const canvasDraft = useCanvasDraft({
     nodes: flowNodes,
@@ -1058,13 +1119,15 @@ export function CanvasWorkspace() {
     setPendingAgentWorkflowFocus(null);
   }, [changeDraftNodes, draftNodes, pendingAgentWorkflowFocus]);
   const validateCanvasConnection = useMemo(
-    () => createCanvasConnectionValidator(draftNodes, flowEdges),
-    [draftNodes, flowEdges],
+    // Port compatibility depends on durable module data and edges, never on
+    // the per-frame draft position/selection created while dragging.
+    () => createCanvasConnectionValidator(flowNodes, flowEdges),
+    [flowNodes, flowEdges],
   );
-  const selectedFlowNodeIds = useMemo(
-    () => draftNodes.filter((node) => node.selected === true).map((node) => node.id),
-    [draftNodes],
-  );
+  // Position changes replace draftNodes on every drag frame, but selection and
+  // Agent targets should only refresh when the actual selected IDs change.
+  const selectedFlowNodeIdsKey = JSON.stringify(draftNodes.filter((node) => node.selected === true).map((node) => node.id));
+  const selectedFlowNodeIds = useMemo<string[]>(() => JSON.parse(selectedFlowNodeIdsKey), [selectedFlowNodeIdsKey]);
   const selectedBatchMediaCount = useMemo(() => draftNodes.filter((node) => (
     node.selected === true
     && node.type === 'module'
@@ -1084,7 +1147,7 @@ export function CanvasWorkspace() {
 
   const lastFocusedWorkbenchNodeRef = useRef<string | null>(null);
   const lastCanvasPointerRef = useRef<{ x: number; y: number } | null>(null);
-  const interactionQuality = useInteractionQuality(runtimeProfile);
+  const interactionQuality = useInteractionQuality(runtimeProfile, formalCanvasNodeCount > 100);
   const interactionNodes = useMemo(
     () => activeTool === 'hand'
       ? draftNodes.map((node) => ({ ...node, draggable: false, selectable: false }))
@@ -1239,12 +1302,30 @@ export function CanvasWorkspace() {
   }, []);
 
   const handleArrangeCanvas = useCallback(async () => {
+    const instance = flowInstanceRef.current;
+    const stage = canvasStageRef.current;
+    const viewport = instance?.getViewport();
+    const bounds = stage?.getBoundingClientRect();
+    const center = instance && bounds ? instance.screenToFlowPosition({
+      x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2,
+    }) : null;
+    const focus = draftNodes.find((node) => node.selected)
+      ?? (center === null ? undefined : [...draftNodes].sort((left, right) =>
+        Math.hypot(left.position.x - center.x, left.position.y - center.y)
+        - Math.hypot(right.position.x - center.x, right.position.y - center.y))[0]);
     const arranged = await arrangeCanvas();
     if (!arranged) return;
     window.requestAnimationFrame(() => {
-      flowInstanceRef.current?.fitView({ padding: 0.18, duration: 320 });
+      const moved = useAppStore.getState().project.nodes.find((node) => node.id === focus?.id);
+      if (moved && viewport) {
+        instance?.setCenter(
+          moved.position.x + (focus?.measured?.width ?? 360) / 2,
+          moved.position.y + (focus?.measured?.height ?? 300) / 2,
+          { zoom: viewport.zoom, duration: 320 },
+        );
+      }
     });
-  }, [arrangeCanvas]);
+  }, [arrangeCanvas, draftNodes]);
 
   const screenToFlowPosition = useCallback((position: { x: number; y: number }) => {
     const instance = flowInstanceRef.current;
@@ -1913,6 +1994,33 @@ export function CanvasWorkspace() {
     if (importedObject) setSelectedPlacementObjectId(importedObject.id);
   };
 
+  // Canvas draft positions change on every pointer frame. Keep Agent inputs
+  // stable unless their underlying project/media/selection state changes.
+  const agentProjectMemoryIds = useMemo(() => selectAgentProjectMemoryIds(project.projectMemory), [project.projectMemory]);
+  const agentReferenceImages = useMemo(() => projectImages.map(({ assetId, label, displayUrl }) => ({ assetId, label, displayUrl })), [projectImages]);
+  const agentReferenceVideos = useMemo(() => projectVideos.map(({ assetId, label, displayUrl }) => ({ assetId, label, displayUrl })), [projectVideos]);
+  const agentCanvasActionResults = useMemo(() => project.nodes.flatMap((node) => {
+    if (node.type !== 'module' || !['image_generation', 'video_generation'].includes(node.data.moduleType)) return [];
+    const jobs = projectModelJobs.filter((job) => job.promptNodeId === node.id);
+    const latest = jobs[jobs.length - 1];
+    if (!latest) return [];
+    const assetIds = [latest.resultAssetId, ...(Array.isArray(node.data.config.resultAssetIds) ? node.data.config.resultAssetIds : []), node.data.config.resultAssetId].filter((id): id is string => typeof id === 'string');
+    return [{ nodeId: node.id, status: latest.status, assetIds: [...new Set(assetIds)] }];
+  }), [project.nodes, projectModelJobs]);
+  const draftWorkflowFromAnalysis = useCallback(({ analysis, reverseAnalysis, references, modelRoute, modelRouteDisplayName, knowledgeBaseIds, generation }: SkillWorkflowDraftRequest) => {
+    if (reverseAnalysis?.runnable && modelRoute !== undefined) {
+      draftReverseWorkflowPlan({ analysis: reverseAnalysis, references, modelRoute, modelRouteDisplayName, knowledgeBaseIds, generation });
+      return;
+    }
+    const executionPrompt = generation?.prompt?.trim() || analysis;
+    draftAgentPlan(executionPrompt, {
+      modelRoute: generation?.modelRoute,
+      modelRouteDisplayName: generation?.modelRouteDisplayName,
+      ...(generation === undefined ? {} : { generation: { kind: generation.kind, parameters: generation.parameters } }),
+      referenceAssetIds: references.map((reference) => reference.assetId),
+    });
+  }, [draftAgentPlan, draftReverseWorkflowPlan]);
+
   return (
     <div data-testid="workspace" data-agent-collapsed={activeSurface !== 'agent'} data-secondary-surface={secondarySurface} data-connectors-suppressed={quickInsert !== null ? 'true' : undefined} className={`workspace workspace--canvas-layout${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
       <header className="topbar" data-testid="topbar" data-surface="chrome">
@@ -2031,7 +2139,7 @@ export function CanvasWorkspace() {
             aria-pressed={activeSurface === 'agent'}
             onClick={() => changeSurface('agent')}
           >
-            <span aria-hidden="true">✦</span>
+            <span className="canvas-ai-orb topbar-agent-entry__orb" aria-hidden="true"><i /></span>
             <span>问问 AI</span>
           </button>
           <ThemeControl theme={theme} compact />
@@ -2126,7 +2234,7 @@ export function CanvasWorkspace() {
           title="Agent 对话"
           onClick={() => changeSurface('agent')}
         >
-          <span className="toolrail__glyph" data-rail-icon="agent" aria-hidden="true">✦</span>
+          <span className="toolrail__glyph" data-rail-icon="agent" aria-hidden="true"><span className="canvas-ai-orb canvas-ai-orb--rail"><i /></span></span>
         </button>
         <button
           className={`tool-button${activeSurface === 'history' ? ' is-active' : ''}`}
@@ -2210,7 +2318,7 @@ export function CanvasWorkspace() {
             markInteraction();
             void canvasDraft.onNodeDragStop(event, node);
           }}
-          onConnect={(connection) => { void connectModulePorts(connection); }}
+          onConnect={(connection) => { void connectModulePorts(resolveVisibleImageLayeringConnection(resolveVisibleImageGenerationConnection(connection, flowNodes), flowNodes)); }}
           onConnectStart={handleConnectStart}
           onConnectEnd={handleConnectEnd}
           // On very large graphs React Flow probes many candidate handles on
@@ -2233,13 +2341,29 @@ export function CanvasWorkspace() {
           proOptions={{ hideAttribution: true }}
         >
           <ConnectionRadiusUpdater />
-          <EdgeEndpointInternalsUpdater edges={flowEdges} nodes={interactionNodes} />
+          <EdgeEndpointInternalsUpdater edges={flowEdges} nodes={flowNodes} />
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="var(--canvas-grid)" />
-          {generationEditorState.expandedNodeId === null && (
+          {generationEditorState.expandedNodeId === null
+            && (largeCanvasMiniMap
+              ? largeCanvasMiniMapEnabled
+              : !(enableReactFlowVisibilityCulling && interactionQuality.isInteracting)) && (
             <MiniMap pannable zoomable nodeColor="var(--minimap-node)" maskColor="var(--minimap-mask)" />
           )}
           <Controls showInteractive={false} />
         </ReactFlow>
+        {largeCanvasMiniMap && (
+          <button
+            type="button"
+            className="canvas-large-minimap-toggle"
+            aria-label={`${largeCanvasMiniMapEnabled ? '隐藏' : '显示'}大型画布导航地图`}
+            aria-pressed={largeCanvasMiniMapEnabled}
+            title={largeCanvasMiniMapEnabled ? '隐藏导航地图' : '显示导航地图（大型画布可能降低缩放流畅度）'}
+            onClick={() => setLargeCanvasMiniMapEnabled((enabled) => !enabled)}
+          >
+            <MapIcon size={14} aria-hidden="true" />
+            <span>{largeCanvasMiniMapEnabled ? '隐藏导航' : '导航地图'}</span>
+          </button>
+        )}
         {showBatchConnectionToolbar && (
           <section className="canvas-batch-toolbar" role="toolbar" aria-label="批量连接选中素材" data-testid="batch-connection-toolbar">
             <span className="canvas-batch-toolbar__label">已框选 {selectedBatchMediaCount} 个素材</span>
@@ -2380,16 +2504,7 @@ export function CanvasWorkspace() {
         )}
       </main>
 
-      <aside className="agent-panel agent-panel--skill-chat" aria-label="Novus Agent 工作台" data-canvas-surface="agent" data-testid="agent-panel" hidden={activeSurface !== 'agent'}>
-        <div className="agent-panel__header">
-          <div>
-            <strong>Agent 对话</strong>
-            <span>任务、模型与画布上下文</span>
-          </div>
-          <button className="icon-button" type="button" data-testid="agent-panel-close" aria-label="关闭 Novus Agent" title="关闭 Novus Agent" onClick={closeAgentPanel}>
-            <X size={16} />
-          </button>
-        </div>
+      <FloatingAgentWindow open={activeSurface === 'agent'} onClose={closeAgentPanel}>
         <div className="agent-thread">
           <div className="agent-thread__conversation">
             <SkillChatWorkbench
@@ -2398,43 +2513,17 @@ export function CanvasWorkspace() {
               profiles={agentProviderProfiles}
               codexProfiles={codexCliProfiles}
               knowledgeBases={knowledgeBases}
-              projectMemoryIds={selectAgentProjectMemoryIds(project.projectMemory)}
+              projectMemoryIds={agentProjectMemoryIds}
               reverseTimeline={reverseTimeline}
-              referenceImages={projectImages.map(({ assetId, label, displayUrl }) => ({ assetId, label, displayUrl }))}
-              referenceVideos={projectVideos.map(({ assetId, label, displayUrl }) => ({ assetId, label, displayUrl }))}
+              referenceImages={agentReferenceImages}
+              referenceVideos={agentReferenceVideos}
               onImportReferenceImage={importAgentReferenceImage}
               onImportReferenceVideo={importAgentReferenceVideo}
               canvasActionTargets={agentCanvasActionTargets}
               canvasHasSelection={selectedFlowNodeIds.length > 0}
-              canvasActionResults={project.nodes.flatMap((node) => {
-                if (node.type !== 'module' || !['image_generation', 'video_generation'].includes(node.data.moduleType)) return [];
-                const jobs = projectModelJobs.filter((job) => job.promptNodeId === node.id);
-                const latest = jobs[jobs.length - 1];
-                if (!latest) return [];
-                const assetIds = [latest.resultAssetId, ...(Array.isArray(node.data.config.resultAssetIds) ? node.data.config.resultAssetIds : []), node.data.config.resultAssetId].filter((id): id is string => typeof id === 'string');
-                return [{ nodeId: node.id, status: latest.status, assetIds: [...new Set(assetIds)] }];
-              })}
+              canvasActionResults={agentCanvasActionResults}
               executeCanvasAction={executeAgentCanvasAction}
-              draftWorkflowFromAnalysis={({ analysis, reverseAnalysis, references, modelRoute, modelRouteDisplayName, knowledgeBaseIds, generation }) => {
-                if (reverseAnalysis?.runnable && modelRoute !== undefined) {
-                  draftReverseWorkflowPlan({
-                    analysis: reverseAnalysis,
-                    references,
-                    modelRoute,
-                    modelRouteDisplayName,
-                    knowledgeBaseIds,
-                    generation,
-                  });
-                  return;
-                }
-                const executionPrompt = generation?.prompt?.trim() || analysis;
-                draftAgentPlan(executionPrompt, {
-                  modelRoute: generation?.modelRoute,
-                  modelRouteDisplayName: generation?.modelRouteDisplayName,
-                  ...(generation === undefined ? {} : { generation: { kind: generation.kind, parameters: generation.parameters } }),
-                  referenceAssetIds: references.map((reference) => reference.assetId),
-                });
-              }}
+              draftWorkflowFromAnalysis={draftWorkflowFromAnalysis}
               onClose={closeAgentPanel}
               chat={workspaceApi.chat}
               cancelChat={workspaceApi.cancelChat}
@@ -2461,7 +2550,7 @@ export function CanvasWorkspace() {
             </details>
           )}
         </div>
-      </aside>
+      </FloatingAgentWindow>
 
       {activeSurface === 'history' && (
         <GenerationHistoryDrawer

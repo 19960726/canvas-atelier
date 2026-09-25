@@ -25,7 +25,7 @@ test('keeps the Agent header aligned and lets a referenced long-form composer gr
   const panel = page.getByTestId('agent-panel');
   await expect(panel.getByRole('combobox', { name: 'Codex 任务' })).toBeVisible();
   await expect(panel.getByRole('button', { name: '新建任务' })).toBeVisible();
-  await expect(panel.getByRole('button', { name: '关闭 Codex Agent' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: '关闭 Novus Agent' })).toBeVisible();
 
   const initialMetrics = await panel.evaluate((element) => {
     const footer = element.querySelector('.skill-chat-workbench__composer-footer');
@@ -68,33 +68,34 @@ test('keeps the Agent header aligned and lets a referenced long-form composer gr
   });
 
   expect(initialMetrics.scrollWidth).toBeLessThanOrEqual(initialMetrics.clientWidth + 1);
-  expect(initialMetrics.panelWidth).toBeGreaterThanOrEqual(520);
+  expect(initialMetrics.panelWidth).toBeGreaterThanOrEqual(400);
   expect(initialMetrics.panelWidth).toBeLessThanOrEqual(561);
-  expect(initialMetrics.panelTop).toBeLessThanOrEqual(1);
-  expect(initialMetrics.panelRight).toBeGreaterThanOrEqual(1279);
-  expect(initialMetrics.panelBottom).toBeGreaterThanOrEqual(799);
-  expect(initialMetrics.composerHeight).toBeGreaterThanOrEqual(216);
+  expect(initialMetrics.panelLeft).toBeGreaterThanOrEqual(0);
+  expect(initialMetrics.panelTop).toBeGreaterThanOrEqual(0);
+  expect(initialMetrics.panelRight).toBeLessThanOrEqual(1280);
+  expect(initialMetrics.panelBottom).toBeLessThanOrEqual(800);
+  expect(initialMetrics.composerHeight).toBeGreaterThanOrEqual(150);
   expect(initialMetrics.composerCssHeight).not.toBe('184px');
   expect(initialMetrics.taskSelect).not.toBeNull();
   expect(initialMetrics.newTask).not.toBeNull();
-  expect(initialMetrics.taskSelect!.height).toBe(42);
-  expect(initialMetrics.newTask!.height).toBe(42);
-  expect(initialMetrics.taskSelect!.width).toBeGreaterThan(42);
-  expect(initialMetrics.newTask!.width).toBe(42);
+  expect(initialMetrics.taskSelect!.height).toBeGreaterThanOrEqual(28);
+  expect(initialMetrics.newTask!.height).toBeGreaterThanOrEqual(28);
+  expect(initialMetrics.taskSelect!.width).toBeGreaterThan(28);
+  expect(initialMetrics.newTask!.width).toBeGreaterThanOrEqual(28);
   expect(Math.abs(initialMetrics.taskSelect!.y - initialMetrics.newTask!.y)).toBeLessThanOrEqual(0.5);
   expect(initialMetrics.footerLeft).toBeGreaterThanOrEqual(initialMetrics.composerLeft);
   expect(initialMetrics.footerRight, JSON.stringify(initialMetrics)).toBeLessThanOrEqual(initialMetrics.composerRight + 1);
-  expect(initialMetrics.controls.length).toBeGreaterThanOrEqual(8);
+  expect(initialMetrics.controls.length).toBeGreaterThanOrEqual(5);
   for (const control of initialMetrics.controls) {
-    // Mode tabs use the compact 30px text row; action controls use 34px.
-    expect(control.height).toBeGreaterThanOrEqual(30);
+    // Compact floating controls must remain legible and within the composer.
+    expect(control.height).toBeGreaterThanOrEqual(28);
     expect(control.height).toBeLessThanOrEqual(42);
     expect(control.left).toBeGreaterThanOrEqual(initialMetrics.panelLeft);
     expect(control.right).toBeLessThanOrEqual(initialMetrics.panelRight);
     expect(control.right).toBeLessThanOrEqual(initialMetrics.composerRight + 1);
   }
 
-  await panel.getByRole('tab', { name: '对话' }).click();
+  await panel.getByLabel('Agent 模式').selectOption('chat');
   await panel.getByTestId('agent-model-trigger').click();
   await panel.getByRole('button', { name: '使用 gpt-5.6-sol' }).first().click();
   const input = panel.getByTestId('agent-composer-input');
@@ -103,7 +104,6 @@ test('keeps the Agent header aligned and lets a referenced long-form composer gr
     await input.focus();
     await input.press('End');
     await input.pressSequentially(' @');
-    await panel.getByRole('button', { name: '浏览项目图片' }).click();
     await panel.getByRole('menuitem', { name: `Mention ${label}` }).click();
   }
   await input.focus();
@@ -122,7 +122,7 @@ test('keeps the Agent header aligned and lets a referenced long-form composer gr
       editor: box(editor),
       rail: box(rail),
       footer: box(footer),
-      railItems: [...rail.querySelectorAll<HTMLElement>(':scope > button')].map(box),
+      railHidden: rail.dataset.visualHidden,
       chips: [...editor.querySelectorAll<HTMLElement>('.media-mention-textarea__chip')].map((chip) => ({
         ...box(chip),
         display: getComputedStyle(chip).display,
@@ -134,20 +134,16 @@ test('keeps the Agent header aligned and lets a referenced long-form composer gr
   expect(expandedMetrics.composer.height).toBeGreaterThan(initialMetrics.composerHeight + 32);
   expect(expandedMetrics.editor.height).toBeGreaterThanOrEqual(104);
   expect(expandedMetrics.editor.height).toBeLessThanOrEqual(168);
-  expect(expandedMetrics.rail.height).toBeGreaterThanOrEqual(36);
-  expect(expandedMetrics.rail.height).toBeLessThanOrEqual(44);
-  expect(expandedMetrics.railItems).toHaveLength(3);
+  expect(expandedMetrics.railHidden).toBe('true');
+  expect(expandedMetrics.rail.width).toBeLessThanOrEqual(1);
+  expect(expandedMetrics.rail.height).toBeLessThanOrEqual(1);
   expect(expandedMetrics.chips).toHaveLength(3);
-  for (const item of expandedMetrics.railItems) {
-    expect(item.width).toBeLessThan(220);
-    expect(item.height).toBe(24);
-  }
   for (const chip of expandedMetrics.chips) {
     expect(chip.display).toBe('inline-flex');
     expect(chip.height).toBe(24);
     expect(chip.width).toBeLessThan(expandedMetrics.editor.width);
   }
-  expect(expandedMetrics.footer.y).toBeGreaterThanOrEqual(expandedMetrics.rail.y + expandedMetrics.rail.height);
+  expect(expandedMetrics.footer.y).toBeGreaterThanOrEqual(expandedMetrics.editor.y + expandedMetrics.editor.height);
   expect(expandedMetrics.footer.y + expandedMetrics.footer.height).toBeLessThanOrEqual(expandedMetrics.composer.y + expandedMetrics.composer.height + 1);
   expect(expandedMetrics.scrollWidth).toBeLessThanOrEqual(expandedMetrics.clientWidth + 1);
 
@@ -183,39 +179,51 @@ test('keeps reverse depth readable above reasoning, generation preferences, know
     });
   });
   await openEmptyApp(page);
+  await page.evaluate(() => window.__NOVUS_E2E__!.createModule('image_input', { x: 120, y: 120 }));
+  await queueProjectImageImport(page, makeReferenceImage('Reverse layout reference.png', [36, 112, 144, 255]));
+  await page.locator('[data-module-type="image_input"]').getByRole('button', { name: '导入图像 / Import image' }).click();
   await openAgentPanel(page);
-  await page.getByRole('tab', { name: '创作 Agent' }).click();
+  await page.getByLabel('Agent 模式').selectOption('original');
 
   const panel = page.getByTestId('agent-panel');
   await expect(panel.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'QA Reasoning Vision');
+  const input = panel.getByTestId('agent-composer-input');
+  await input.fill('@');
+  await panel.getByRole('menuitem', { name: 'Mention Reverse layout reference' }).click();
+  await expect(panel.getByRole('button', { name: '反推强度：标准反推' })).toBeVisible();
+  await panel.getByTestId('agent-model-trigger').click();
+  await expect(panel.getByRole('dialog', { name: '模型与反推强度设置' }).getByRole('group', { name: '反推强度' })).toBeVisible();
+  await expect(panel.getByRole('dialog', { name: '选择聊天模型' })).toBeVisible();
   const controls = await panel.evaluate((element) => {
     const rect = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect().toJSON();
-    const reverseDepth = [...element.querySelectorAll<HTMLElement>('.skill-chat-workbench__reverse-depth > button')].map((button) => ({
+    const reverseDepth = [...element.querySelectorAll<HTMLElement>('.codex-reasoning__reverse-depth > button')].map((button) => ({
       ...button.getBoundingClientRect().toJSON(),
       clientWidth: button.clientWidth,
       scrollWidth: button.scrollWidth,
       text: button.textContent,
     }));
     return {
-      modeTabs: rect('.skill-chat-workbench__mode-tabs'),
-      reverseDepthGroup: rect('.skill-chat-workbench__reverse-depth'),
+      modeSelector: rect('.skill-chat-workbench__mode-picker'),
+      reverseDepthGroup: rect('.codex-reasoning__reverse-depth'),
       reverseDepth,
       reasoning: rect('.codex-reasoning'),
       generation: rect('.skill-chat-workbench__generation-trigger'),
       knowledge: rect('.skill-chat-workbench__knowledge-compact'),
+      newChat: rect('.skill-chat-workbench__composer-actions button[aria-label="新建对话"]'),
       send: rect('.skill-chat-workbench__send'),
     };
   });
 
   expect(controls.generation.x - (controls.reasoning.x + controls.reasoning.width)).toBeLessThanOrEqual(10);
   expect(controls.knowledge.x - (controls.generation.x + controls.generation.width)).toBeLessThanOrEqual(10);
-  expect(controls.send.x - (controls.knowledge.x + controls.knowledge.width)).toBeLessThanOrEqual(10);
+  expect(controls.newChat.x - (controls.knowledge.x + controls.knowledge.width)).toBeLessThanOrEqual(10);
+  expect(controls.send.x - (controls.newChat.x + controls.newChat.width)).toBeLessThanOrEqual(10);
   expect(controls.reverseDepth).toHaveLength(3);
   expect(controls.reverseDepth.map((button) => button.text)).toEqual(['快速反推', '标准反推', '深度反推']);
-  expect(controls.reverseDepthGroup.y).toBeGreaterThanOrEqual(controls.modeTabs.y + controls.modeTabs.height);
-  expect(controls.reasoning.y).toBeGreaterThanOrEqual(controls.reverseDepthGroup.y + controls.reverseDepthGroup.height);
+  expect(Math.abs(controls.modeSelector.y - controls.reasoning.y)).toBeLessThanOrEqual(2);
+  expect(controls.reverseDepthGroup.y + controls.reverseDepthGroup.height).toBeLessThanOrEqual(controls.reasoning.y);
   for (const button of controls.reverseDepth) {
-    expect(button.width).toBeGreaterThanOrEqual(80);
+    expect(button.width).toBeGreaterThanOrEqual(70);
     expect(button.scrollWidth).toBeLessThanOrEqual(button.clientWidth);
   }
   await panel.locator('.skill-chat-workbench__composer').screenshot({ path: compactActionsArtifact });

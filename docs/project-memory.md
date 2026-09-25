@@ -1348,3 +1348,331 @@ Before producing an installer, verify at minimum:
 - 1.6.146 候选真实项目隔离验收使用 142 节点、127 连线和四张真实生成照片。四图 23 个展开/收起与比例状态通过，源 manifest 未改变，外网拦截 0；低缩放性能 P95 16.8ms、最大 16.8ms、超过 34ms 的帧 0、长任务 0。候选报告分别为 `work/qa-reference-style-146-four/report.json` 和 `work/qa-reference-style-146-performance-r2/report.json`。
 - 1.6.146 NSIS 产物位于 `apps/desktop-modern/dist-builder/desktop-modern-1.6.146-formal`：安装器 103330294 字节、SHA-256 `AC92910F3F0FBF6158A0CED0893F9366C25E038561FFC5A497613C96963C9ADB`；blockmap 109740 字节、SHA-256 `C5CA59E08FAAECD0ED0F86585A4B8628D0731BA9B8880842078BB34A7E03B021`；`latest.yml` SHA-256 `A2E844621913662CC7F4A20A338A602D97F206F354C5B7DAB6DFC793DB8C2BD5`。候选 EXE SHA-256 `9A24CD9EE6CE7792B5A24B14BD26E9D4C9C0D6D1FB83C7475AC6423BA30E4A93`，`app.asar` SHA-256 `330430EF5B5408566D541A8CF4382F25211190E3E3548585C0C4BA552F070C57`；asar 内版本为 1.6.146。
 - 当前 `D:\CanvasAtelier\Canvas Atelier` 仍有用户进程运行，未强制结束或覆盖；因此本轮已完成源码、候选目录包和 NSIS 构建证据，正式安装目录的 1.6.146 更新与注册表验证留在用户正常退出后执行。未发送真实付费供应商任务，也未执行 Photoshop COM 写入。
+
+## 2026-09-19：按单张结果保存校正及保存/图槽回归
+
+- 用户要求四宫格选中哪张只调整哪张。原实现节点级 `colorCorrection` 会作用整个画廊；现在使用 `imageColorCorrections[assetId]`，选择/大图/右键复制下载和 Photoshop 均读取对应资产的参数。旧显式校正仅迁移首图，默认原图；已有映射优先，换位不改变归属。原图对比层和分割线限制在选中图格内，顶部显示颜色校正、前后对比、恢复原图。
+- 复现保存缺陷：组件内 180ms 调色草稿尚未同步 store，立即关闭可能把旧状态认作已保存。新增 editor-draft-boundary，在原生关闭准备及显式保存边界先提交组件草稿，再走现有持久化 ACK。复现图槽缺陷：拖动到图槽外释放后残留 pointerDragIndex；现在全局 pointerup/cancel/blur 清理，避免下一次点击误换位。另修复保存层拒绝换位而 UI 仍展示新顺序：回调保留布尔/Promise 结果，失败回滚到外部确认顺序并显示提示，序列号避免迟到失败覆盖后续换位。
+- 回归：ModuleNodeCard.test.tsx 的立即关闭调色案例先 RED 后 PASS；ConnectedAgentMediaSlots.test.tsx 的图槽外释放、保存拒绝案例先 RED 后 PASS；ImageColorCorrectionImage.test.tsx 覆盖选中第二张、单图分割线、仅还原选中图、序列化/重挂载/结果换序后校正仍跟随 assetId。保留已有快速 20 次换位、自动保存中再编辑和提示词引用测试。
+- 2026-09-19 16:56 全量 `npx vitest run --config vitest.config.ts --maxWorkers=1`：245 文件通过、2 跳过；3813 项通过、2 跳过，300.54s。`npm run build`（含全工作区 typecheck）通过。新图片按钮需要显式取消通用控件 max-height=38px，以免铺图被裁成条；真实 Electron 截图已复现并修正，QA 新增按钮与图格等高断言。
+- 正式安装与安装后证据仍需在最新候选包上单独核验；源码和 renderer override 截图不等同于正式安装通过。付费生成未调用，真实用户项目未写入。- 追加实机发现：Photoshop 27 Windows COM 的 Documents 集合只有 Count，length 为 undefined，旧脚本会误判已打开文档；新增 Count/length 兼容读取，photoshop-script.test.ts 先 RED 后 PASS，相关 65 项通过。实际 Photoshop 智能对象导入成功，导出 PNG 和预期校正 PNG 每通道最大误差 0，随后关闭唯一 QA 文档且不保存；当前无用户文档。
+- 新关闭边界补充只读视图保护：只读状态不提交初始化草稿，保持可正常关闭。先 RED 后 PASS；ModuleNodeCard/app-store/App/autosave 585 项通过。单图图片控件按 contain 保留完整内容；新候选单图和四图/调色/换位/立即关闭重启通过。
+- 安装器 /D 参数必须带路径内部引号：`/S /D="D:\CanvasAtelier\Canvas Atelier"`。未加引号会退出码 0 却装到 D:\CanvasAtelier\Canvas，必须核对最终注册表及 85 个 payload 文件，不能只依赖安装器退出码。
+- 最终正式安装 1.6.149 完成：85 payload 文件完全匹配、注册信息与快捷方式正确。正式安装单图调色/5 次换位/最后一次调色后立即关闭/重启 PASS；145 节点 127 连线 190 素材交互及 21 次换位和重启 PASS。Photoshop 实机导出像素误差 0。完整矩阵见 E:\画布项目\canvas-atelier-1.6.149-color-save-slots-2026-09-19.md。
+
+## 2026-09-19：1.6.150 节点 UI、真实对比拖动、自动分析状态与 API 延迟
+
+- 真实手柄命中 RED：旧 range 受通用 max-height 限制，只在图片顶部接收事件，中央可见手柄命中 IMG。新增沿可见线的独立 pointer-capture 区域，按实际缩放边界计算位置，保留 range 键盘访问。安装版 50%/85%/125% 缩放、越界拖动、节点位置不变均通过。
+- 自动分析增加 loading/applied/unchanged/unavailable 状态、8 秒超时和失败缓存淘汰；没有明显红紫偏色时保留原色并说明，不强制改变暖场景或红产品。手动校正和逐 assetId 保存继续工作。
+- Comfly checkConnection 不再提前下载价格及模型目录，连接请求数从 4 降为 1；设置先显示连接成功再同步目录。目录 single-flight 缓存支持失败重试和配置变更失效，迟到旧响应不会替换新配置缓存。
+- 图片/视频统一顶部标题、锁定、状态和收起；颜色工具栏位于标题上方；素材槽、提示词和参数栏组成 640px 连续编辑区。图片保持 448px 方形和逐图颜色；视频预览 448×252，清除旧偏移及最小宽度规则。
+- 实机视频回归发现资源协议未处理 Range：同一 MP4 Blob 播放成功而 novus-asset 播放失败。增加 bytes 范围解析、206/416/HEAD 与 Content-Range，安装版已有 5.5MB H.264/AAC 文件播放和 seek 均通过，不靠整文件 Blob 绕过。
+- 全量最终 3821 项通过/2 跳过，247 文件通过/2 跳过；完整 build/typecheck 通过。正式 1.6.150 安装器退出 0，85 文件哈希全部匹配；app.asar SHA-256 7924E1CDDD32992767EA634757988F2E5FABFD648598FDF48E81FF236E6AAA34。
+- 安装版逐图校正/5 次图槽换位/立即关闭重开、长竖图/GPT 画质、视频结果/空态/播放/seek 均通过。145 节点/127 连线/190 素材性能及 21 次换位重开通过：各交互 P95 约 7ms，缩放最大 55.6ms/1 长任务，不能宣称零卡顿；真实源项目不变。
+- Comfly 最终连接 2131ms，目录 874 个（852 完整），后续连接 1653/837/460ms；早期有网络失败后重试成功，不能承诺固定网络耗时。RelayMe 登录页可打开但无已登录账号；Julun/4dai 未配置，未调用付费任务。本轮未重做真实 Photoshop COM，源码导出回归通过，前版实机证据单独保留。
+- 完整交接和精确报告：E:\画布项目\canvas-atelier-1.6.150-node-ui-provider-2026-09-19.md。正式安装证据在 work/qa-formal-install-1.6.150、q150installed-color、q150installed-portrait、q150installed-video-r2、q150installed-perf、q150installed-providers-final。受保护旧 latest.yml 的 7A267A44... 哈希未变；未提交/发布远程。
+
+## 2026-09-19：1.6.151 GPT 提示词框横向越界
+
+- 原因：1.6.150 640px 共享编辑区被旧 GPT 双 :has 的 760px/0 inset 提示词规则覆盖。回归曾只检查上下相接，漏掉左右边界。现在旧规则与共享编辑区读取同一组 --generation-composer-inset/width，保留旧节点 fallback。
+- 回归：release-layout-contract.test.ts 新增案例先 RED 后 GREEN；work/qa-image-editor-layout-states-151.mjs 增加素材/提示词/参数 left/right/width 一致断言，正式 150 复现 RED，候选空 GPT、长竖图 GPT、四宫格和折叠展开 PASS。343 UI + 23 packaging 测试通过，完整 build/typecheck 通过。
+- 测试副本不要带入真实项目在用 writer lock；复制过滤 recovery/project.lock，后续使用已关闭的 q150single 固定项目副本，测试窗口正常关闭并设置超时。早期并发素材加载超时保留为失败，未计入通过。
+- 1.6.151 修复安装包已生成；正式安装首次因 Codex 自动重启 bundled MCP 占用退出 2，当前 installed app.asar 仍是 1.6.150。待用户关闭画布 MCP 后重试并校验 85 文件及正式布局。详见 E:\画布项目\canvas-atelier-1.6.151-composer-width-2026-09-19.md，不能将候选通过写成正式安装成功。
+- 追加：最终候选视频结果/空态/真实播放/seek PASS（work/q151-video-r3/report.json），新增横向对齐断言均通过。QA 等项目初始化恢复视口和结果挂载完成再定位检查，避免将保存的画布缩放误判为节点尺寸错误。正式安装仍待解除 MCP 进程占用。
+- 正式安装追加完成：用户要求直接安装后，脚本 work/install-formal-151.ps1 保留旧 EXE 为 .pre-1.6.151-install 并暂时腾空旧启动路径，停止仅 3 个 exact bundled MCP，解决自动重启与安装竞争；未终止 Codex/用户 GUI、未改连接配置。NSIS 退出 0，85 文件同哈希，注册表/快捷方式 1.6.151 正确，MCP 已重新启动。
+- 正式 app.asar SHA-256 为 740ACBBDBA297259AC355999896DC684BAD10C9B071CF1CCCA00F6AFD5E66A88。安装版 work/q151installed-empty/report.json 通过用户原始 GPT 空节点两行参数场景：素材、提示词、控制栏 left=211/width=544（85% 缩放），接缝/左右对齐/正方形/折叠展开通过，pageErrors=[]、exitCode=0，源测试项目不变。前文等待 MCP 的状态已解除。
+- GitHub 发布完成：用户要求“发布GH”后，v1.6.151 已在 19960726/canvas-atelier 设为正式 Latest（Release ID 392047302），URL https://github.com/19960726/canvas-atelier/releases/tag/v1.6.151。EXE/blockmap/latest.yml/SHA256SUMS 四资产大小及远端 SHA-256 全匹配，远端 latest.yml 逐字节匹配。沿用远端 main 二进制发布基准，未推送 dirty 源码。证据 work/release-1.6.151-published.json。
+- 发布 secret/path scan 通过；Photoshop 测试中虚构路径的正则误报改为 URL 字段断言，生产代码/构建产物不变，26 项相关测试通过。未放宽扫描器或上传项目数据。
+
+## 2026-09-21：1.6.152 图片/视频拖动与自动校正
+
+- 用户明确是“拖图片或视频节点经常拖不起来”和“自动中和看不出变化”。生成图展开区、导入图片/视频区被整体 nodrag 阻断；移除媒体区域阻断，仍隔离提示词、参数、素材槽排序和替换控件。图片选择/展开按主指针位移判定，取消/失焦清理监听。
+- 视频不再 pointerdown 就播放：画面拖动与点击播放分开，原生控件保留。全局 38px 按钮规则排除视频拖动面，防止可拖面积缩成窄条。候选真实 MP4 移动/保持暂停/点击播放/原生按钮暂停通过（work/q152-video-final-report.json）。
+- 颜色校正仍默认原图、按 assetId 单张保存。显式自动中和新增明亮低彩度且一致的黄/蓝/绿偏色识别，保留中性锚点与饱和主体保护。关闭浮层后截图实测 RGB 232/218/191 → 216/214/208，其他三图滤镜为 none（work/q152color3/report.json）；早期浮层遮挡截图不作像素证据。
+- GPU 实验在本机出现 116–200ms 缩放长帧；最终不默认启用 Windows GPU。保留软件兼容路径，CANVAS_ATELIER_ENABLE_GPU=1 显式选择，CANVAS_ATELIER_DISABLE_GPU=1 回退。不更改沙箱/驱动黑名单。
+- 真正减负点：位置更新不再改变选中 ID 数组身份，避免逐帧 MCP selection 重置及 Agent 目标重算。十次位移通知从十次降至零，真正选中变化正常通知，CanvasWorkspace.test.tsx RED/GREEN。
+- 全量 q152-full-final.log 3828 PASS / 2 SKIP；最终额外源码回归 q152-last-source-tests.log 573 PASS、q152-style-verified.log 91 PASS；完整构建 q152-build-verified.log；最终 NSIS q152-installer-verified.log。期间历史抽屉时序用例单次失败，独立与全量复跑通过，未改其实现。
+- 最终候选 asar 7000A4BB942D60676D0D5419B02736330ACDB229234713381794AE5369E24B19，安装器 5D478E9E5C3D75D19E4E5C6E650D9ED1DD77E555D44C4919B6BA79878B107807。正式安装和最终性能复测待后文追加，不能据候选宣称安装成功。
+- 交接 E:\画布项目\canvas-atelier-1.6.152-drag-color-performance-2026-09-21.md。所有 QA 用固定项目隔离副本，未改真实项目、未触发付费生成。
+- 正式安装追加：1.6.152 NSIS 退出 0，work/qa-formal-install-1.6.152/report.json 的 85/85 文件与候选一致，注册表/快捷方式正确。安装前只停止两个已核验的旧 MCP，旧 EXE 保留为 .pre-1.6.152-install；未停止 Codex 或用户 GUI。
+- 最终真实项目性能 work/q152benchfinal/report.json：三轮缩放/平移 p95 16.7–16.8ms、max 17ms，无 >34ms 帧或长任务；旧版同场景也约 60fps，因此只报告稳定性和去掉冗余更新，不宣称虚构帧率提升。
+- 正式版 work/q152installedcompare3/report.json PASS：真实滚轮缩放 0.5/0.85/1.25，对比线均 20→100，拖出范围仍捕获、节点不移动。最后一次饱和度 119、七图槽顺序关闭重开一致。前两次 QA 直接改 DOM transform 未同步 React Flow 视口，不是有效缩放测试，已保留失败报告并改为实际滚轮/中键。
+- 正式版 work/q152-installed-video.json PASS：拖画面移动且保持暂停，点击播放推进 0.58s，原生按钮暂停。安装文件身份仍为候选 asar 7000A4BB942D60676D0D5419B02736330ACDB229234713381794AE5369E24B19；保护的旧 latest.yml 未变。
+- 最终安装版自动校正 work/q152installedcolor4/report.json PASS：原生 capturePage 等待实际合成帧后读取 RGB 232/218/191 → 216/214/208，仅当前图变化；图片拖动、四宫格、接缝、折叠重开、pageErrors=[]、退出 0，源项目不变。早期 CDP 全图截图超时和读取到浮层旧帧的失败保留；最终未放宽像素断言、未改生产逻辑。1.6.152 本轮交付完成，详情见对应交接文档。
+
+## 2026-09-21：1.6.152 GitHub 正式发布
+
+- 用户明确要求生成新安装包并发布 GH；发布本轮已构建、已安装和已测试的最终 1.6.152 文件，不改变候选身份。
+- GitHub：https://github.com/19960726/canvas-atelier/releases/tag/v1.6.152 ，release ID 392654921，draft=false、prerelease=false、Latest=true。
+- 发布四项：CanvasAtelier-Win10-11-x64-1.6.152.exe（103338414 bytes）、同名 .blockmap、latest.yml、SHA256SUMS-1.6.152.txt。
+- 安装器 SHA-256：5d478e9e5c3d75d19e4e5c6e650d9ed1dd77e555d44c4919b6ba79878b107807。
+- 发布前重新核对正式安装与候选全部 85 个文件，匹配原验证报告；安装器版本、大小、SHA-512 与 latest.yml 一致；secret/path scan 通过。
+- 草稿上传后及正式发布后分别核对四项 GitHub digest/大小/状态；正式发布后从 API 下载 latest.yml 与本地逐字节一致，确认 /releases/latest 指向本版。
+- 证据：work/release-1.6.152-draft.json、work/release-1.6.152-published.json；脚本 work/prepare-release-152.mjs、work/verify-release-152.mjs。
+- 仅发布二进制资产及说明，标签基于远端既有 main 3bc58aeb911ced49eccddbf1be493df9798043fd；未推送本地 dirty 源码、测试项目或日志。旧 desktop-modern/latest.yml 保持原哈希。
+
+
+## 2026-09-21：1.6.153 暖光校正与提示词输入阻塞
+
+- 用户反馈自动中和大幅改变暖色厨房氛围，提示词打字仍卡顿。本轮不改节点布局或供应商调用。
+- 根因一：仅靠低彩度亮部回退时仍使用 80% 全局白平衡；浅色暖光场景被当成偏色。现在该分支最多 20% 且限制增益约 2%，用户截图测得色温 -16→-4、最大通道变化 16→4。红/洋红广泛偏色分支、原图默认、单图归属、手动控制及预览/导出一致性保留。
+- 根因二：MediaMentionTextarea 的选区偏移用 cloneContents 复制光标前的引用媒体；122 次输入产生 492 次 DOM 复制和超过 3,000 个临时媒体元素。现在遍历原 DOM 计算文本长度，折叠选区复用偏移。
+- 根因三：主进程反复解析相同日志并从头回放已验证项目。JournalWriter 以完整原始日志行缓存成功验证结果（最多 256 行 / 8 Mi 字符），ProjectRepository 以快照哈希和完整校验和前缀复用当前项目，仅回放新增记录。磁盘读取、提交边界、归属、序列、修订、损坏检测仍每次检查；返回结果复制隔离，快照/历史变化失效。
+- 进一步实测发现：大型项目存在 657 个历史快照，背景恢复扫描仍与界面 IPC 共用主线程。现代桌面壳注入 recovery-worker-runner，把同一 RecoveryScanner 算法搬到独立线程，顺序执行扫描，失败或无结果退出会拒绝，避免无限等待；恢复候选、镜像和完整性检查算法未变。
+- 回归位置：image-color-correction.test.ts、MediaMentionTextarea.test.tsx、CanvasWorkspace.test.tsx、journal-writer.test.ts、project-repository.test.ts、新 recovery-worker-runner.test.ts。颜色/选区/解析/回放用先失败后通过确认；新线程测试验证主事件循环可响应、串行运行和异常退出。
+- 验证命令：npm test；npm run build；npm run scan:e2e；node work/build-formal-1.6.153.mjs；候选 Electron 隔离输入和颜色 QA。最终结果见下方追加与根目录 1.6.153 交接文档。
+- 未更改真实用户项目、账号、付费生成或 Photoshop COM；保留工作区原有未提交内容，仅发布二进制资产。
+
+
+### Comfly GPT Image 2.5 补充修复
+
+- 用户确认故障供应商为 Comfly。只读本地生成历史：2026-09-21 11:07–11:50 的 5 次 Sunburst 4K / 1:1 / 1 张任务均约 3–4 分钟后失败，历史只保存 provider_unavailable，不能据此断言具体 HTTP 状态或上游可用性。
+- 已确认接入错误：ComflyClient.editImage 对 GPT multipart 请求去掉 async body 字段，却未将 async=true 加到 URL；generic edits 也未正确用 query 开关，且不接受只有 task_id 的异步确认。根据 Comfly 官方文档 https://gpt-best.apifox.cn/api-339685644，编辑异步开关应为 POST /v1/images/edits?async=true，后续 GET /v1/images/tasks/{task_id}。
+- 修复：两个 edits 分支共同使用 async query；非 GPT JSON 分支也移除 body async，并在异步模式接受 task_id-only 提交回执；同步 URL/回执兼容不变，不做付费重试或切换模型。
+- 测试先失败 6 项（work/q153-gpt25-red.log），修复后 Comfly client / bridge / capability 221 项通过（work/q153-gpt25-green.log）。覆盖 Flare/Sunburst 4K 和通用编辑，提交一次后只查询状态；无真实付费生图，不能标记 live supplier generation PASS。
+
+
+### 最终候选验证（含 Comfly 修复）
+
+- work/q153-full-gpt25-final.log：248 文件通过、2 跳过；3,842 测试通过、2 跳过。work/q153-typecheck-gpt25.log 全部类型检查通过；work/q153-build-gpt25-final.log 现代桌面完整构建通过；work/q153-installer-gpt25-final.log NSIS 构建通过。
+- 最终包输入实测 work/q153-typing-after-release.json：1.6.153，122 次输入，cloneContents=0、临时媒体节点=0、超过 50ms 的界面长任务=0，输入到下一帧 P95 11.3ms / 最大 15.4ms。重开恢复 1,772 字完全一致（work/q153-typing-reopen.json）。此结果为加载稳定后的受控长提示词场景，不代表所有项目和启动阶段都无卡顿。
+- 启动阶段早期候选仍记录少量 56–132ms 界面长任务；两次 QA 编辑器定位失败保留在 work/q153-typing-final.log / work/q153-typing-worker-settled.log，不计通过。显式重新聚焦及事件追踪补测通过（work/q153-typing-worker-diagnostic.log），最终包再次通过完整输入与保存重开；未对该失败臆测为已修复产品问题。
+- 包身份检查 work/q153-package-identity.json：4 个 renderer 文件、11 个 desktop 文件与最终构建逐字节一致，含恢复工作线程；app.asar SHA-256 75e4cd57cbd23a915598caa587e2abc520b3c419904eca621845d855214bbc74。安装器 103609715 bytes，SHA-256 6b88ac79b5cb9c2c50fd2807e1249c648f34604b0f60b06a963b78d2e663ff73。旧 desktop-modern/latest.yml 原哈希不变。
+- work/q153-scan-release.log secret/path scan 通过。当前正式安装尚未被本轮替换，不将候选 QA 说成正式安装 QA。
+
+
+### 1.6.153 发布完成
+
+- 最终候选颜色/四宫格/拖动门禁 work/q153-color-release/report.json PASS，原生预览 RGB 232/218/191 → 229/217/194，仅选中图片使用校正，其余三图 filter=none；手动参数有效；pageErrors=[]，正常退出 0，源项目 manifest/snapshot 未改变。
+- GitHub 正式发布：https://github.com/19960726/canvas-atelier/releases/tag/v1.6.153；release ID 392689586；draft=false、prerelease=false、Latest=true。
+- 四项资产 exe、blockmap、latest.yml、SHA256SUMS 上传前后大小与 SHA-256 digest 匹配，线上 latest.yml 下载后与本地逐字节一致。证据 work/release-1.6.153-draft.json、work/release-1.6.153-published.json。
+- 仅二进制发行，标签基于既有 main 3bc58aeb911ced49eccddbf1be493df9798043fd，未推送 dirty 源码。正式安装注册仍为 1.6.152；1.6.153 候选/发布验证不等同于已经覆盖安装。Comfly 修复通过零费用模拟传输验证，未新增真实付费生成。
+
+
+## 2026-09-21：1.6.153 正式安装阻塞已解除，覆盖安装完成
+
+- 用户截图的“请保存并退出目标目录中的 Canvas Atelier”由旧 QA 残留进程触发。PID 5908 无主窗口，带 Playwright inspect 参数；两个子进程明确使用 work/q152installedcolor3/canvasforge-qa-user-data。核验 PID、父子关系、可执行文件和隔离目录后，只清理这组三个 QA 残留。未把安装器的未知进程保护放宽。
+- 目标目录另有 Codex 启动的精确 MCP stdio 桥；按既有安装流程保留旧 exe，暂时移开启动路径防止桥重启竞争，停止已核验桥后运行正式 1.6.153 NSIS。installer exit=0，安装身份与已发布资产一致。MCP 随后重新启动。
+- work/qa-formal-install-1.6.153/installation.json、report.json PASS：正式目录 D:/CanvasAtelier/Canvas Atelier；85 个安装文件与发布候选 SHA-256 一致，注册表版本 1.6.153，两处快捷方式均指向正式目录。
+- work/qa-formal-install-1.6.153/startup.json PASS：运行正式安装 exe，隔离新建 QA 数据根，实测版本 1.6.153、workspace 可见、pageErrors=[]、正常退出 0。初次 smoke 脚本在 close 后调用 Playwright process() 导致报告错误；改为事前保留 child 句柄后重跑通过，未更改产品源码。
+- 最后进程检查只剩正式 MCP 桥，无测试窗口或测试后台残留。此前“本轮尚未覆盖安装”的状态由本条更新为正式安装已完成。
+
+## 2026-09-21：1.6.154 Nano Banana 单张去偏色
+
+- 用户明确要求针对 Nano Banana，原图状态常发红、发紫；下载到系统照片/PS 的颜色尚未对比，不能声称已证明显示色彩管理故障。用户确认单张、主动启用、可调强度的方案；不得自动改原图或将暖光整图调冷。
+- 现有通用 auto 没有模型专用设置。新增 opt-in profile=nano-banana，保留 mode=auto/version=2 与按 assetId 存储；strength 范围 0–100，默认 60。低色度像素至少占不透明像素 25%，至少 16 样本，80% 颜色比例一致且不存在大量中性锚点时，才估计红/洋红/黄偏色。通道增益最大约 4%（整数参数取整有微小误差），默认强度进一步降低；不声称能分割产品或做色卡标定。
+- 分析缓存按 source URL 与 profile 区分，最大 128 项、96px 采样；强度变化复用基础分析。预览、下载/复制和 Photoshop 导入均通过同一 resolveImageColorCorrection 得到参数。原图仍默认无滤镜；手动调整将已解析的参数转为 custom；四宫格仅选中资产保存设置。
+- RED：work/q154-nano-red.log 4 项预期失败，work/q154-nano-ui-red.log 缺少入口失败；用户补充发紫后 work/q154-purple-red.log 2 项预期失败。测试覆盖红/紫/黄、暖木材与红色产品保护、中性锚点/混合照明、0 强度、缓存隔离/复用、保存边界、导出参数一致和手动恢复。
+- 最终源码验证：work/q154-final-focused.log 69/69；work/q154-full-final.log 249 文件通过、2 文件跳过，3,852 项通过、2 项按设计跳过。npm.cmd run build 包含完整 workspace typecheck，退出 0（work/q154-build.log）；scan:e2e 通过（work/q154-scan.log）。
+- 运行候选：work/q154-nano-candidate/report.json PASS，四宫格受控紫偏色 RGB 204/180/201 -> 默认60% 201/184/199 -> 100% 199/187/198，其余三张 filter=none；节点拖动、对比线拖动与布局检查通过，pageErrors=[]，exitCode=0，源项目 manifest/snapshot 未改变。reopen.json PASS，重新启动 1.6.154 后强度100恢复，恢复原图后四图 filter=none。
+- 用户暖色厨房截图只取图片区域分析，work/q154-warm-scene.json 在0/60/100强度下均没有足够的全局偏色依据，像素未改变；这是暖光保护证据，不代表真实偏色原文件已经完成色彩标定。未付费生图，未操作真实 PS 文档。
+
+### 1.6.154 安装包与 GitHub 发布
+
+- NSIS 生成通过（work/q154-installer.log）。安装器为 apps/desktop-modern/dist-builder/desktop-modern-1.6.154-formal-final/CanvasAtelier-Win10-11-x64-1.6.154.exe，103610159 bytes，SHA-256 dd15b7d9d56173342224d15518d449a9c03d2a661fbdafee81911758066d5d8f；app.asar 为 8f75b1f354bb870c3a6021bb286fd14ddf03f752c1e61d30b26b88195bab9405。work/q154-package-identity.json 验证4个 renderer 与11个 desktop 文件与构建逐字节一致，旧 desktop-modern/latest.yml 保持原哈希。
+- GitHub 正式发布 https://github.com/19960726/canvas-atelier/releases/tag/v1.6.154，release ID 392734813，draft=false、prerelease=false、Latest=true。四个资产远端大小/SHA-256 与本地一致，线上 latest.yml 下载比对一致；初次下载遇到 TLS 握手超时，只读重试成功，证据 work/release-1.6.154-published.json / work/q154-release-verify.log。仅发行二进制，既有 dirty 源码没有推送。
+- 正式覆盖安装未完成：Start-Process 启动 NSIS 被 Windows 返回“操作已被用户取消”，见 work/qa-formal-install-1.6.154/installation.json。脚本已恢复旧 exe；重新核验注册表仍为1.6.153，app.asar仍为75e4cd57cbd23a915598caa587e2abc520b3c419904eca621845d855214bbc74，pre-1.6.154-install 临时路径不存在，原MCP已自行重启。不得称1.6.154已安装；没有绕过系统取消或覆盖运行中的用户窗口。
+
+## 2026-09-21：图片节点底部按钮间距
+
+- 根因：图片生成控制栏的 `1张` 外层轨道在窄节点中约 90px，但嵌套 `.generation-parameter-popover` 仍继承旧的 `min-width:112px`，触发器实际宽度约 95px，向 `2K` 和 `生成` 两侧越界，覆盖了应有的间距。
+- 修复：在最终 release layout contract 中让数量 popover 使用 `box-sizing:border-box`、`min-width:0`、`max-width:100%`，并将控制栏间距统一为 8px。只约束图片数量嵌套控件，不改变模型、比例、清晰度或生成行为。
+- 回归：先用 `work/q155-spacing-red.log` 复现相邻 gap 断言失败；修复后 `work/q155-spacing-fixed/spacing.json` 显示 `1张` x=546.71/right=623.64，`生成` x=630.44，间距约 6.8px，单行所有按钮均在各自轨道内；QA 正常退出、源项目 manifest/snapshot 未改变。CSS 契约 24/24，renderer build 退出0（work/q155-renderer-build.log）。
+- 本次只修源码和验证，尚未重建/发布新的安装包；现有 GitHub v1.6.154 包不包含这次按钮间距修复。
+
+## 2026-09-23：1.6.155 透明输出、浮窗 Agent、分层 PSD 候选
+
+- 按根目录 1.6.155 精简交接继续，保留 dirty 源码、所有用户资产与已安装应用。Comfly 分层官方协议仍缺证据；用户没有官方链接或账号内接口样例。`seedream-v5-pro/layer-decomposition` 只见公开模型目录，第三方 Apifox 的归属未证实。因此自动分层提交继续禁用，没有发送付费请求，不能把受控分层 fixture 说成真实 Comfly 分层。
+- GPT Image 2.5 透明请求根因：透明 PNG 未显式传 `output_format=png`，透明 JPEG 可绕过 UI 提交。`comfly-image-submission.ts` 现对透明 PNG/WebP 显式传格式、透明 JPEG 在提交前拒绝；`comfly-image-submission.test.ts` 和 `comfly-gpt25-flow.test.ts` 覆盖 2.5 型号/编辑、受控有效 RGBA 的保存、预览与原始下载。未用真实账号做付费生图或验证上游实际 alpha。
+- 折叠图片结果的重载警告曾盖住打开编辑器中心点击；最终样式把它移到预览底部。视频参数 128px 控件曾裁切比例/清晰度，现紧凑显示两项，完整时长/张数仍在标题和设置弹窗；浮窗 Agent 输入区底栏宽度也收回圆角边界。`image-generation-execution.spec.ts`、`generation-parameter-adaptation.spec.ts`、`release-agent-layout.spec.ts` 均覆盖真实点击/边界。
+- 新增 `image_layering` 节点、透明层/合成预览、顺序与可见性持久化，使用 ag-psd 写真正 PSD v1、8bit RGB、独立 RGBA 图层。`layered-psd.test.ts` 读回像素/图层；`image-layering.spec.ts` 检查四个真实 RGBA 素材的隐藏、重排、重开、PSD 下载字节。未伪造供应商拆层结果。
+- Photoshop 的“在 Photoshop 中打开”使用独立 PSD 桌面桥：先校验 PSD 头/尺寸/位深，在主进程查找已安装 Photoshop，用户明确选保存路径后写入原始多图层 PSD，再启动 Photoshop 打开该文件；不再把 PSD 展平为单图智能对象。`layered-psd-open.test.ts` 覆盖无效输入、取消、查找/保存对话框抛错、保存/启动失败；查找与对话框异常返回明确错误码，不泄露内部异常到界面。浏览器 E2E 验证传给桌面桥的字节与下载 PSD 完全一致。机器只读确认 Photoshop 2026 注册路径；未操作用户 PS 文档，真实打开兼容性仍待安装态验证。
+- 反推强度并发回归暴露旧标准强度草稿晚于用户选择写回，覆盖了“深度反推”。`ModuleNodeCard.test.tsx` 先复现 RED，之后以先前外部值为基准合并，保留新本地选择；独立及全量浏览器反推用例通过。
+- 300 节点/500 连线拖动超过 250ms 的根因之一是每个位置帧都重建 Agent 引用/记忆属性并重绘对话与记忆树。稳定这些输入并 memo 对话/时间线后，独立 6/6 压测最大拖动停顿 184ms；三并发全量回归最高 240ms，接近门槛，不能外推到所有真实项目或机器。临时性能探针已移除。
+- 新鲜验证：最后一次源码修改后的 `npm.cmd test` 260 文件通过、2 跳过，3981 测试通过、2 跳过；此前完整浏览器回归 `npx.cmd playwright test --workers=3 --reporter=line` 180/180，修改后受影响 `image-layering.spec.ts` 1/1；`npm.cmd run build`（含全工作区 typecheck）通过；`npm.cmd run scan:e2e` 通过。扫描前一份旧测试报告的公开 1×1 base64 fixture 触发规则，完整移到 `work/qa-archive-q155-video-contract`，未删除。
+- 最后源码的内部候选 `node work/build-formal-1.6.155.mjs` 通过；`node work/verify-candidate-155.mjs` 验证 11 个桌面文件、4 个 renderer 文件与当前构建逐字节一致，latest.yml 的 SHA-512 与 installer 一致。最终 `app.asar` SHA-256 `d7cf4b3b2cbca7340087ff86166753ae7c00d794aebfe20b1ba5b779f76d1a9d`；安装器 103689062 bytes，SHA-256 `bc9a6f19b129475aadb3e2a86f27eaaa5ac0843cbf9ecd69b2072803e4366c0e`；blockmap SHA-256 `0825372125db08719e98c78f6630c57b3907aa3fca9bd2e9eb9eed7b1b8b2dad`；候选 latest.yml SHA-256 `9dbb86f92735c804db0b9e8a19f4eb58fb95345d8d55676e0f05ea528c87a532`。原 `dist-builder/desktop-modern/latest.yml` SHA-256 仍为 `7a267a4413afae5800ce9208cba96d5f427b5c87d7e6e65ce3beb245bf169d5b`。旧内部候选哈希已作废，不作为交付身份。
+- 修改后 `node work/qa-candidate-startup-155.mjs` 在隔离 QA 数据根重新启动 unpacked 1.6.155：workspace 可见、PSD 桌面桥对非法字节返回 `invalid_psd`、pageErrors=[]、退出码0。此为候选启动，不是正式安装，也不证明 Photoshop 真实打开/Comfly 生图。未覆盖现有正式安装、未发布 GitHub；完整需求与正式发布仍受缺失 Comfly 协议及真实外部验证阻塞。
+- 2026-09-23 只读复核正式目录 `D:/CanvasAtelier/Canvas Atelier/resources/app.asar`：当前 SHA-256 为 `8f75b1f354bb870c3a6021bb286fd14ddf03f752c1e61d30b26b88195bab9405`，包内版本 `1.6.154`，与旧 1.6.154 候选身份吻合；这不同于交接中“1.6.154 安装被取消、正式版仍 1.6.153”的历史状态。未确定变更时间/操作者，也未做 1.6.154 正式安装验收；不把它写成当前 1.6.155 已安装。
+- 再次公开检索发现第三方 `https://s.apifox.cn/apidoc/docs-site/3868318/api-515635662` 仍标记“开发中”，另有 ComfyUI 第三方节点对 `seedream-v5-pro-layer-decomposition` 的描述；都没有给出 Comfly 官方域名/账号合同与计费/异步/回包证明。继续保持自动提交关闭；此证据缺口不能靠其它供应商同名模型的协议填补。
+
+### 1.6.155 生图/视频/反推 UI 与画布性能续做
+
+- 用户批准以新界面截图为基础落地：生图保留四宫格，素材输入超过 7 张横向滚动而不是结果四宫格滚动；基础参数与 GPT 专属参数分层；视频参数摘要常显、细项可展开；反推与深浅色统一精简，生成按钮缩小。Agent 对话和颜色校正保持现有功能与界面，不做无关重构。
+- 扩展生图/视频编辑器整合成 704px 卡片，结果、素材、提示词和控制栏连续排布。图槽 7/8/20/25 阈值、五次快速换位、显式保存、重开持久化在三类节点通过本地浏览器。视频模型/模式/比例/清晰度/时长/数量及 GPT 画质/格式/背景保留；用户参考截图与深浅色 Playwright 截图的对照记录见 `docs/design-qa-1.6.155-ui-perf.md`。
+- 新增性能 RED：`CanvasWorkspace.test.tsx` 先证明连续拖动会每帧重建 `isValidConnection`，再改为从稳定 `flowNodes` 构建并让端点刷新器读取同一稳定图。10 次瞬态位置变化保持相同校验器，位置提交与连线端点测试通过。300 节点/500 连线、三分辨率×两主题 6/6 压测通过，观察到的拖动最长停顿 248ms，接近 250ms 门槛；不能据此保证所有真实项目均不卡顿。
+- 全量源码测试 260 文件通过、2 跳过，3,985 项通过、2 跳过。局部 E2E：图像/视频/图槽 54/54；反推/Agent/连线 11/11；压力 6/6。最后 GPT 标题像素位置修正后，整合界面 3/3、样式契约 25/25，完整 `npm.cmd run build`（含 typecheck）和 `npm.cmd run scan:e2e` 通过。`git diff --check` 的旧 `provider-bridge.ts` EOF 空行属于交接前未提交改动，未擅自改该无关文件。
+- 在全新 `desktop-modern-1.6.155-ui-perf-r2` 目录生成 NSIS 候选，保留旧候选和正式安装。`work/verify-candidate-155.mjs` 证明包内 11 个 desktop 和 4 个 renderer 文件与最终构建逐字节一致；installer SHA-256 `a45fdf0534ef83d0395054aca00782b035a43f469e800fd22c59bba1d2193069`，app.asar SHA-256 `d7cf4b3b2cbca7340087ff86166753ae7c00d794aebfe20b1ba5b779f76d1a9d`。隔离启动报告 `work/qa-candidate-155-ui-perf-r2-startup/report.json` PASS：版本 1.6.155、workspace 可见、pageErrors=[]、exitCode=0。未覆盖正式安装、未发布、未实测真实 Comfly 自动分层或 Photoshop 打开。
+
+### 2026-09-23 UI 截图复核补修
+
+- AI 分层弹窗透明根因：`LayeringDialog` 通过 portal 挂到 `document.body`，而 `--gate-*` 色板只定义在 `.workspace--canvas-layout`，弹窗后代取不到这些 token，`background: var(--gate-card)` 计算为透明。现于 backdrop 为浅/深主题分别定义弹窗所需的表面、文字、边框、强调色；对话卡片为实色，只有页面遮罩维持半透明。独立节点、layer order、PSD 导出边界未变。
+- Agent 历史按钮的原透明态是 floating header 的高优先级规则强制覆盖背景/边框；现以 `aria-expanded` 给轻量柔和选中态，历史弹窗关闭控件统一 28px 图标尺寸、圆角、hover 与键盘 focus ring。未改 Agent 模式、消息或会话逻辑。
+- 视频/图片结果四宫格原本已有固定两列布局，本轮只补真实 UI 验证夹具：4 个本地受管视频各自使用唯一 assetId，展开后确认没有“正在加载返回视频”且 columns=2。样式没有重复造另一套布局。Image generation 现有 image 输出端口服务图像后续连线/分层；更新过时的 `ModuleNodeCard.test.tsx` 断言，要求 input references + output result/image 三个明确端口。
+- 截图：`work/qa-layering-ui-2026-09-23/layering-dialog-{light,dark}.png`；完成态视频四宫格浅/深截图位于 `work/qa-ui-audit-2026-09-23/video-four-grid-reviewed/`；生图四宫格及图片/视频节点主题截图位于 `work/qa-ui-audit-2026-09-23/image-generation-review/`；Agent 历史及视频节点参数截图位于 `work/qa-ui-audit-2026-09-23/e2e-review-final/`。
+- 验证：`tests/e2e/image-layering.spec.ts`、`agent-floating-window.spec.ts`、`video-generation-ui.spec.ts` 共 51/51，另 `integrated-generation-card.spec.ts` 3/3、`video-inset-and-twenty-slots.spec.ts` 4/4、`node-drag-persistence.spec.ts` 1/1、`durable-canvas-stress.spec.ts` 6/6（合计 65/65）；覆盖浅/深色图片/视频节点、生图四宫格、25 个素材的缩略图保留/滚动/拖拽换位、注入一次保存失败后手动重试并重开画布、视频提示词与参数重开一致，以及 300 节点/500 连线的浅深色三视口交互压力矩阵。性能矩阵的最大观测卡顿 176ms（阈值 250ms）。相关 5 个 Vitest 文件 567/567；`npm.cmd run build`（含 workspace typecheck）通过；`npm.cmd run scan:e2e` 通过。build 有既存的大 chunk size warning；`git diff --check` 仅指出交接前 dirty `packages/desktop-core/src/provider-bridge.ts:1098` EOF 空行及多处 CRLF 转换提示，本轮未改该无关文件。
+- 保存错误恢复在本地故障注入场景通过；但用户报告的真实机器长期旋转/多次连续调序卡顿仍未在正式安装或真实项目中重现、也未完成保存-重启验收，不能宣称此现场问题已修复。Playwright 的图片/视频画面均为本地合成夹具，不代表供应商生图或生视频结果。
+- 本轮只修源码/测试并保存本地 QA 图，不打安装包、不安装、不发版；本地 E2E 构造素材不调用付费供应商。安装态行为仍未验证。
+
+### 2026-09-23 视频五行展开菜单与统一视觉复核
+
+- 按用户最新参考图，视频控制栏仍保持紧凑摘要；展开菜单改为比例、清晰度、时长滑块、生成音频、生成数量五行。滑块遵守所选供应商的离散时长限制，不能把 UI 的 1 秒刻度误认为所有模型都支持逐秒生成；音频能力不支持的路线不显示音频开关。开关增加明确的“开/关”字样及可见圆点边界，状态随草稿和提交参数传递。
+- 弹层依据当前视口剩余空间选择向下或向上展开；1600×1100 的本地截图可在下方完整展开，不覆盖提示词。反推工作台标题、状态与边框收敛到同一表面规范；Agent 最窄宽度编辑区间距、圆角改为紧凑规格；颜色校正维持新版图片节点入口，预设及“更多调节”均可用。截图统一位于 `work/qa-ui-audit-2026-09-23/final-review-r1/`。
+- 本地回归：视频时长 4→6 秒、音频开→关→开、深浅主题布局，连同生图、颜色校正、反推、Agent 共 25/25 Playwright 通过；300 节点/500 连线 6/6 压测本轮拖动最大观测停顿 144ms，另保存失败→重试→重开用例 1/1。完整 `npm.cmd run build` 含类型检查通过，末次 CSS 后 renderer 构建通过，限定文件 `git diff --check` 通过。压测的 zoom 事件零采样，不能称其延迟已量测；浏览器开发服务偶发 ResizeObserver loop 警告，相关测试仍通过。
+- 以上是源码/本地浏览器证据，不是正式安装包、真实付费供应商或 Photoshop 验收。按用户约定先交截图检查，不打包；真实 Comfly 自动分层合同缺证据，继续禁用自动提交。
+- 用户随后指出音频行内“开”字与圆点挤在一处显得奇怪；撤回字内嵌设计，改为独立“已开启/已关闭”文字 + 34×20px 标准滑块，圆点两端均保留内边距。新版深浅主题截图在 `work/qa-ui-audit-2026-09-23/video-audio-refine-r2/`；音频往返切换、时长滑块、视频参数弹层及图片四宫格 3/3 Playwright、`ModuleNodeCard.test.tsx` 294/294、完整 workspace typecheck 和 renderer build 均通过。此改动仍未打包或安装。
+
+## 2026-09-24 干净交接：视频音频行整行居中与源码界面清单
+
+- 根因：视频五行参数菜单的音频按钮容器被放在两列网格的右列并 `justify-content: flex-end`，按钮整体中心相对整行偏右 107px。现在音频行有独立 `--audio` 类，标签与跨整行的按钮容器固定在同一网格行；容器居中后，本地 Playwright 实测偏差 0px。音频开关值、图文内容和其它四行参数保持原逻辑。
+- 回归位置：`tests/e2e/integrated-generation-card.spec.ts` 的深浅主题用例新增整行与按钮的中心坐标断言。先 RED（107px），修复后 3/3 通过。另 `tests/e2e/clean-handoff-ui-audit.spec.ts` 用本地夹具检查 26 种 domain 注册模块、8 种当前画布过滤的旧渲染器、AI 分层、Agent、生图和视频。新截图与逐项状态在 `work/qa-clean-handoff-2026-09-24-r4/report.md`；新证据不引用 2026-09-23 截图。
+- 本轮相关 Playwright 15/15，旧项目迁移与反推 10/10；局部 Vitest 329/329，`npm.cmd run typecheck` 和限定文件 `git diff --check` 通过。AI 分层分析回复来自 E2E 本地 JSON，`modelSubmissions=0`，浏览器外部 HTTP 请求 0；没有真实供应商、额度消耗、打包或安装。
+- 未解决：生图节点靠顶部展开时 AI 分层入口被顶栏 Agent 按钮挡住，命中记录见 r4 `layering-entry-hit.json`；适应视图后可点，本轮未改该独立布局。真实透明背景路由仍无已验证证据，确认生成保持禁用。程序化焦点探针在 11 种模块上未保持焦点，不能由此单独断定键盘不可达。
+- 工作树边界：保留原有 dirty 源码与未跟踪文件，未清理。运行已有 `image-layering.spec.ts` 时该用例向固定 `work/qa-layering-ui-2026-09-23` 路径写图，可能刷新了该目录 8 张旧 PNG；运行前未记录哈希，不能保证原字节未变。正式安装与真实项目未验收。
+
+### 2026-09-24 续查：浅色视频时长控件外观
+
+- 用户截图中的浅青色框是时长滑块的键盘焦点框。复现时失焦滑块仅有裸滑轨，而获得焦点后出现一个 38px 高的圆角框；相邻下拉参数始终是 30px 高的浅色底框。根因是通用 `.workspace--canvas-layout .module-node :is(button, select, input)` 把 `input` 的最小高度强制为 38px，旧时长专用样式只指定 `height:20px` 且保持透明、无边框。
+- `release-layout-contract.css` 的时长专用规则现明确限定高/最小高/最大高为 30px，加入与同菜单下拉框一致的底色、1px 边框和 7px 圆角；滑块横跨完整右侧参数区，时长值叠放在框内，滑轨为数值留出空间，键盘焦点框仍显示。没有改变时长值及音频开关逻辑。
+- 回归在 `tests/e2e/video-duration-appearance.spec.ts`：先 RED（滑块实测 38px、下拉 30px），再为整块控件等宽要求 RED（148px 对 188px），最终 GREEN；失焦/键盘焦点/再失焦新截图、计算样式与报告在 `work/qa-duration-appearance-2026-09-24-r6/`。验证命令：`npx.cmd playwright test tests/e2e/video-duration-appearance.spec.ts tests/e2e/integrated-generation-card.spec.ts --workers=1`，4/4 通过，覆盖浅色焦点与深浅主题参数菜单、音频整行居中；`npm.cmd test -- apps/renderer/src/styles/release-layout-contract.test.ts` 26/26，`npm.cmd run typecheck` 通过。
+- 此续查是源码与本地浏览器证据；没有打包、安装或调用真实供应商。原审计的 AI 分层入口与顶栏重叠、实际供应商及安装态未验证项仍见 `work/qa-clean-handoff-2026-09-24-r4/report.md`。
+
+### 2026-09-24 未解决项续修：AI 分层入口与焦点清单
+
+- AI 分层入口遮挡根因是最终 `release-layout-contract.css` 中共享生图布局把结果工具条设为 `top:-82px`；卡片 y=110px 时，按钮落在 y=36–70px，中心被固定顶栏的 Agent 按钮命中。`tests/e2e/unresolved-ui-regressions.spec.ts` 先在深浅主题复现 RED，再将工具条放到卡片顶部空白操作区（`top:9px`），同一摆位按钮变为 y=127–161px。普通 `locator.click()` 无需适应视图即可打开 AI 分层弹窗；顶栏与卡片头其他控件仍可见。保护行为是结果工具条保持在生图卡内，不改变分层提交门禁或画布视口。
+- 视频时长通过 Playwright 真实鼠标拖动从 4s 变为 8s，并同步到参数摘要；此前仅有方向键证据的交互空缺已补。原 11 项“焦点未保持”是审计脚本优先选到隐藏但未禁用元素的误报；修正为可见可用控件后，26 种模块中 21 种控件聚焦成功，5 种空态没有可见可用控件。未把空态节点误称为可键盘操作，也未修改其产品代码。
+- 验证：`npx.cmd playwright test tests/e2e/unresolved-ui-regressions.spec.ts tests/e2e/integrated-generation-card.spec.ts tests/e2e/video-generation-ui.spec.ts --workers=2` 为 50/50；`npx.cmd playwright test tests/e2e/clean-handoff-ui-audit.spec.ts --workers=1` 为 4/4，重生 26 种模块与 8 种旧渲染器截图，并在原摆位直接进入分层流程；`npm.cmd test -- apps/renderer/src/canvas/ModuleNodeCard.test.tsx apps/renderer/src/styles/release-layout-contract.test.ts apps/renderer/src/app/layering-route-evidence.test.ts apps/desktop-modern/src/layered-psd-open.test.ts` 为 326/326；`npm.cmd run typecheck` 通过。新截图与逐项报告在 `work/qa-clean-handoff-2026-09-24-r5/`，遮挡/拖动/焦点复核在 `work/qa-unresolved-ui-2026-09-24-r2/`；旧 r4 和 r1 证据保留。
+- 生产分层路由证据 `PRODUCTION_LAYERING_ROUTE_EVIDENCE` 仍为空；本地 JSON 夹具只验证 UI/流程，真实透明像素与费用没有证据，确认生成继续禁用。Photoshop 桥的错误/保存路径单测通过，但真实打开、当前源码安装态仍受用户“未经检查不打包、不安装”和外部环境边界限制。此次没有请求供应商、消耗额度、打包、安装、清理工作区或重跑会写入 2026-09-23 固定目录的旧用例；此前 8 张旧 PNG 的原字节没有可验证的前置哈希。
+- 2026-09-24 公开文档只读复核：OpenAI 官方 `https://developers.openai.com/api/docs/guides/image-prompting` 明示 GPT Image 的透明背景编辑与 PNG 参数；Comfly 官方 `https://ai.comfly.org/zh` 仅泛称 API 兼容，未给出当前 Comfly 精确路由的透明参数透传和 alpha 回包证明。因此不把 OpenAI 上游文档误记为 Comfly 生产路由证据，也不解开零费用门禁。
+
+### 2026-09-24 YANZO Canvas AI 分层流程适配
+
+- 用户确认参考软件为 YANZO Canvas，并选择适配参数到结果的全流程。本机参考资源显示智能/自定义模式、2–12 层、模型与分辨率选择、持久任务历史/恢复、原图/合成图、语义复核及 PSD 输出；本次是本地资源代码研究，不是参考软件供应商验收。
+- Atelier 分层分析加入智能/自定义目标层数，自定义范围 2–12；解析器支持最多 12 层。合成节点新增完成数、原图/合成图切换、任务状态同步和失败单层重试确认。重试保留分层组及层 ID 并重绑画布图层；精确透明路由证据仍为唯一提交门禁。
+- 新鲜截图与报告：`work/qa-layering-yanzo-2026-09-24/report.md`；浅/深参数（含 12 层）、确认门禁、进度、原图和合成图截图在同目录。Playwright 2/2，模型提交 0，外部 HTTP 0；定向 Vitest 32 项分层 UI/分析/计划工作台测试及 4 项 app-store/任务恢复测试通过，workspace typecheck 通过。
+- 未验证真实供应商、计费、透明像素质量、正式安装、重启期间真实任务恢复和 Photoshop 打开。生产透明背景证据仍为空；没有独立历史下拉列表。未打包、未安装，保留工作区既有修改和未跟踪文件。
+
+### 2026-09-24 续修：YANZO 语义分层与 Agent 空状态居中
+
+- 对照本机 YANZO Canvas 分层面板的参数、计划复核和输出流程，Atelier 分析提示现在按实际画面语义逐项拆解：背景及遮挡处重建、每个产品/清晰摆件单独成层、对象接触阴影/投影各自单独成层并标注对应对象；对象像素不带投影，阴影层不重画对象，保留原图尺寸/位置/遮挡顺序。图层名称与说明在确认前均可逐层编辑；“主体/细节/前景/对象/图层”等泛称无法进入确认。每个被包含图层仍对应一个独立图像任务，阴影任务再次明确只绘阴影。
+- 自定义层数不再诱导模型合并语义对象：当实际对象和阴影多于目标时，UI 提示增加目标；少于目标时提示降低目标，不编造空白/重复层。分层计划返回后右侧面板滚到顶部；长计划移除列表内层嵌套滚动，统一由右侧面板滚动。
+- “开始对话”偏左根因：基础 CSS 将 intro 限宽300px且居中，高优先级浮窗规则把 margin 重置为零；父网格又将宽度受限的项目贴左放置。Playwright 在504×720浅/深主题复现球与输入框中心相差55px；改为受限宽度下显式 `justify-self:center` 和 `margin-inline:auto` 后球偏移0px、标题偏移约-0.008px。Agent 建议标题另受画布通用按钮子元素居中规则影响，浮窗专用样式现将标题恢复为左对齐，1024×900实测所有四行字形均始于图标右侧13px，且最右未越过行中心前36px。
+- 新鲜截图/机器结果：`work/qa-layering-yanzo-semantic-20260924-r3/`（浅/深参数、五层方案、门禁、进度、原图/合成图；结果 JSON 的模型提交数与外部请求均为0）；`work/qa-agent-quicktask-alignment-20260924-r4/`；`work/qa-agent-empty-intro-20260924-r3/`（含前后偏移 JSON）。测试截图均由本轮最新源码与 Playwright 本地夹具生成。
+- 验证：全量 Vitest 268文件通过、2跳过，4058项通过/2项跳过；完整 `npm.cmd run build`（含全工作区 typecheck）退出0，renderer 有既存 chunk>500KB 提醒；`npm.cmd run scan:e2e` 通过；Agent 空状态中心、Agent 建议行及 YANZO 参数/五层方案/预览共6/6 Playwright。候选 `win-unpacked` 隔离启动报告 `candidate-startup-r26-retry/report.json` PASS：版本1.6.156、无 pageError、退出0。`git diff --check` 仅报告 main.styles.test.ts 的 CRLF 转换提示。
+- 新 NSIS 候选在 `work/qa-release-1.6.156-20260924/installer-output-r26-retry/CanvasAtelier-Win10-11-x64-1.6.156.exe`，105019229 bytes，SHA-256 `7e447b8b5b6b2881a30dabc71ba74d2448a4d7efce0a9b37b9247535f4bcb0d8`；app.asar SHA-256 `040336c4468e8dbcd0a750803784f16bf308fd2787d063136cfe6ef3c4f40794`。字节身份与 renderer、MCP、Photoshop、图标逐项核对见 `package-identity-r26-retry.json`；electron-builder 生成的 app-update 配置检查了 GitHub provider/repo/release keys。包未签名，未安装、未发布。第一次独立输出因 Windows `UNKNOWN` asar-integrity 文件写入失败，原 r26 失败目录保留；用新 retry 目录与既有短暂错误重试包装器后成功，没有覆盖 r25 或失败输出。
+- 风险：上游 AI 对语义提示的遵循度、实际透明像素、边缘/阴影合成质量和计费均未由真实供应商验证；生产透明背景路由证据仍为空，确认生成按钮保持禁用。五层场景是本地 JSON fixture，证明界面和任务合同，不证明模型真实分割精度。安装器未安装/签名，正式安装态、真实项目和 Photoshop 打开仍未验证。完整源码、dirty 修改、未跟踪文件及旧 r25 均保留。
+
+### 2026-09-24 1.6.157 Agent、节点与生图单端口交接
+
+- 生图节点双圆点根因是域层保留 `generation_result` 和 `image_asset` 两种必要输出，但 UI 各自渲染一行；旧修复仅隐藏第二行，悬停又出现。新 UI 只渲染一个输出行和可见 `result` 端口，`image` 仍作为透明、不可点击的同坐标 React Flow handle 供旧连线定位；连接校验、提交和空白画布快速插入会按目标输入类型将可见端口映射成 `image` 或 `result`。先失败的组件/连接回归后 479/479 通过，本地从端口正向拖到图片自动分层与结果输出、从两类目标反向拖回均成功，悬停截图仅有一个圆点；没有删除域合同中的任一输出。
+- Agent 模型菜单由大面板改为紧凑搜索式选择，推理强度弹层收小，素材槽随内容收紧并支持反推素材双击放大；Codex 模型档案从 CLI 动态读取 GPT-6 Astra/Sol/Luna。问问 AI 顶栏与对话空态共用玻璃球贴图，加外环旋转、内部移动高光、呼吸及减弱动态效果兼容；Playwright 直接取样两个位置的动画变换。Agent、布局、媒体与连接本地 3/3 通过，未发送对话。
+- 本轮新截图及逐项验收为 `work/qa-agent-node-layout-20260924/report.md`：26 个注册模块节点、8 个过滤旧画布渲染类型，AI 分层七层场景夹具逐层编辑/排除到六层复核、无已验证透明背景路由的生成门禁；视频音频按钮整行中心偏差 0px，时长/音频控制及生图参数；颜色校正深浅色弹层无遮挡。分层/节点 10/10、Agent 与正反向连线 4/4、颜色 2/2、整合卡/300 节点与 500 边性能 9/9。语义与阴影质量只由本地夹具证明界面合同，不代表真实供应商效果；压力测试仍出现超过 100ms 的缩放帧间隔。
+- 全套 Vitest 268 文件通过、2 跳过，4065 项通过、2 跳过。初次全量发现 `runtime-entry-contract.test.ts` 的版本预期停在 1.6.156，改为 1.6.157 后全量重跑绿。完整 `npm.cmd run build`、`npm.cmd run scan:e2e`、`git diff --check` 通过（只出现 LF/CRLF 提醒）。renderer 仍提示主包大于 500KB。
+- 新 NSIS 候选 `work/qa-agent-node-layout-20260924/installer-output-r1/CanvasAtelier-Win10-11-x64-1.6.157.exe`，105020329 字节，SHA-256 `48a269826a04bd4b9b3ebe56438eb65d7f8e493b14101d2a7b54e574e071979e`；app.asar SHA-256 `064773a2774c75a0194a1035a4700c40c480becd58666991b834dad9432b8b16`。desktop、renderer、MCP、Photoshop、图标与包内容逐字节核对；隔离 `win-unpacked` 启动版本 1.6.157、页面错误 0、错误 PSD 返回 invalid_psd、退出码 0。未安装、未发布、未发起真实供应商请求。正式安装、真实项目、Photoshop COM、上游透明图质量与额度仍单列未验证。完整 dirty 工作树和未跟踪文件保留。
+
+### 2026-09-24 1.6.158 用户海报分层、分层节点单输入与 Agent 控制栏
+
+- 用户新截图指向的是 `image_layering`，并非上轮已修的 `image_generation`。分层节点内部 `image` 和 `layerImages` 仍保留，但左边合成一个可见接点、右边保留一个输出；同组独立子层映射到 `layerImages`，外部原图仍走 `image`。组件和连接测试先红后绿，正常缩放的新截图与 Playwright 均为左 1、右 1。没有抹去旧工程端口 ID。
+- 本轮使用用户的加热杯广告图原文件：658×1208 PNG、625071 bytes、SHA-256 `63993fdcc46f070884691a76f0e83660422f3690d8313d12e208dcb5485f3d3c`。Playwright 验证导入 data URL 与原图字节相同，进入分层分析、显示 12 层本地可编辑方案与无路由生成门禁。方案覆盖背景、展台、产品、热光、蒸汽、两组标题、80W 文案和底部对比卡；未强加无法可靠辨认的投影。**该方案由本地测试回复提供，不是真实模型分析；透明 PNG/PSD 未生成**。模型提交和外部请求均为 0。生产分析提示新增海报文字/图表/热效规则。
+- Agent 对话底栏模型按钮移除 78px 固定宽度，浅色新截图完整显示 `chatgpt-4o-latest`；浮窗、窄宽度、模型与推理控件、素材预览、小球动画 Playwright 9/9。另有本轮 26 注册节点、8 旧类型、Agent/生图/视频参数新截图与盘点，详见 `work/qa-layering-user-image-20260924/report.md`。
+- 全量 Vitest 268 文件通过/2 跳过，4067 项通过/2 跳过；升版后包装入口定向测试 23/23。全工作区 typecheck/build、scan:e2e、diff check 通过。候选 NSIS `work/qa-layering-user-image-20260924/installer-output-r1/CanvasAtelier-Win10-11-x64-1.6.158.exe`，105020629 bytes，SHA-256 `2be87a27468a8e1a3b84a4d099f6a541b43ce881db516ee99e651ebf1a64c134`；资源逐字节核对，隔离 `win-unpacked` 启动版本 1.6.158、页面错误 0、退出 0。未安装、未发布；供应商真实分层、PSD、Photoshop COM、正式安装与真实项目重开仍未验证。
+
+### 2026-09-24 1.6.160 图槽密度、Agent 合并控制与验收复盘
+
+- 用户症状：12/20 张素材只显示少量图槽并在展开卡片右侧留大片空白；Agent 模型和反推强度分开占位。图槽根因是生图卡片素材条继承固定 474px 宽度及 7 张以后横向滚动。`ConnectedAgentMediaSlots.tsx` 现按数量标记布局；`release-layout-contract.css` 对展开生图卡片使用完整宽度，1–12 张一行、13–20 张两行，同步增加素材区及下方控件高度。反推和视频原滚动合同保持。`tests/e2e/image-slot-density.spec.ts` 旧 474px 布局 RED，修改后 GREEN；`video-inset-and-twenty-slots.spec.ts` 验证 20 张两行、25 张滚动、换位、保存重开。Agent 模型/反推强度合在一个弹层和底栏按钮，方案选择与聊天布局复测。截图和逐项报告见 `work/qa-release-1.6.160-20260924/report.md`。
+- 源码层：`npm.cmd test -- --reporter=dot` 268 文件/4071 项通过、2 文件/2 项跳过；`npx.cmd playwright test --workers=2 --reporter=line` 223/223；`npm.cmd run scan:e2e` PASS。构建层：`npm.cmd run build` 含 typecheck PASS；限定 diff check 退出 0。包层：1.6.160 NSIS 105022583 字节，SHA-256 `fa4721d57da8586a9fdf74ac2b4bbd2f0eafa8ee8c421da9e555f0e502254253`；app.asar SHA-256 `3646e0141f24208fc58bd3b4644728ac5f252db7f7743e92615cea48700a9384`；desktop/renderer/MCP/Photoshop 与构建产物逐字节一致，包未签名。
+- 解包候选隔离重验：首次 QA 脚本把目录命名 `canvas-160-*`，不符合 `resolveQaUserDataRoot` 要求的 `canvasforge-qa` basename，且未在 UI 操作前检查运行时 userData，三个 QA 项目误落真实用户数据。先前启动 PASS 不能作为隔离证据。现修正脚本命名，并在任何 UI 修改前断言 `app.getPath('userData')` 等于 QA 根。`candidate-startup-r2/report.json` 与 `package-persistence-qa-r2.json` PASS：启动、保存/重启恢复、MCP 14 工具、错误 PSD 拒绝、无页面错误、干净关闭/退出码 0；首次失败报告留存。
+- 真实用户数据善后：仅三个带本轮唯一 `QA160-*` 标记的项目及 recovery 被移到可逆的 `accidental-real-userdata-qa-quarantine/`；recent 索引原件备份后仅移除三个测试项，其余四项保留。另一个已有 149 节点项目在错误隔离期间保存时间更新；缺少前置字节快照，不能断言它没有内容变化，故未回滚。以后所有安装包 QA 必须先断言隔离根，再允许创建或保存。
+- 正式安装层 BLOCKED：NSIS 触发 Windows UAC，系统返回“操作已被用户取消”；`D:\CanvasAtelier\Canvas Atelier` 仍为 1.6.159，不能宣称安装成功。外部供应商/Photoshop 层 UNVERIFIED：真实 Comfly 透明层和 Photoshop COM 未实测，生产分层生成门禁不解开。GitHub Release/在线更新层 NOT DONE：1.6.160 未发布。下一接续点为用户允许 UAC 后运行 `work/qa-release-1.6.160-20260924/verify-formal-install-1.6.160.ps1`，正式安装态复验，并单独处理供应商与 Photoshop 证据。
+
+### 2026-09-25 1.6.160 AI 分层正式验收接续
+
+- 用户要求全部验收成功，包括真实 AI 分层。分层生产路由证据数组目前为空，不可把目录 capability 或本地 JSON 夹具当成透明像素实证。OpenAI 官方图像文档说明 `background=transparent` 与 PNG/WebP 的上游合同，但 Comfly 转发是否保留 alpha 仍需精确路由实测。本轮构造 1024×1024 蓝色杯子源图，SHA-256 `dbe5d59269c780f728690a4c0955335cbdd053e2757cb8e6fda7303bd938a563`；固定 `comfly-gpt-image-2-5-flare`、1K/low/PNG/transparent、单次提交且不自动重试的 live 意图，SHA-256 `6792842ecc850637ef33423d98f79a5cd5005e01b00da8318a5991a30d922d5e`。用户付费调用答复尚未收到，实际提交数 0。
+- 零费用生产候选预检：`candidate-comfly-readonly-qa.json` 在独立 `canvasforge-qa-*` userData 中复制加密配置和 `Local State`，Comfly `checkConnection` 为 connected，Flare/Sunburst 生图、编辑、异步能力齐备，pageErrors=[]、退出 0；临时凭据副本经目标路径验证后清理。首次未复制 `Local State` 时凭据锁定，保留失败记录。`candidate-layering-preflight-qa-r2.json` 验证源图经真实文件桌面桥导入并持久保存；最初脚本的 operation ID 不符 `dropped_media_*` 合同，RED 记录保留，修正后 GREEN。`candidate-live-alpha-preflight.json` 固定了单次 live 合同，未发送生成请求。
+- Photoshop 候选验收：`candidate-photoshop-open-qa-r2.json` 的双图层 PSD 字节及哈希一致，`photoshop-window-qa.json` 证明 Photoshop 2026 窗口实际显示该 QA PSD；`candidate-photoshop-placement-qa.json` 经应用桥导入 QA 图片到活动文档返回 `ok:true` 和新图层名。PowerShell 的独立 COM 探针报类型库错误，但它与应用桥是不同入口；应用入口真实通过。后续仍需在正式 1.6.160 安装态重验。
+- 正式安装第二次尝试仍被 Windows UAC 返回“操作已被用户取消”，正式 app.asar 仍是 1.6.159；未再重复触发 UAC。1.6.160 GitHub Release 和在线更新仍未发布。此轮完整证据及自我复盘见 `work/qa-release-1.6.160-20260924/acceptance-20260925.md`。未通过的 AI 分层真实返图、完整两层任务链、正式安装和在线更新必须继续分层报告，不能合并为 PASS。
+
+### 2026-09-25 1.6.161 设置页质感、真实状态与验收复盘
+
+- 用户要求设置页有更强质感，并把其他问题一起处理。设置页现为 760px 自适应面板，统一字号、分类按钮、卡片边界／阴影、间距与焦点；480px 窗口分类两行、供应商两列。地址／缓存路径左对齐，连接与 MCP 按钮图标文字同行，模型保存按钮有独立间距。修复设置页低于浮动工具栏的层级，密钥和更新弹窗继续高于设置页。
+- 功能展示根因：下载目录开关和数个按钮没有处理函数；activeBytes 同时被标成画布原图与作品输出；四个缓存分类按钮都调用同一个 purgeExpired；本机知识库检查被描述为跨设备同步已开启。移除空操作和未接通云同步选项，统计改为历史媒体／回收站，清理名称改为真实的过期回收站媒体，本机版本检查按实际能力描述。
+- 回归先红后绿：`SettingsDrawer.test.tsx` 先复现 2 项错误展示；`settings-visual-acceptance.spec.ts` 先复现最小字号 8px、工具栏遮挡、连接按钮图文中心偏差 19px。最终截图覆盖 1680/1024/480px 与深浅色，含模型区和 MCP 底部。旧静态检查只证明控件存在／样式字符串，未验证最终级联和真实行为；初看 app.css 误判 428px，运行态实际为 720px，因此以后用计算样式和新截图定位。
+- 源码层：全量 Vitest 268 文件／4071 项通过、2 项跳过；最终样式和升版后定向 168/168。首轮全量 Playwright 229/230：1920×1080 浅色缩放卡顿 250ms，门禁 `<250ms`，保留 `work/qa-settings-20260925-r1/full-e2e-before-final-polish.json`。单场景重验缩放 82ms，未改阈值；最终完整重跑 231/231、退出 0（`final-e2e.log`），首轮波动根因未确定。曾因进度截断误报全绿，已纠正；以后必须以最终退出码和完整汇总为结论依据。
+- 构建层 PASS：最终 `npm.cmd run build` 含 typecheck；只有既有 chunk size 提示。包层 PASS：`work/qa-release-1.6.161-20260925/installer-output-r1/CanvasAtelier-Win10-11-x64-1.6.161.exe`，105022724 bytes，SHA-256 `a5f21332c8255787443d8dc6dd6e090e68f61c81917fbe2ce64faacc73c6c4ed`；app.asar SHA-256 `5f62a7b60852ea7e15b7ecfc9e6d70a6a1228f0543a92b4734d4f702b84b7990`。desktop/renderer/MCP/Photoshop 与构建逐字节一致，NSIS 解出 86 文件全部匹配，latest.yml 的版本／大小／SHA-512 一致，SHA256SUMS 已生成。
+- 候选运行体 PASS：先断言独立 QA userData 再操作。1.6.161 启动、保存／重开、MCP 14 工具、错误 PSD 拒绝、正常退出均通过，pageErrors=[]；真实候选浅深色四个设置分类共 8 画面无横向溢出。证据 `candidate-startup-r2/report.json`、`package-persistence-qa-r2.json`、`candidate-settings-qa.json`。
+- 正式安装／外部／发布仍分列：只读复核正式安装仍为 1.6.159，UAC 待用户处理，本轮未再触发。真实 Comfly 透明分层付费确认尚未收到，提交数 0，生产路由门禁未放开。1.6.160 候选 Photoshop 真机结果保留，1.6.161 未重复外部写入。GitHub v1.6.161 不存在，未发布／未验证旧版在线更新。完整报告与下一接续见 `work/qa-release-1.6.161-20260925/acceptance-20260925.md`；不可宣称全部交付 PASS。
+
+### 2026-09-25 1.6.162 设置页整体重设计与审美验收复盘
+
+- 用户明确指出 1.6.161 仍不够高级。此前验收只证明无溢出、控件可用，未证明信息结构和视觉主次已经满足设计目标；不能把功能 PASS 当作审美通过。重新查看真实界面后，将等权卡片堆叠与横向表单导航改为 176px 左侧分类、右侧独立内容区和页面标题；980px 自适应容器、暖白／石墨底色与低饱和青绿，弱化重复边框，地址重置改为文字操作，凭据摘要改为信息行。760px 以下导航放到顶部两列，功能入口与数据处理保留。
+- 实现与回归：`SettingsDrawer.tsx` 增加导航／tabpanel 关联、组件 ref 重置滚动和分类页标题；最终样式集中在 `release-layout-contract.css` 末尾原设置区块。`settings-visual-acceptance.spec.ts` 先复现侧栏目标失败（758px），再复现旧高优先级 grid 样式导致图文中心差 26.5px。修正最终级联后，导航与正文左右位置、图文同行、浅深色／1680/1024/480px、溢出和弹窗层级通过。首次 scrollTo 调用在 jsdom 报错，改为组件 ref + scrollTop，新增分类滚动恢复行为断言；旧四列布局测试更新为新侧栏合同。以后必须检查计算样式与图文位置，不能只看源码是否存在 flex。
+- 源码层 PASS：最终设置与打包入口 6 文件、110/110；设置相关浏览器 13/13、退出 0。构建层 PASS：全工作区 typecheck 与 build；scan:e2e、限定 diff check 通过。此次没有将上一版 231 项全量结果冒充新版本全量回归。命令和日志在 `work/qa-release-1.6.162-20260925/acceptance.md`。
+- 包层 PASS：新独立 NSIS 候选 1.6.162，105024017 bytes，SHA-256 `a57314fac6d54d8ac50eba11f49dd730d465d98472d0ddda76deb786426fa10e`；app.asar SHA-256 `405a29fc0f9b4870472dd45c01a81e300f0fbe87ee79115e611f9aaad05665fd`。构建资源／更新元数据一致，NSIS 解出的 86 文件全部逐字节匹配。保留 1.6.161 包。
+- 候选运行层 PASS：先断言独立 canvasforge-qa userData；1.6.162 实际浅深色四分类 8 个画面、保存／重开、14 MCP 工具、错误 PSD 拒绝、正常退出通过，pageErrors=[]。截图来自实际候选及受控浏览器；模型数不代表真实账户可用性。
+- 正式安装层本轮未执行，先前 1.6.159／UAC 阻碍延续；真实 AI 分层付费确认仍待答复，提交数 0，未改生产路由证据。Photoshop 外部操作未重测。GitHub 未发布、用户在线更新未验证。下一接续应使用最新 1.6.162 候选，继续正式安装、获准后的真实分层和最终发布；不能宣称原始全量交付完成。
+
+### 2026-09-25 1.6.163 统一全局深色主题
+
+- 用户明确选定：所有深色界面采用新版设置页的石墨／灰绿色配色。以后新组件应复用全局变量：canvas #191e1c、surface #202523、surface-muted #272d2a、border #373e39、text #e8ece7、muted #a2aea6、accent #8ed5be、accent-soft #2b4238，保留错误／警告／端口语义色。浅色基础变量不改。
+- 根因：全局 tokens、Canvas Gate 多轮后置覆盖、Agent action、设置局部变量和 body portal 分别定义深色，导致新设置与其余页面色调不同。修改 tokens，新增最后导入的 `atelier-dark-theme.css` 映射这些变量并处理保存按钮、知识库入口和图片菜单的硬编码。设置页改为读取共享色；分层浅青绿主按钮使用深色文字。
+- 新鲜验证：主题旧画布色值先 RED，修改后 GREEN；对比度正文 13.02、辅助 6.11、主按钮 9.19。137/137 相关单测通过，全 workspace typecheck/build 通过。广浏览器 33/34，唯一历史遮挡未通过；最终修正后主题／历史／分层针对性 6/6，退出 0，其余已通过的界面不重复跑。不要称为一次完整 34/34。报告 `work/qa-release-1.6.163-20260925/acceptance.md` 保留每次结果。最终 renderer 重建、scan:e2e 与限定 diff check 通过。
+- 复盘：实际看图发现历史筛选被浮动工具栏挡住。首次普通 class 设置 z-index 180 仍输给带 data-canvas-surface 的旧规则，运行态是 120；补充准确选择器后 elementFromPoint 命中 history、截图无遮挡。测试初稿误用不可见 fitview 控件和分析前不存在的分层生成按钮，按真实阶段修正。开发态曾有一次 ResizeObserver 通知警告，最终针对性和候选没有对应 pageerror；不冒称修复已知业务根因。
+- 包与候选 PASS：1.6.163 NSIS 105024301 bytes，SHA-256 `1dc3533e1239cc4bf61143dc2a90fbf83fdde59a0446dc49051634b88991b271`；app.asar `b34c68f2f81cc01cc8d9f5378e701ef34a905cccd1165cc4e5c43e7430082a54`。构建资源和 updater metadata 一致，NSIS 解出 86 文件逐字节一致。独立 canvasforge-qa 根先断言再操作；实际深色画布／Agent 色值、设置 8 画面、保存／重开、14 MCP 工具、错误 PSD 拒绝、干净退出通过，pageErrors=[]。
+- 正式安装未执行，先前正式 1.6.159／UAC 阻碍未解；真实分层付费确认仍待答复，提交数 0，Photoshop 外部未重测。未发布 GitHub，在线更新未验收。最新候选改用 1.6.163，旧包和用户工作区保留；不能宣称全量交付通过。
+
+### 2026-09-25 1.6.164 模型强度统一、长消息上下文与工作流模型复盘
+
+- 用户再次反馈强度入口仍是小面板、上下文被长气泡挡住、浅色层次不足，并追加工作流模型选择。根因是入口状态分叉、flex 占位未真正修正、原生选项无背景，以及固定工作流模型后搜索列表消失。短对话与仅验父框边界漏掉了内部内容溢出。
+- 完成：所有模式底部统一模型面板，两段入口都直接完整展开；上下文不收缩、内部滚动，Agent 高于工具栏；浅色采用暖白灰绿共享变量，深色 option 明确背景。工作流固定后保留搜索和已选侧线、参数可展开、跨路线清旧参数、图片视频分别保存，同名路线可区分，少量目录按内容收紧。
+- 自我纠错：长消息测试初稿被空项目 helper 清除，增加 12 条消息断言；测到详情 371 > 容器 354 后修正 flex。截图发现通用按钮规则让未选模型也高亮且按钮过矮，补实际高度和颜色差异断言。虚构 Comfly 视频被能力白名单正确拒绝，改合法 RelayMe 夹具，没有放宽生产边界。新增主题测试 tuple 首次 typecheck 失败，补 as const 后完整构建通过。
+- 验收：源码 311/311；追加工作流前广回归 28/28，最终定向 10/10；全 build 与最终 renderer 重建。包及 latest.yml 一致，NSIS 86 文件逐字节一致。最终候选空目录和隔离 IPC 模拟目录均通过、无 pageErrors、退出 0；保存重开、MCP14、错误 PSD 拒绝、正常退出通过。模拟目录不代表真实提供商成功。完整证据：work/qa-release-1.6.164-20260925/acceptance.md。
+- 最终候选 105024949 bytes，EXE SHA-256 03da31ed01baacc2ad6aa259410fc3b3df579b1a93d36d9338951705e1ae3803；app.asar 5a12b2d248ccb17cf282c93edbee97296a31114dddc958249c6fbb734e28f91e。最后 CSS 变化后已重新打包并重跑候选。
+- 正式目录 app.asar 本轮刷新为 1.6.163，旧记录 1.6.159 已过时；1.6.164 未正式安装，当前执行令牌未提升。真实 AI 分层授权／验收仍待处理，本轮付费提交 0。未发布 GH、未验在线更新，不宣称全量交付完成。保留旧候选、全部用户脏工作区。
+- 后续每次继续复盘：逐入口、长消息实际加载、子边界／命中／截图、固定与自动搜索、图片视频独立偏好及跨模型参数；源码变化后对应包重新验收。下一步正式安装／真实分层／GH 更新继续按层验收。
+
+
+### 2026-09-25 1.6.165 沉浸图片预览、知识库与分层模型复盘
+
+- 用户指出双击预览不符彦造参考、知识库仍旧蓝黑且空白过多、分层模型空列表。本轮统一素材／结果预览为全窗口，真实像素缩放、1:1、Shift／拖动／键盘、受限右键五操作；知识库使用共享深浅色变量，约390px。分层按已配置 Comfly GPT 编辑传输合同提供模型，保留返回像素和尺寸验收，禁用及不完整路线继续拒绝；未伪造生产实测证据。模型切换保持确认区并更新分辨率。
+- 根因与漏检：旧主题只查部分入口；旧预览把fit当100%；静态空allowlist被误当产品门禁成功；菜单只测存在，未点复制；toBeVisible不保证滚入视野。新增测试先复现知识库颜色、空模型、复制data-fetch CSP、确认区在屏幕外及小图未放大，再修复。最后确认区滚动及小图修复后重新生成 final 包。
+- 验收分层：全量单元4076通过/2跳过（末次修复前）；复制相关337，最终组件316；广UI19/19，最后预览/知识库/操作10/10、分层视野2/2；完整build后最后renderer typecheck/build。最终包与latest.yml一致，NSIS86文件匹配；实际候选EXE独立userData，预览/知识库/8设置画面/三模式、保存重开/MCP14/错误PSD拒绝/退出0，pageErrors=[]。剪贴板IPC在QA中拦截，仅证明PNG原生解码2400×1600；Photoshop浏览器为受控桥，不是外部实测。
+- 最终候选：work/qa-release-1.6.165-20260925-final/installer-output-r1/CanvasAtelier-Win10-11-x64-1.6.165.exe，105026714 bytes，SHA-256 16af59eb3d2b9c3839ac57213d3bce750488533dd61dfd8117fadb130f6a54bc；app.asar 1b1450118472ea39db542f632b94561dfa5a65432a747fda20ecfd9c79d05187。完整逐项记录及复盘 work/qa-release-1.6.165-20260925-final/acceptance.md，接续 docs/checkpoints/2026-09-25-image-preview-layering-1.6.165.md。未带 final 的同版本目录为旧轮候选。
+- 正式安装/外部/发布：本轮重新读取正式app.asar为1.6.164，修正前轮1.6.163记录；存在用户正式进程，没有强关或替换。本轮真实付费提交0，真实分层质量及当前版本Photoshop、安装态、GH/在线更新未验收，此前额度授权仍待处理。按最终候选继续这些项目，不能宣称全量交付完成。保留用户全部脏工作区和旧证据。
+
+- 结束前已重新提出具体真实验收额度问题：最多4次Comfly调用（分析1、透明测试1张、分层2张，2K），按供应商实际收费、失败不自动重试。尚未答复，付费调用保持0。候选包及验收报告已可供审阅，后续先读取该答复再开展依赖额度的工作。
+
+### 2026-09-25 1.6.166 Flare 4K 与知识库定位复盘
+
+- 用户症状：基础 `GPT Image 2.5 Flare` 的分层分辨率缺少 4K；知识库选择层仍在上方，与输入区留大块空白。根因：分层确认只使用当前路由的分辨率合同，没按同系列已配置 `-4k` 变体映射到真实提交路由；知识库使用固定 `top: 52px`，内容缩短后不能贴近输入区。
+- 为何上轮漏检：此前只选择 4K 专用模型，未从基础 Flare 切到 4K 并检查确认参数；只量知识库自身高度／颜色，没有量与输入区的距离。此次分层单测先红（缺 4K），旧 1.6.165 安装候选实测旧空隙 102.6px 后才改源码。
+- 精确修复：分辨率列出同系列可用路由，4K 仅由通过门禁的精确 4K 路由提供；提交和摘要使用解析后的实际路由，缺少变体时不展示 4K。知识库用工作台与输入区的实际位置、`ResizeObserver` 及窗口尺寸重新定位，保留顶部任务栏。回归在 `apps/renderer/src/canvas/LayeringDialog.test.tsx`、`tests/e2e/layering-yanzo-adaptation.spec.ts`、`tests/e2e/immersive-image-preview.spec.ts` 和 `work/qa-knowledge-anchor-20260925.mjs`。
+- 新鲜验收：全量单元 4079 通过／2 跳过（最后追加无 4K 路由边界用例前），最后分层定向 10／10；升版 1.6.166 后完整 `npm.cmd run build`；最终浏览器 22／22，前次 20／22 因两条旧“无透明路由”断言过期，更新后整组重跑。候选实际 EXE 独立 userData：700px／900px × 对话／创作／Codex 六组均距输入区 18px、顶部无遮挡，pageErrors=[]；浅深预览／知识库、设置 8 画面、三模式、图片原生解码、保存重开、MCP14、错误 PSD 拒绝、退出 0 通过。NSIS 解出 86 文件逐字节一致。
+- 候选安装包 `work/qa-release-1.6.166-20260925-final/installer-output-r1/CanvasAtelier-Win10-11-x64-1.6.166.exe`，105027001 bytes，SHA-256 `80b888556703a2916629470835643c230c30245beda0130775fbed9efa6eeb18`；app.asar `0d64f4779d7be8631db541da138feafb58c6654ed67d2ee80011cfa616e0a067`。完整证据、首次失败与各层限制见 `work/qa-release-1.6.166-20260925-final/acceptance.md`，接续见 `docs/checkpoints/2026-09-25-flare-4k-knowledge-anchor-1.6.166.md`。
+- 分层验收限制：源码、构建、包、候选 EXE 已通过；正式目录本轮只读为 1.6.165，仍有运行进程，1.6.166 未正式安装。真实 Comfly 分层付费调用 0，语义／透明边缘／4K 实际输出未验证；当前版真实 Photoshop 未验；GH 和在线更新未发布未验。已提出更新后的最多 4 次 Comfly 调用（含至少一次 4K）额度问题，仍待答复。不要用本地夹具或等候时间当作费用批准；通过外部质量门禁后再完成正式安装、GH 与在线升级。
+- 自我复盘：扩展界面脚本包含两条遗留门禁文案，首次失败后没有放宽生产路由，改为真实可选能力检查并完整重跑。初次 Playwright 证据使用旧默认输出目录，最终完整重跑显式写到新版本证据目录；下轮先设置独立证据目录。每轮继续记录红灯、根因、各验收层与未完成动作。
+- 第二版接续修正：继续审查发现基础 Flare 声明 1K、4K 变体却省略 `constraints.image.resolutions` 时，通用分辨率列表会提前过滤 4K。新增单测先红（只有 1K），改为对每档直接解析同系列精确路由并核对分层合同；有变体则显示，没变体仍隐藏。全量单元重跑 4081 通过／2 跳过；完整构建、最终界面 22／22、分层浏览器 2／2、新候选 EXE 与 86 个 NSIS 文件重验通过。原 r1 包已过时，**最终仅用** `work/qa-release-1.6.166-20260925-final/installer-output-r2/CanvasAtelier-Win10-11-x64-1.6.166.exe`，105026953 bytes，SHA-256 `b51c030b3e9255e77407ca111d951535d0021a1e784e1d0abce91fb7dde50b3f`；app.asar 仍为 `0d64f4779d7be8631db541da138feafb58c6654ed67d2ee80011cfa616e0a067`，因这次只改 renderer 资源。第二版验收见同目录 `acceptance.md`。
+- 第二版中间界面整组 21／22：受控 Photoshop 回调断言偶发未收到，单条连续 10／10、最终整组 22／22；增加失败时的页面警报／按钮诊断，但尚未定位根因，不能宣称该间歇风险已修复。正式安装／真实供应商／Photoshop 外部／GH 更新仍按报告待验，真实付费请求 0。已向用户提出含至少一次 4K 的最多四次 Comfly 调用额度问题；无答复前不执行收费调用。
+
+### 2026-09-25 1.6.167 分层节点布局、程序图标与供应商复盘
+
+- 用户反馈七层输出离源图太远、整理画布仍成过长竖列，分层慢并要求核对 GPT 与其他供应商的图片／视频模型，还要求更高级的软件图标。初始图层使用全局最右位置、自动布局把同组七层放同一列；修成源图附近碰撞安全布局和最多三列分组自动排布。先红后绿的 `layering-graph.test.ts`、`auto-layout.test.ts`，真实浏览器七层节点边界／整理画布验收均通过；最终相关浏览器 19/19。
+- 图标源更新为石墨与薄荷色 N。首次 r1 包的 `icon.ico` 是新的，exe 仍是 Electron 默认图标；根因是 `signAndEditExecutable: false`。新增 `desktop-icon-contract.test.ts` 配置断言及 `scripts/verify-windows-exe-icon.ps1` 实际 exe 32×32 像素检查；旧 exe 红、最终安装包解出 exe 绿。普通构建遇到 winCodeSign 的 macOS 符号链接权限和 `rcedit` 提交失败，最终使用隔离英文路径先生成目录、手工写入版本资源和图标、再 `--prepackaged` 生成 NSIS；没有覆盖旧包。
+- 首次最终全量测试 4082 通过／1 失败／2 跳过，失败是历史图片 `onLoad` 之后 `src` effect 重置覆盖 `loaded`。改为按 `src` 存储状态，历史和图标定向 23/23，最后完整全量 4083 通过／2 跳过，完整 build、scan:e2e、浏览器 19/19 均通过。以前只核对图标资源和功能测试的即时断言，遗漏 exe PE 图标和异步状态竞争；往后从最终安装包提取 exe 验图标，并对源图变化的图片状态做回归。
+- 最终只使用 **r6** 包：`work/qa-release-1.6.167-layering-icon-20260925/final-r6/CanvasAtelier-Win10-11-x64-1.6.167.exe`，105284203 字节，SHA-256 `3444a48334351950aa9ec457ede5616b827719ac176beb99c0bbdb0bf63e13d9`。`latest.yml` 哈希一致，NSIS 86 文件逐字节一致；候选实际 EXE 独立数据目录保存／重开、MCP14、错误 PSD 拒绝、正常退出及页面错误 0 全过。未签名。
+- 供应商定向合同测试 Comfly/RelayMe/NewAPI 463/463；实际本机仅 Comfly 配置 29 图片／18 视频模型，47 条都启用且 `complete`，RelayMe 0 当前模型配置，聚轮／4DAI 无配置。历史 Comfly 图片、RelayMe 图片／视频成功不能证明当前全型号正常。当前七个 Flare 4K 分层任务历史仍 `running` 且无输出，正式 GUI 不在运行，只有 MCP helper；不重复提交或声称质量通过。此次新付费请求 0，真实透明像素、所有 GPT／其他供应商图片视频、4K 时延仍未验证；只读正式 `app.asar` 是 1.6.166，1.6.167 未正式安装，真实 Photoshop、GH 发布和旧版在线更新未执行。各层证据与下一接续见 `docs/checkpoints/2026-09-25-layering-icon-provider-audit-1.6.167.md`。
+
+### 2026-09-25 1.6.169 模型系列／清晰度统一与最终包复盘
+
+- 用户最新要求图片模型名不带 2K／4K，清晰度单独选择，AI 分层同理。按供应商和系列归并实际路由，设置、生图节点、Agent 固定偏好和方案确认、AI 分层都只显示系列名；清晰度仍解析至精确供应商路由。设置页同系列启用开关管理全组。补映射单测和浏览器回归。
+- 保存故障单次有界重试、旧远距分层节点迁移至原图附近、整理节点保留视野及设置页骨架的前序修改继续纳入回归。最终源码 4090 通过／2 跳过，完整 typecheck/build，最终浏览器 18/18，scan:e2e／diff check 通过。重构后第一版 r1 包已过时，**仅使用 r2**：105286463 字节，SHA-256 `35bfe2555c7e4e8a98e298357f2e45cba92d742f384a8c1d8fd8054013e50c0c`，NSIS 解包 86/86 文件哈希匹配，PE 图标与版本 1.6.169 通过；包未签名。候选 EXE 隔离数据目录保存／正常退出／重开一致，MCP14，损坏 PSD 拒绝，pageErrors=[]。
+- 自我复盘：之前逐条暴露供应商路由导致重复模型名；只覆盖设置页会漏掉 Agent、节点和分层。此次发现并修正同 modelId 不同系列的合并碰撞；先前 r1 包因后续源码变更失效，必须每次最终变更后重打包并重验。初次把 GUI 关闭后仍在的 MCP helper 误判为孤儿并结束，后续独立复核确认它由仍运行的 Codex 客户端持有，不是画布 GUI 自有泄漏；以后按父进程归属判断且不结束外部客户端的 helper。候选 EXE 自身进程退出后为 0，保存/退出/MCP 定向 274/274 通过。
+- 正式安装没有通过：用户回复已退出，实际 GUI 已关，但 NSIS 在非提权会话返回“操作已被用户取消”，直接写安装目录亦被自动策略拒绝。正式目录仍 1.6.167；不能把候选验收冒充安装验收。真实 GPT／其他供应商付费生图视频、透明分层与 4K 成品、Photoshop 当前版、GitHub 发布及在线更新未通过。具体矩阵和交付物位于 `work/qa-release-1.6.169-model-family-20260925/acceptance.md`；下一步先以可提权会话安装 r2 并按哈希和实际功能验收，再发布。
+- 验收习惯补充：设置页独立输出目录复跑 9/9，人工查看深色模型系列和 480px 浅色供应商页截图；首次使用旧固定截图目录可能刷新同名历史文件，随后给 E2E 增加 `CANVAS_SETTINGS_AUDIT_DIR` 并把最终截图隔离至本轮目录。今后截图测试先设置独立证据目录。
+
+### 2026-09-25 1.6.170 终态回归、供应商错误恢复与大型项目保存复盘
+
+- 用户追问未验收项后扩展检查，发现并修正三类遗漏：Comfly 视频 SUCCESS 无 output 或无效 MP4 的任务账本可能保持 running；Agent 同供应商同名 GPT Image 2 等别名出现重复按钮；1K 从 2K/4K 变体回退基础路由的 family key 判断失效。三者均先红后绿，并保留精确供应商路由。
+- 供应商下载安全回归覆盖临时网络 TypeError、429/5xx、body stream 中断；可恢复错误继续原任务，不重复付费，确定坏结果持久失败。供应商/GPT 分层合同 437/437，当前没有真实付费提交。
+- 源码全量 4102 通过/2 跳过，workspace typecheck/build 通过；当前 UI 定向 595/595，扩展 Playwright 20/20，工作流模型选择 1/1，更新流程 1/1。大型隔离副本 157 节点/199 图片/1 视频点击保存、重开、退出通过，保存状态属性 saved，约 285ms，pageErrors=0，cleanClose=true。
+- 大型项目初次 45 秒保存失败是验收脚本误用默认可见等待：Canvas 折叠布局让 save-state 节点 display:none，但 data-save-state 已是 saved；修正为 attached/属性、manifest revision、recent index、退出码和 cleanClose 联合判断。不要把可见性误报成写盘失败。
+- 正式安装仍未验证：D:\CanvasAtelier 当前 1.6.167；NSIS 需要可提权会话，之前返回操作被用户取消。最终 1.6.170 包在 work/qa-release-1.6.170-final-20260925/deliverables，105286594 字节，SHA-256 7c6e25cfd52b5fb6de3942a7989335d51f4c7b5f15bc3ec9ee944c783c2323e2，86/86 解包匹配，图标/版本通过，未签名。
+- 自我纠错：扩展矩阵发现重复模型后没有沿用旧包，先修路由与测试类型，再完整 build 和重打包。曾误判外部 Codex 持有的 MCP helper 为画布泄漏，已纠正判断。仍未做真实供应商成品、透明 alpha/4K、当前 Photoshop、正式安装态和 GitHub/在线更新；下一步先管理员安装 1.6.170，核对 exe/app.asar 哈希后重跑安装矩阵，再决定发布。

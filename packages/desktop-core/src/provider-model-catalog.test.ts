@@ -25,6 +25,14 @@ const relayModels: RelayMeModel[] = [
 ];
 
 describe('provider model catalog', () => {
+  it.each(['gpt-image-1', 'gpt-image-1-mini', 'gpt-image-1.5', 'gpt-image-1.5-2025-12-16', 'gpt-image-2-all'])('repairs unsupported cached 4K tiers for %s', (modelId) => {
+    const input: ProviderBridgeProfile = { provider: 'comfly', modelRoute: `comfly-${modelId}`, modelId, displayName: modelId, capabilities: ['image_generation'], constraints: { image: { resolutions: ['1K', '2K', '4K'] } } };
+    const [cached] = mergeProviderModelProfiles([input]);
+    expect(cached?.constraints?.image?.resolutions).toEqual(modelId === 'gpt-image-2-all' ? ['1K'] : ['1K', '2K']);
+    const [fresh] = buildComflyModelProfiles({ version: 'known-native-sizes', models: [{ key: modelId, name: modelId, provider: 'OpenAI', tags: ['绘图'], apis: ['/v1/images/generations'], capabilityStatus: 'complete' }] });
+    expect(fresh?.constraints?.image?.resolutions).toEqual(cached?.constraints?.image?.resolutions);
+    if (modelId !== 'gpt-image-2-all') expect(cached?.constraints?.image?.sizes).toEqual(['1024x1024', '1536x1024', '1024x1536']);
+  });
   it('filters blank, incomplete, and duplicate Comfly catalog entries', () => {
     const profiles = buildComflyModelProfiles({ version: 'filtering', models: [
       { key: 'same-model', name: 'Same Model', provider: 'OpenAI', tags: ['绘图'], apis: ['/v1/images/generations'], capabilityStatus: 'complete' },

@@ -1,0 +1,36 @@
+/* Content-sized library sheet; share settings palette in both themes. */
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__sheet.skill-chat-workbench__sheet--library[data-anchor='composer-footer'] {
+  inset: auto 12px var(--library-anchor-bottom, 246px) !important; width: calc(100% - 24px); height: auto !important;
+  max-height: min(480px, var(--library-available-height, calc(100% - 310px))) !important; min-height: 0;
+  display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow: hidden;
+  z-index: 80; color: var(--text); background: var(--surface) !important;
+  border: 1px solid var(--border-strong) !important; border-radius: 18px; box-shadow: var(--shadow-panel);
+}
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__sheet--library > header {
+  position: static !important; padding: 0; margin: 0; border: 0; background: transparent !important; flex: none;
+}
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__sheet--library > header strong { color: var(--text); font-size: 17px; }
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__sheet--library :is(p, small, .skill-chat-workbench__library-count) { color: var(--muted); font-size: 11px; }
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__library-search {
+  flex: none; min-height: 40px; padding: 8px 12px; border: 1px solid var(--border) !important; border-radius: 10px; background: var(--surface-muted) !important; color: var(--muted);
+}
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__library-search input { color: var(--text); background: transparent; font-size: 12px; }
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__library-categories { display: flex; gap: 6px; flex: none; }
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__library-categories > button {
+  flex: 1; min-width: 0; height: 32px; min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); color: var(--muted); font-size: 12px;
+}
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__library-categories > button.is-active {
+  color: var(--accent); background: var(--accent-soft); border-color: var(--accent-soft-border);
+}
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__knowledge-choice-list { display: grid; flex: 0 1 auto; gap: 8px; min-height: 0; max-height: 260px; overflow-y: auto; }
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__knowledge-choice-list > button {
+  display: grid; grid-template-columns: 22px minmax(0,1fr); gap: 10px; min-height: 60px; padding: 10px 12px;
+  background: var(--surface-muted); color: var(--text); border: 1px solid var(--border); border-radius: 10px; text-align: left;
+}
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__knowledge-choice-list > button[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent-soft-border); }
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__knowledge-choice-list :is(span, strong, small) { text-align: left; justify-self: start; }
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__knowledge-choice-list strong { color: var(--text); font-size: 13px; }
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__knowledge-choice-list i { width: 20px; height: 20px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--accent); background: var(--surface); }
+:root[data-theme] .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-chat-workbench__sheet--library > footer {
+  position: static; flex: none; margin: 0; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-muted); color: var(--muted); font-size: 11px;
+}

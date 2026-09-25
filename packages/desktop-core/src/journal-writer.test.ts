@@ -5,10 +5,11 @@ import { join, normalize } from 'node:path';
 
 import {
   applyProjectTransaction,
+  projectTransactionSchema,
   type CanvasProject,
   type ProjectTransaction,
 } from '@agent-canvas/domain';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { canonicalJson } from './canonical-json';
 import { type CommitRequest, type JournalRecord } from './contracts';
@@ -28,6 +29,7 @@ describe('JournalWriter', () => {
   const tempRoots: string[] = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     resetJournalWriterRegistryForTests();
     await Promise.all(
       tempRoots.splice(0).map((tempRoot) => rm(tempRoot, { force: true, recursive: true })),
@@ -63,6 +65,35 @@ describe('JournalWriter', () => {
 
     expect(second).toEqual(first);
     expect((await readValidJournal(activeJournal)).records).toHaveLength(1);
+  });
+
+  it('validates unchanged journal records once while still validating newly appended bytes', async () => {
+    const { activeJournal, writer } = await createWriter(tempRoots);
+    await writer.commit(makeRequest('tx-typing-1'));
+    await writer.commit(makeRequest('tx-typing-2', 1));
+    const parse = vi.spyOn(projectTransactionSchema, 'parse');
+    expect((await readValidJournal(activeJournal)).records).toHaveLength(2);
+    expect(parse).toHaveBeenCalledTimes(2);
+    parse.mockClear();
+    expect((await readValidJournal(activeJournal)).records.map(record => record.transactionId)).toEqual(['tx-typing-1', 'tx-typing-2']);
+    expect(parse).not.toHaveBeenCalled();
+    await writer.commit(makeRequest('tx-typing-3', 2));
+    parse.mockClear();
+    expect((await readValidJournal(activeJournal)).records).toHaveLength(3);
+    expect(parse).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let callers mutate cached journal records or bypass changed-byte and project validation', async () => {
+    const { activeJournal, writer } = await createWriter(tempRoots);
+    await writer.commit(makeRequest('tx-cache-integrity'));
+    const first = await readValidJournal(activeJournal);
+    const pristine = JSON.stringify(first);
+    (first.records[0] as unknown as { operations: unknown[] }).operations.length = 0;
+    expect(JSON.stringify(await readValidJournal(activeJournal))).toBe(pristine);
+    await expect(readValidJournal(activeJournal, { expectedProjectId: 'another-project' })).rejects.toMatchObject({code:'CORRUPT_JOURNAL'});
+    const original = await readFile(activeJournal, 'utf8');
+    await writeFile(activeJournal, original.replace('tx-cache-integrity', 'tx-cache-tampered'), 'utf8');
+    await expect(readValidJournal(activeJournal)).rejects.toMatchObject({code:'CORRUPT_JOURNAL'});
   });
 
   it('rejects a duplicate transaction id with a different payload without appending', async () => {

@@ -10,6 +10,7 @@ import {
   replaceKnowledgeClientForTests,
   replaceModelJobExecutorForTests,
   replaceModelJobStorageForTests,
+  replaceLayeringRouteEvidenceForTests,
   replaceProjectPersistenceClientForTests,
   resetAppStoreForTests,
   useAppStore,
@@ -24,6 +25,9 @@ import type {
 } from './desktop-persistence';
 import { PROJECT_STORAGE_KEY, loadPersistedProjectBundle } from './project-persistence';
 import { AUTOSAVE_IDLE_MS } from './autosave';
+import { registerEditorDraft } from './editor-draft-boundary';
+import { confirmLayeringPlan, parseLayeringAnalysis } from './layering-plan';
+import type { LayeringRouteEvidence } from './layering-route-evidence';
 
 describe('project optimization memory', () => {
   afterEach(() => vi.useRealTimers());
@@ -4672,6 +4676,30 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().modelJobs[0]).toMatchObject({
       aspectRatio: '9:16', videoResolution: '720p', durationSeconds: 6, outputCount: 1,
     });
+  });
+
+  it('queues four independent 30-second videos when the selected route declares support', async () => {
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: 'provider-' + job.id })),
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'relayme', modelRoute: 'relay-video-30', displayName: 'Relay Video 30', modelId: 'relay-video-30',
+      capabilities: ['video_generation', 'async_tasks'],
+      constraints: { video: { aspectRatios: ['16:9'], resolutions: ['1080p'], duration: { mode: 'range', min: 1, max: 30, step: 1 }, outputCounts: [1, 2, 3, 4] } },
+    }]);
+    resetAppStoreForTests();
+    const generation = createCanvasModuleNode('video-30-four-node', 'video_generation', { x: 0, y: 0 });
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [], assets: [] } });
+
+    await expect(useAppStore.getState().runVideoPreviewNode(generation.id, {
+      modelRoute: 'relay-video-30', prompt: 'A thirty second product film', referenceAssetIds: [], keyframe: 'auto',
+      aspectRatio: '16:9', resolution: '1080p', durationSeconds: 30, outputCount: 4, audioEnabled: false,
+    })).resolves.toBe(true);
+
+    expect(useAppStore.getState().modelJobs).toHaveLength(4);
+    expect(useAppStore.getState().modelJobs.every((job) => job.durationSeconds === 30 && job.outputCount === 1)).toBe(true);
   });
 
   it('executes the exact video provider route already confirmed by MCP', async () => {
@@ -9762,6 +9790,7 @@ function createMockClient(overrides: Partial<ReloadableTestProjectPersistenceCli
   }));
   return {
     analyzeReversePrompt: overrides.analyzeReversePrompt,
+    chatSkill: overrides.chatSkill,
     close: overrides.close ?? (async () => {}),
     copyHistoryToProject: overrides.copyHistoryToProject,
     commit: async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
@@ -10072,6 +10101,58 @@ function knowledgeState(options: {
   });
 
 describe('explicit project save', () => {
+  it('retries one transient desktop stable-point write failure before showing a save error', async () => {
+    vi.useRealTimers();
+    const project = { ...createStarterProject(), nodes: [], edges: [] };
+    const stablePoint = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('temporary archive lock'), { code: 'DURABLE_WRITE_FAILED', retryable: true }))
+      .mockResolvedValueOnce({ availableSnapshotIds: ['manual-save-after-lock'], lifecycle: 'durable', project, revision: 2 });
+    replaceProjectPersistenceClientForTests(createMockClient({ stablePoint }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ project, projectLifecycle: 'durable', persistenceMode: 'desktop', saveStatus: 'pending' });
+
+    await expect(useAppStore.getState().saveProjectExplicitly()).resolves.toBe(true);
+    expect(stablePoint).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState()).toMatchObject({ saveStatus: 'saved', saveErrorCode: null, desktopRevision: 2 });
+  });
+  it('leaves saving with a retryable error when an editor draft cannot be flushed', async () => {
+    const unregister = registerEditorDraft(async () => false);
+    try {
+      resetAppStoreForTests({ project: 'empty' });
+      useAppStore.setState({ saveStatus: 'pending' });
+
+      await expect(useAppStore.getState().saveProjectExplicitly()).resolves.toBe(false);
+
+      expect(useAppStore.getState()).toMatchObject({
+        canRetryProjectCommit: true,
+        saveErrorCode: 'PROJECT_SAVE_RETRY_REQUIRED',
+        saveStatus: 'error',
+      });
+    } finally {
+      unregister();
+    }
+  });
+
+  it('times out an editor draft flush instead of leaving explicit save spinning forever', async () => {
+    vi.useFakeTimers();
+    const unregister = registerEditorDraft(() => new Promise<never>(() => {}));
+    try {
+      resetAppStoreForTests({ project: 'empty' });
+      useAppStore.setState({ saveStatus: 'pending' });
+
+      const saving = useAppStore.getState().saveProjectExplicitly();
+      await vi.advanceTimersByTimeAsync(15_001);
+
+      await expect(saving).resolves.toBe(false);
+      expect(useAppStore.getState()).toMatchObject({
+        saveErrorCode: 'SAVE_TIMEOUT',
+        saveStatus: 'error',
+      });
+    } finally {
+      unregister();
+    }
+  });
+
   it('creates a durable project even when an empty untitled canvas has no pending autosave draft', async () => {
     const project = { ...createStarterProject(), nodes: [], edges: [] };
     const stablePoint = vi.fn(async () => ({
@@ -10256,6 +10337,230 @@ describe('explicit project save', () => {
       saveErrorCode: 'DURABLE_WRITE_FAILED',
       saveStatus: 'error',
     });
+  });
+});
+
+describe('GPT layering analysis app-store boundary', () => {
+  beforeEach(() => {
+    delete window.novusDesktop;
+    localStorage.clear();
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient());
+    replaceModelJobStorageForTests(createTestModelJobStorage());
+    resetAppStoreForTests();
+  });
+
+  it('uses the selected vision route once with a managed source and never submits a generation job', async () => {
+    const assetId = 'abcdef0123456789';
+    const chatSkill = vi.fn(async () => ({
+      message: JSON.stringify({ layers: [
+        { layerId: 'background', kind: 'background', name: '背景', description: '补全场景', included: true },
+        { layerId: 'subject', kind: 'transparent', name: '主体', description: '产品主体', included: true },
+      ] }),
+      modelRoute: 'vision-route', sources: [],
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ chatSkill }));
+    const submitImageJob = vi.fn();
+    window.novusDesktop = { provider: {
+      getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+      getActiveProvider: vi.fn(async () => ({ activeProvider: 'comfly' as const })),
+      listProfiles: vi.fn(async () => [{
+        provider: 'comfly' as const, modelRoute: 'vision-route', displayName: 'Vision', modelId: 'gemini-3.1-pro-preview',
+        capabilities: ['chat' as const, 'vision' as const], capabilityStatus: 'complete' as const,
+      }]),
+      submitImageJob,
+    } } as unknown as typeof window.novusDesktop;
+    useAppStore.setState({ projectImages: [{ assetId } as never] });
+
+    const plan = await useAppStore.getState().analyzeImageLayering({
+      sourceAssetId: assetId, provider: 'comfly', modelRoute: 'vision-route', width: 1024, height: 768,
+    });
+
+    expect(plan.sourceAssetId).toBe(assetId);
+    expect(chatSkill).toHaveBeenCalledOnce();
+    expect(chatSkill).toHaveBeenCalledWith(expect.objectContaining({ visualAnalysis: true, referenceAssetIds: [assetId] }));
+    expect(submitImageJob).not.toHaveBeenCalled();
+  });
+
+  it('durably commits the confirmed layer graph as one canvas transaction', async () => {
+    const assetId = 'abcdef0123456789';
+    const source = createCanvasModuleNode('layer-source', 'image_input', { x: 120, y: 180 });
+    source.data.config = { ...source.data.config, assetId };
+    const managedAsset = {
+      assetId, byteSize: 16, extension: 'png' as const, height: 768, label: '原图', mediaType: 'image/png' as const,
+      origin: 'imported' as const, sha256: `${assetId}${'b'.repeat(48)}`, width: 1024,
+    };
+    const project = parseCanvasProject({
+      ...createStarterProject(), nodes: [source], edges: [], assets: [managedAsset],
+    });
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({ ok: true, project: request.nextProject, revision: 3 }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState((current) => ({
+      project,
+      projectImages: [{ ...managedAsset, displayUrl: 'novus-asset://project/session/source', usageCount: 1 } as never],
+    }));
+    const plan = parseLayeringAnalysis(JSON.stringify({ layers: [
+      { layerId: 'background', kind: 'background', name: '背景', description: '还原场景', included: true },
+      { layerId: 'subject', kind: 'transparent', name: '主体', description: '主体轮廓', included: true },
+    ] }), assetId, 1024, 768);
+    const confirmation = await confirmLayeringPlan(plan, 'comfly', 'gpt-image-2', '2K', '2026-09-23T06:00:00.000Z');
+
+    await expect(useAppStore.getState().createConfirmedLayeringGroup({ plan, confirmation, groupId: 'group-123' })).resolves.toBe(true);
+
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.nodes.filter((node) => node.type === 'module' && node.data.config.groupId === 'group-123')).toHaveLength(3);
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === 'layer-source')).toEqual(source);
+    expect(useAppStore.getState().project.edges.filter((edge) => edge.target === 'image-layering-group-123')).toHaveLength(3);
+  });
+
+  it('rejects a stale confirmation without committing graph changes', async () => {
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({ ok: true, project: request.nextProject, revision: 2 }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    const plan = parseLayeringAnalysis(JSON.stringify({ layers: [
+      { layerId: 'background', kind: 'background', name: '背景', description: '还原场景', included: true },
+      { layerId: 'subject', kind: 'transparent', name: '主体', description: '主体轮廓', included: true },
+    ] }), 'abcdef0123456789', 1024, 768);
+    const confirmation = await confirmLayeringPlan(plan, 'comfly', 'gpt-image-2', '2K', '2026-09-23T06:00:00.000Z');
+
+    await expect(useAppStore.getState().createConfirmedLayeringGroup({
+      plan: { ...plan, layers: plan.layers.map((layer) => ({ ...layer, description: `${layer.description} 已修改` })) },
+      confirmation,
+      groupId: 'group-stale',
+    })).rejects.toThrow(/confirmation|changed/u);
+
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('blocks generation when the selected route lacks image-edit capability', async () => {
+    const assetId = 'abcdef0123456789';
+    const source = createCanvasModuleNode('route-gate-source', 'image_input', { x: 10, y: 10 });
+    source.data.config = { ...source.data.config, assetId };
+    const project = parseCanvasProject({ ...createStarterProject(), nodes: [source], edges: [], assets: [{
+      assetId, byteSize: 16, extension: 'png', height: 768, label: '原图', mediaType: 'image/png',
+      origin: 'imported', sha256: `${assetId}${'c'.repeat(48)}`, width: 1024,
+    }] });
+    const plan = parseLayeringAnalysis(JSON.stringify({ layers: [
+      { layerId: 'background', kind: 'background', name: '背景', description: '背景描述', included: true },
+      { layerId: 'subject', kind: 'transparent', name: '主体', description: '主体描述', included: true },
+    ] }), assetId, 1024, 768);
+    const confirmation = await confirmLayeringPlan(plan, 'comfly', 'comfly-gpt-image-2', '1K', '2026-09-23T06:00:00.000Z');
+    const submit = vi.fn(async () => ({ providerTaskId: 'should-not-submit' }));
+    replaceModelJobExecutorForTests({ submit, poll: vi.fn(async () => ({ status: 'running' as const })) });
+    window.novusDesktop = { provider: {
+      getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+      listProfiles: vi.fn(async () => [{ provider: 'comfly' as const, modelRoute: 'comfly-gpt-image-2', displayName: 'GPT Image 2', modelId: 'gpt-image-2', capabilities: ['image_generation' as const, 'async_tasks' as const], capabilityStatus: 'complete' as const }]),
+    } } as unknown as typeof window.novusDesktop;
+    useAppStore.setState((current) => ({ project, projectImages: [{ assetId, byteSize: 16, extension: 'png', height: 768, label: '原图', mediaType: 'image/png', origin: 'imported', sha256: `${assetId}${'c'.repeat(48)}`, width: 1024, displayUrl: 'novus-asset://project/session/source', usageCount: 1 } as never] }));
+    await useAppStore.getState().createConfirmedLayeringGroup({ plan, confirmation, groupId: 'route-gate' });
+
+    await expect(useAppStore.getState().startConfirmedLayering({ plan, confirmation, groupId: 'route-gate' })).rejects.toThrow(/does not support transparent image-edit/u);
+
+    expect(submit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project.nodes.filter((node) => node.type === 'module' && node.data.config.groupId === 'route-gate'))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ data: expect.objectContaining({ config: expect.objectContaining({ status: 'planned' }) }) })]));
+  });
+
+  it('durably binds and submits exactly one held GPT edit job per included layer', async () => {
+    const assetId = 'abcdef0123456789';
+    const source = createCanvasModuleNode('job-source', 'image_input', { x: 10, y: 10 });
+    source.data.config = { ...source.data.config, assetId };
+    const project = parseCanvasProject({ ...createStarterProject(), nodes: [source], edges: [], assets: [{
+      assetId, byteSize: 16, extension: 'png', height: 768, label: '原图', mediaType: 'image/png',
+      origin: 'imported', sha256: `${assetId}${'d'.repeat(48)}`, width: 1024,
+    }] });
+    const plan = parseLayeringAnalysis(JSON.stringify({ layers: [
+      { layerId: 'background', kind: 'background', name: '背景', description: '恢复完整背景', included: true },
+      { layerId: 'subject', kind: 'transparent', name: '主体', description: '提取主体', included: true },
+      { layerId: 'unused', kind: 'transparent', name: '未选文字', description: '独立文字', included: false },
+    ] }), assetId, 1024, 768);
+    const confirmation = await confirmLayeringPlan(plan, 'comfly', 'comfly-gpt-image-2', '1K', '2026-09-23T06:00:00.000Z');
+    const routeEvidence: LayeringRouteEvidence = {
+      provider: 'comfly', modelRoute: 'comfly-gpt-image-2', modelId: 'gpt-image-2', source: 'live_alpha_qa', verifiedAt: '2026-09-23T06:00:00.000Z',
+      transparentBackground: true, outputFormat: 'png', resolutions: ['1K'],
+    };
+    const submitted = deferred<void>();
+    const release = deferred<void>();
+    const submit = vi.fn(async (job: ModelJob) => { submitted.resolve(); await release.promise; return { providerTaskId: `task-${job.id}` }; });
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({ ok: true, project: request.nextProject, revision: 3 }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    replaceModelJobStorageForTests(createTestModelJobStorage());
+    replaceModelJobExecutorForTests({ submit, poll: vi.fn(async () => ({ status: 'running' as const })) });
+    replaceLayeringRouteEvidenceForTests([routeEvidence]);
+    window.novusDesktop = { provider: {
+      getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+      listProfiles: vi.fn(async () => [{ provider: 'comfly' as const, modelRoute: 'comfly-gpt-image-2', displayName: 'GPT Image 2', modelId: 'gpt-image-2', capabilities: ['image_generation' as const, 'image_edit' as const, 'async_tasks' as const], capabilityStatus: 'complete' as const, constraints: { image: { resolutions: ['1K' as const] } } }]),
+    } } as unknown as typeof window.novusDesktop;
+    useAppStore.setState((current) => ({ project, projectImages: [{ assetId, byteSize: 16, extension: 'png', height: 768, label: '原图', mediaType: 'image/png', origin: 'imported', sha256: `${assetId}${'d'.repeat(48)}`, width: 1024, displayUrl: 'novus-asset://project/session/source', usageCount: 1 } as never] }));
+    await useAppStore.getState().createConfirmedLayeringGroup({ plan, confirmation, groupId: 'jobs-group' });
+
+    await expect(useAppStore.getState().startConfirmedLayering({ plan, confirmation, groupId: 'jobs-group' })).resolves.toBe(true);
+    await submitted.promise;
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(submit.mock.calls.map(([job]) => [job.promptNodeId, job.layeringGroupId, job.layeringLayerId, job.referenceAssetIds, job.imageBackground, job.imageOutputFormat, job.outputCount]))
+      .toEqual(expect.arrayContaining([
+        ['image-layer-jobs-group-background', 'jobs-group', 'background', [assetId], 'opaque', 'png', 1],
+        ['image-layer-jobs-group-subject', 'jobs-group', 'subject', [assetId], 'transparent', 'png', 1],
+      ]));
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().project.nodes.filter((node) => node.type === 'module' && node.data.moduleType === 'image_layer' && node.data.config.groupId === 'jobs-group'))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ data: expect.objectContaining({ config: expect.objectContaining({ layerId: 'background', status: 'queued', jobId: expect.any(String) }) }) }),
+        expect.objectContaining({ data: expect.objectContaining({ config: expect.objectContaining({ layerId: 'subject', status: 'queued', jobId: expect.any(String) }) }) }),
+      ]));
+    release.resolve();
+  });
+
+  it('rebinds a failed layer retry to its original canvas node before any fixture submission', async () => {
+    const assetId = 'abcdef0123456789';
+    const projectId = 'layer-retry-project';
+    const jobId = 'failed-layer-job';
+    const source = createCanvasModuleNode('retry-source', 'image_input', { x: 0, y: 0 });
+    source.data.config = { ...source.data.config, assetId };
+    const layer = createCanvasModuleNode('image-layer-retry-group-subject', 'image_layer', { x: 400, y: 0 });
+    layer.data.config = { ...layer.data.config, groupId: 'retry-group', layerId: 'subject', sourceAssetId: assetId,
+      jobId, status: 'failed', qualityStatus: 'failed', modelRoute: 'comfly-gpt-image-2', provider: 'comfly', resolution: '1K' };
+    const group = createCanvasModuleNode('image-layering-retry-group', 'image_layering', { x: 800, y: 0 });
+    group.data.config = { ...group.data.config, groupId: 'retry-group', sourceAssetId: assetId, status: 'failed' };
+    const project = { ...createStarterProject(), id: projectId, nodes: [source, layer, group], edges: [], assets: [{
+      assetId, byteSize: 16, extension: 'png' as const, height: 768, label: '原图', mediaType: 'image/png' as const,
+      origin: 'imported' as const, sha256: `${assetId}${'e'.repeat(48)}`, width: 1024,
+    }] };
+    const failedJob: ModelJob = { id: jobId, kind: 'image', conversationId: 'image-layering-retry-group',
+      displayName: 'GPT Image 2', modelId: 'gpt-image-2', modelRoute: 'comfly-gpt-image-2', projectId,
+      projectSessionId: 'layer-retry-session', promptNodeId: layer.id, prompt: 'retry fixture', provider: 'comfly',
+      referenceAssetIds: [assetId], retryCount: 0, status: 'failed', layeringGroupId: 'retry-group',
+      layeringLayerId: 'subject', resolution: '1K', imageOutputFormat: 'png', imageBackground: 'transparent', outputCount: 1 };
+    const storage = createTestModelJobStorage([failedJob]);
+    const release = deferred<void>();
+    const submitted = deferred<void>();
+    const submit = vi.fn(async (job: ModelJob) => { submitted.resolve(); await release.promise; return { providerTaskId: `fixture-${job.id}` }; });
+    replaceModelJobStorageForTests(storage);
+    replaceModelJobExecutorForTests({ submit, poll: vi.fn(async () => ({ status: 'running' as const })) });
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({ commit: vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> =>
+      ({ ok: true, project: request.nextProject, revision: 2 })) }), {
+      ensureModelExecutionSession: vi.fn(async () => 'layer-retry-session'), getSessionId: () => 'layer-retry-session',
+    }));
+    window.novusDesktop = { provider: {
+      getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+      listProfiles: vi.fn(async () => [{ provider: 'comfly' as const, modelRoute: 'comfly-gpt-image-2',
+        displayName: 'GPT Image 2', modelId: 'gpt-image-2', capabilities: ['image_generation' as const, 'image_edit' as const, 'async_tasks' as const],
+        capabilityStatus: 'complete' as const }]),
+    } } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+    replaceLayeringRouteEvidenceForTests([{ provider: 'comfly', modelRoute: 'comfly-gpt-image-2', modelId: 'gpt-image-2',
+      source: 'live_alpha_qa', verifiedAt: '2026-09-23T06:00:00.000Z', transparentBackground: true,
+      outputFormat: 'png', resolutions: ['1K'] }]);
+    useAppStore.setState({ project, projectImages: [{ assetId } as never], projectLifecycle: 'durable',
+      persistenceMode: 'desktop', saveStatus: 'saved', modelJobs: [failedJob] });
+
+    replaceLayeringRouteEvidenceForTests([]);
+    await useAppStore.getState().retryModelJob(jobId);
+    const retry = (await storage.list()).find((candidate) => candidate.id !== jobId)!;
+    const rebound = useAppStore.getState().project.nodes.find((node) => node.id === layer.id);
+    expect(retry).toMatchObject({ layeringGroupId: 'retry-group', layeringLayerId: 'subject' });
+    expect(rebound).toMatchObject({ data: { config: { jobId: retry.id, status: 'queued', qualityStatus: 'pending' } } });
+    await submitted.promise;
+    expect(submit).toHaveBeenCalledWith(expect.objectContaining({ id: retry.id, layeringGroupId: 'retry-group' }));
+    release.resolve();
   });
 });
 

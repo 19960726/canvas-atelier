@@ -117,6 +117,14 @@
     return resolvedLayerName;
   }
 
+  function documentCount(application) {
+    // Windows COM exposes Count; ExtendScript and test adapters expose length.
+    var count = Number(application.documents.Count);
+    if (!isFinite(count)) count = Number(application.documents.length);
+    if (!isFinite(count) || count < 0) throw new Error('photoshop_document_count_unavailable');
+    return count;
+  }
+
   function connectPhotoshop() {
     var ids = ['Photoshop.Application.27', 'Photoshop.Application.200', 'Photoshop.Application.200.1', 'Photoshop.Application'];
     var lastError = null;
@@ -136,7 +144,7 @@
       writeResult({
         kind: 'running',
         majorVersion: parseInt(String(inspectedApp.version).split('.')[0], 10),
-        activeDocument: inspectedApp.documents.length > 0
+        activeDocument: documentCount(inspectedApp) > 0
       });
       WScript.Quit(0);
     }
@@ -152,7 +160,7 @@
     // Photoshop COM is often running with no document. Create a neutral
     // document so importing a canvas asset does not fail just because the
     // user has not opened a file yet.
-    if (app.documents.length === 0) {
+    if (documentCount(app) === 0) {
       app.documents.add();
     }
     var source = readText(jsxPath);

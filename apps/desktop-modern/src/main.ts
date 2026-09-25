@@ -1,7 +1,8 @@
 import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { lookup } from 'node:dns/promises';
 import { pathToFileURL } from 'node:url';
@@ -9,7 +10,11 @@ import { Worker } from 'node:worker_threads';
 
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, net, protocol, safeStorage, session, shell } from 'electron';
 
+import { installExternalLinkPolicy } from './external-link-policy.js';
+import { parseAssetByteRange } from './asset-byte-range.js';
 import { acquireRelayMeWebToken } from './relayme-web-login.js';
+import { createRecoveryWorkerScanner } from './recovery-worker-runner.js';
+import { saveAndOpenLayeredPsdInPhotoshop } from './layered-psd-open.js';
 
 import {
   BRIDGE_CHANNELS,
@@ -38,8 +43,10 @@ import {
   createElectronClipboardImageAdapter,
   createElectronClipboardVideoAdapter,
   createElectronNetComflyFetch,
+  createElectronPhotoshopWebpDecoder,
   createElectronTrustedImageDecoder,
   createNodeWindowsPhotoshopSmartObjectAdapter,
+  discoverPhotoshopInstallations,
   createApprovedSnapshotSyncClientFromEnv,
   createRendererCloseFlushCoordinator,
   selectCloseFinalizeTarget,
@@ -90,7 +97,10 @@ import { installBrokenPipeExceptionCapture, installBrokenPipeGuard } from './bro
 installBrokenPipeGuard([process.stdout, process.stderr]);
 installBrokenPipeExceptionCapture(process);
 
-if (process.platform === 'win32') {
+// Keep the measured Windows compatibility path. Acceleration is opt-in there:
+// some display/remote-desktop drivers introduce long texture-upload stalls.
+if (process.env.CANVAS_ATELIER_DISABLE_GPU === '1'
+  || (process.platform === 'win32' && process.env.CANVAS_ATELIER_ENABLE_GPU !== '1')) {
   app.commandLine.appendSwitch('disable-gpu');
 }
 
@@ -110,9 +120,32 @@ const mcpBridgeEntryPath = app.isPackaged
 const photoshopResourceRoot = app.isPackaged
   ? join(process.resourcesPath, 'photoshop')
   : join(currentDir, 'photoshop');
+const createSandboxedImageDecodeWindow = () => {
+  const window = new BrowserWindow({
+    width: 1,
+    height: 1,
+    show: false,
+    skipTaskbar: true,
+    webPreferences: {
+      backgroundThrottling: false,
+      contextIsolation: true,
+      devTools: false,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  return window;
+};
+const photoshopWebpDecoder = createElectronPhotoshopWebpDecoder({
+  createWindow: createSandboxedImageDecodeWindow,
+  nativeImage,
+});
 const photoshopSmartObjectAdapter = createNodeWindowsPhotoshopSmartObjectAdapter({
+  decodeWebpFromPath: photoshopWebpDecoder,
   platform: process.platform,
   jsxResourcePath: join(photoshopResourceRoot, 'photoshop-place-smart-object.jsx'),
+  nativeImage,
   runnerResourcePath: join(photoshopResourceRoot, 'photoshop-windows-runner.js'),
 });
 const diagnosticsChannel = 'novus-desktop:safe-mode-failure';
@@ -271,6 +304,7 @@ app.whenReady().then(async () => {
   };
   desktopHandlers = createDesktopBridgeHandlers({
     appDataRoot: app.getPath('userData'),
+    recoveryScanner: createRecoveryWorkerScanner(join(currentDir, 'recovery-worker-entry.cjs'), appDataRoot),
     captureProjectPreview: async () => {
       const window = mainWindow;
       if (window === null || window.isDestroyed() || window.webContents.isDestroyed()) return null;
@@ -308,6 +342,33 @@ app.whenReady().then(async () => {
     sendCloseFlushRequest: sendRendererCloseFlushRequest,
   });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
+  ipcMain.handle(BRIDGE_CHANNELS.openLayeredPsdInPhotoshop, (event, bytes: unknown) => {
+    if (event.sender !== mainWindow?.webContents) return { ok: false, code: 'invalid_psd' };
+    return saveAndOpenLayeredPsdInPhotoshop(bytes, {
+      async findPhotoshop() {
+        const installations = await discoverPhotoshopInstallations(process.platform);
+        for (const installation of installations.sort((left, right) => right.majorVersion - left.majorVersion)) {
+          if (installation.majorVersion < 13 || !isAbsolute(installation.executablePath)) continue;
+          if ((await stat(installation.executablePath).catch(() => null))?.isFile()) return installation.executablePath;
+        }
+        return null;
+      },
+      async chooseDestination() {
+        const result = await dialog.showSaveDialog({
+          title: '导出多图层 PSD 并在 Photoshop 中打开',
+          defaultPath: 'canvas-atelier-layers.psd',
+          filters: [{ name: 'Photoshop PSD', extensions: ['psd'] }],
+        });
+        return result.canceled ? null : result.filePath ?? null;
+      },
+      writePsd: (path, psdBytes) => writeFile(path, psdBytes),
+      launchPhotoshop: (executablePath, psdPath) => new Promise<void>((resolve, reject) => {
+        const child = spawn(executablePath, [psdPath], { detached: true, stdio: 'ignore', windowsHide: false });
+        child.once('error', reject);
+        child.once('spawn', () => { child.unref(); resolve(); });
+      }),
+    });
+  });
   ipcMain.handle(BRIDGE_CHANNELS.storage.getCacheDirectory, () => cacheDirectoryService.getCacheDirectory());
   ipcMain.handle(BRIDGE_CHANNELS.storage.chooseCacheDirectory, () => cacheDirectoryService.chooseCacheDirectory());
   ipcMain.handle(BRIDGE_CHANNELS.storage.resetCacheDirectory, () => cacheDirectoryService.resetCacheDirectory());
@@ -349,7 +410,9 @@ app.whenReady().then(async () => {
   };
   const generationHistorySink = new GenerationHistoryProviderSink({
     store: generationHistoryStore,
-    trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage),
+    trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage, {
+      createWebpDecodeWindow: createSandboxedImageDecodeWindow,
+    }),
   });
   const providerDesktopHandlers = desktopHandlers;
   if (providerDesktopHandlers === null) throw new Error('Desktop provider storage is unavailable');
@@ -796,6 +859,8 @@ function createDesktopWindow(preload: string): BrowserWindow {
     if (shouldShowQaWindow(process.env)) window.show();
   });
 
+  installExternalLinkPolicy(window.webContents, (url) => shell.openExternal(url));
+
   window.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith('novus-safe-mode:')) {
       return;
@@ -999,11 +1064,17 @@ async function resolveProtocolFile(
     const metadata = await stat(path);
     if (!metadata.isFile()) return new Response(null, { status: 404 });
     const contentType = protocolContentTypeForPath(path);
-    const stream = Readable.toWeb(createReadStream(path)) as ReadableStream<Uint8Array>;
+    const range = parseAssetByteRange(request.headers.get('range'), metadata.size);
+    if (range === null) return new Response(null, { status: 416, headers: { 'content-range': `bytes */${metadata.size}` } });
+    const stream = request.method === 'HEAD' ? null : (range === undefined
+      ? Readable.toWeb(createReadStream(path))
+      : Readable.toWeb(createReadStream(path, range))) as ReadableStream<Uint8Array> | null;
     return new Response(stream, {
-      status: 200,
+      status: range === undefined ? 200 : 206,
       headers: {
-        'content-length': String(metadata.size),
+        'content-length': String(range === undefined ? metadata.size : range.end - range.start + 1),
+        'accept-ranges': 'bytes',
+        ...(range === undefined ? {} : { 'content-range': `bytes ${range.start}-${range.end}/${metadata.size}` }),
         'content-type': contentType,
         'cache-control': 'private, max-age=31536000, immutable',
       },

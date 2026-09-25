@@ -6,6 +6,29 @@ const css = readFileSync(resolve('apps/renderer/src/styles/release-layout-contra
 const hybridCss = readFileSync(resolve('apps/renderer/src/styles/canvas-layout.css'), 'utf8');
 
 describe('release layout contract', () => {
+  it('provides a shared compact control and keyboard-focus contract', () => {
+    expect(css).toContain('--canvas-compact-control: 30px;');
+    expect(css).toContain('--canvas-compact-hit: 38px;');
+    expect(css).toContain('--canvas-compact-gap: 6px;');
+    expect(css).toMatch(/\.workspace--canvas-layout :is\(\.module-node, \.agent-panel\) button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--gate-accent/iu);
+  });
+  it('lets GPT quality prompts use the same composer geometry as material slots and controls', () => {
+    const promptRule = css.match(/\):has\(\.module-node__generation-control-bar\.has-image-quality\) \.module-node__prompt-workspace \{([^}]+)\}/u)?.[1];
+    expect(promptRule).toBeDefined();
+    expect(promptRule).toContain('left: var(--generation-composer-inset, 0px) !important;');
+    expect(promptRule).toContain('right: var(--generation-composer-inset, 0px) !important;');
+    expect(promptRule).toContain('width: var(--generation-composer-width, 760px) !important;');
+    const shared = css.slice(css.indexOf('/* Shared generation presentation:'));
+    expect(shared).toContain('--generation-composer-inset: 60px;');
+    expect(shared).toContain('--generation-composer-width: 640px;');
+  });
+
+  it('keeps the image quantity trigger inside its grid track so adjacent controls retain a gap', () => {
+    const contract = css.slice(css.indexOf('.module-node__image-quantity > .generation-parameter-popover'));
+    expect(contract).toContain('box-sizing: border-box !important;');
+    expect(contract).toContain('min-width: 0 !important;');
+    expect(contract).toContain('max-width: 100% !important;');
+  });
   it('gives the portaled generated-image action menu an opaque theme surface', () => {
     expect(css).toMatch(/:root\[data-theme='light'\][\s\S]*?\.generated-image-action-menu[\s\S]*?background:\s*#f8fbfd\s*!important/iu);
     expect(css).toMatch(/:root\[data-theme='dark'\][\s\S]*?\.generated-image-action-menu[\s\S]*?background:\s*#172129\s*!important/iu);
@@ -188,6 +211,19 @@ describe('release layout contract', () => {
     expect(terminal).not.toContain('grid-column: 6 !important;');
   });
 
+  it('finishes image, video and reverse controls with one compact visual hierarchy', () => {
+    const terminal = css.slice(css.lastIndexOf('/* FINAL COMPACT GENERATION CONTROL CONTRACT'));
+
+    expect(terminal).toContain('--compact-generation-control-height: 34px;');
+    expect(terminal).toContain('grid-template-rows: 34px 34px !important;');
+    expect(terminal).toContain('grid-template-columns: minmax(0, 1fr) 108px 184px 92px !important;');
+    expect(terminal).toContain('width: 92px !important;');
+    expect(terminal).toContain('background: var(--gate-accent-soft) !important;');
+    expect(terminal).toContain("[data-module-type='reverse_agent'] .module-node__reverse-depth > button");
+    expect(terminal).toContain('height: 30px !important;');
+    expect(terminal).toContain("[data-module-type='reverse_agent'] .module-node__agent-actions > button");
+  });
+
   it('keeps media-picker wrappers visually transparent so controls have only one border', () => {
     const terminal = css.slice(css.lastIndexOf('/* FINAL RELEASE VIDEO RAIL CONTRACT (true EOF).'));
 
@@ -237,5 +273,21 @@ describe('release layout contract', () => {
     expect(terminal).toContain('box-shadow: none !important;');
     expect(terminal).toContain('transition: border-color 120ms ease !important;');
     expect(terminal).toMatch(/\.react-flow__node:focus[^\{]*>\s*\.module-node\.is-selected[\s\S]*?outline:\s*none\s*!important;/iu);
+  });
+
+  it('owns the image node split-comparison and single-header geometry at the terminal cascade', () => {
+    const terminal = css.slice(css.lastIndexOf('/* IMAGE GENERATION COLOR COMPARISON CONTRACT */'), css.indexOf('/* Shared generation presentation:'));
+
+    expect(terminal).toContain("[data-module-type='image_generation'] > .module-node__header");
+    expect(terminal).toContain('display: contents !important;');
+    expect(terminal).toContain("> .module-node__header > [class~='module-node__lock']");
+    expect(terminal).toContain('.module-node__generation-comparison-stage');
+    expect(terminal).toMatch(/\.module-node__generation-comparison-stage\s*>\s*\.module-node__generation-preview-gallery[\s\S]*?height:\s*100%\s*!important;/iu);
+    expect(terminal).toContain('.module-node__generation-comparison-original');
+    expect(terminal).toContain('clip-path: inset(0 calc(100% - var(--image-comparison-position)) 0 0) !important;');
+    expect(terminal).toContain('.module-node__image-comparison-divider');
+    expect(terminal).toContain('.module-node__image-comparison-range');
+    expect(terminal).toContain('width: 448px !important;');
+    expect(terminal).not.toContain("[data-module-type='video_generation']");
   });
 });

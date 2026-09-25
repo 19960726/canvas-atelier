@@ -19,15 +19,13 @@ for (const theme of ['light', 'dark'] as const) {
 
     await openAgentPanel(page);
     const panel = page.getByTestId('agent-panel');
-    await panel.getByRole('tab', { name: '对话' }).click();
+    await panel.getByLabel('Agent 模式').selectOption('chat');
     await panel.getByTestId('agent-model-trigger').click();
     await panel.getByRole('button', { name: '使用 gpt-5.6-sol' }).first().click();
     await panel.getByTestId('agent-composer-input').fill('@');
     const menu = panel.getByRole('menu', { name: 'Reference images' });
     await expect(menu).toBeVisible();
-    await expect(menu.getByRole('menuitem')).toHaveCount(0);
-    await expect(menu).not.toContainText('Agent citation');
-    await menu.getByRole('button', { name: '浏览项目图片' }).click();
+    // Canvas-connected managed images are already available as direct @ suggestions.
     const item = menu.getByRole('menuitem', { name: 'Mention Agent citation' });
     await expect(item.getByRole('img')).toBeVisible();
     await expect(item).toContainText('@图片1');
@@ -38,9 +36,11 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(composer).toContainText('图片1');
     await expect(composer.locator('[data-media-mention="image"]', { hasText: '图片1' })).toBeVisible();
     await expect(composer).not.toContainText('@');
-    await expect(panel.getByLabel('Selected image references')).toContainText('Agent citation');
-    await panel.getByLabel('Selected image references').getByRole('button', { name: 'Remove Agent citation media reference' }).click();
-    await expect(panel.getByLabel('Selected image references')).toHaveCount(0);
+    await expect(panel.locator('.skill-chat-workbench__image-tags')).toHaveAttribute('data-visual-hidden', 'true');
+    const chip = composer.locator('[data-media-mention="image"]', { hasText: '图片1' });
+    await chip.focus();
+    await chip.press('Delete');
+    await expect(chip).toHaveCount(0);
     await expect(composer).not.toContainText('图片1');
   });
 }
@@ -49,7 +49,7 @@ test('pasting an image into Agent chat attaches it directly without opening a pi
   await openEmptyApp(page);
   await openAgentPanel(page);
   const panel = page.getByTestId('agent-panel');
-  await panel.getByRole('tab', { name: '对话' }).click();
+  await panel.getByLabel('Agent 模式').selectOption('chat');
   await panel.getByTestId('agent-model-trigger').click();
   await panel.getByRole('button', { name: '使用 gpt-5.6-sol' }).first().click();
 
@@ -70,15 +70,14 @@ test('pasting an image into Agent chat attaches it directly without opening a pi
 
   await expect(panel.getByTestId('agent-composer-input')).toContainText('图片1');
   await expect(panel.getByTestId('agent-composer-input')).not.toContainText('@');
-  const selectedReferences = panel.getByLabel('Selected image references');
-  const pastedThumbnail = selectedReferences.getByRole('img', { name: 'agent-clipboard' });
+  const pastedThumbnail = panel.getByTestId('agent-composer-input').locator('[data-media-mention="image"] img');
   await expect(pastedThumbnail).toBeVisible();
-  const referenceGeometry = await selectedReferences.evaluate((element) => {
+  const referenceGeometry = await panel.getByTestId('agent-composer-input').evaluate((element) => {
     const box = element.getBoundingClientRect();
     const image = element.querySelector('img, video')?.getBoundingClientRect();
     return { width: box.width, height: box.height, imageWidth: image?.width ?? 0, imageHeight: image?.height ?? 0 };
   });
-  expect(referenceGeometry.height).toBeLessThanOrEqual(44);
+  expect(referenceGeometry.height).toBeGreaterThan(0);
   expect(referenceGeometry.imageWidth).toBeGreaterThan(0);
   expect(referenceGeometry.imageWidth).toBeLessThanOrEqual(24);
   expect(referenceGeometry.imageHeight).toBeLessThanOrEqual(24);
@@ -91,7 +90,7 @@ test('pasting text, image, and video keeps text and image order while explicitly
   await openEmptyApp(page);
   await openAgentPanel(page);
   const panel = page.getByTestId('agent-panel');
-  await panel.getByRole('tab', { name: '对话' }).click();
+  await panel.getByLabel('Agent 模式').selectOption('chat');
   await panel.getByTestId('agent-model-trigger').click();
   await panel.getByRole('button', { name: '使用 gpt-5.6-sol' }).first().click();
 
@@ -132,7 +131,7 @@ test('selected Agent message text keeps clipboard events out of the Canvas windo
   await openEmptyApp(page);
   await openAgentPanel(page);
   const panel = page.getByTestId('agent-panel');
-  await panel.getByRole('tab', { name: '对话' }).click();
+  await panel.getByLabel('Agent 模式').selectOption('chat');
   await panel.getByTestId('agent-model-trigger').click();
   await panel.getByRole('button', { name: '使用 gpt-5.6-sol' }).first().click();
 

@@ -1,15 +1,15 @@
 import { readFileSync } from 'node:fs';
-import { useLayoutEffect, type ReactNode } from 'react';
+import { Profiler, StrictMode, useLayoutEffect, type ReactNode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReactFlowProvider, useStoreApi } from '@xyflow/react';
 import { createCanvasModuleNode } from '@agent-canvas/domain';
 import { ModuleNodeCard, promptContainsImageMention, resolveAutomaticVideoAspectRatio } from './ModuleNodeCard';
-import { resetAppStoreForTests, useAppStore } from '../app/app-store';
+import { replaceProjectPersistenceClientForTests, resetAppStoreForTests, useAppStore } from '../app/app-store';
 import { createProjectPersistenceClient } from '../app/desktop-persistence';
 import { PROVIDER_MODEL_DEFAULTS_STORAGE_KEY, writeProviderModelDefaults } from '../settings/provider-model-defaults';
-import { ORIGINAL_IMAGE_COLOR_CORRECTION } from '../app/image-color-correction';
+import { AUTO_IMAGE_COLOR_CORRECTION, ORIGINAL_IMAGE_COLOR_CORRECTION } from '../app/image-color-correction';
 
 const originalDesktop = window.novusDesktop;
 
@@ -58,11 +58,14 @@ function openImageGenerationEditor() {
   fireEvent.click(screen.getByRole('button', { name: 'Open image generation editor' }));
 }
 
-function FlowZoom({ children, zoom }: { children: ReactNode; zoom: number }) {
+function FlowZoom({ children, zoom, nodeCount = 0 }: { children: ReactNode; zoom: number; nodeCount?: number }) {
   const store = useStoreApi();
   useLayoutEffect(() => {
-    store.setState({ transform: [0, 0, zoom] });
-  }, [store, zoom]);
+    store.setState({
+      nodes: Array.from({ length: nodeCount }, (_, index) => ({ id: `zoom-node-${index}`, position: { x: 0, y: 0 }, data: {}, type: 'default' })),
+      transform: [0, 0, zoom],
+    });
+  }, [nodeCount, store, zoom]);
   return children;
 }
 
@@ -110,23 +113,44 @@ function createPhotoshopDesktopBridge(importToPhotoshop: ReturnType<typeof vi.fn
 
 function readGenerationParameterOptions(label: string): Array<string | null> {
   if (label === 'Video preview aspect ratio') {
-    return within(openGenerationParameterOptions(label).querySelector('[aria-label="比例"]') as HTMLElement).getAllByRole('menuitemradio').map((item) => item.textContent);
+    openGenerationParameterOptions(label);
+    return Array.from(screen.getByLabelText('Video preview aspect ratio').querySelectorAll('option'), (item) => item.textContent);
   }
   if (label === 'Video preview resolution') {
-    return within(openGenerationParameterOptions(label).querySelector('[aria-label="清晰度"]') as HTMLElement).getAllByRole('menuitemradio').map((item) => item.textContent);
+    return Array.from(within(openGenerationParameterOptions(label)).getByRole('combobox', { name: '视频清晰度' }).querySelectorAll('option'), (item) => item.textContent);
   }
   return within(openGenerationParameterOptions(label)).getAllByRole('menuitemradio').map((item) => item.textContent);
 }
 
 function chooseGenerationParameterOption(label: string, option: string): void {
+  if (label === 'Video preview aspect ratio') {
+    const settings = openGenerationParameterOptions(label);
+    fireEvent.click(within(settings).getByRole('button', { name: '视频比例' }));
+    fireEvent.click(within(within(settings).getByRole('menu', { name: '视频比例 options' })).getByRole('menuitemradio', { name: option }));
+    return;
+  }
   fireEvent.click(within(openGenerationParameterOptions(label)).getByRole('menuitemradio', { name: option }));
 }
 describe('ModuleNodeCard', () => {
-  it('marks the entire node as a React Flow no-wheel boundary', () => {
-    const node = createCanvasModuleNode('wheel-boundary', 'image_generation', { x: 0, y: 0 });
-    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+  it('does not schedule a redundant render when reverse-agent selection arrays are unchanged', () => {
+    const node = createCanvasModuleNode('reverse-selection-stability', 'reverse_agent', { x: 0, y: 0 });
+    const commits: string[] = [];
+    render(<StrictMode><ReactFlowProvider><Profiler id="reverse-agent" onRender={(_id, phase) => commits.push(phase)}>
+      <ModuleNodeCard id={node.id} data={node.data} selected={false} />
+    </Profiler></ReactFlowProvider></StrictMode>);
 
-    expect(screen.getByTestId('module-node-card')).toHaveClass('nowheel');
+    expect(commits).toEqual(['mount']);
+  });
+
+  it('lets preview wheel events reach the canvas without blocking the whole node', () => {
+    const node = createCanvasModuleNode('wheel-boundary', 'image_generation', { x: 0, y: 0 });
+    const canvasWheel = vi.fn();
+    render(<ReactFlowProvider><div onWheel={canvasWheel}><ModuleNodeCard id={node.id} data={node.data} selected={false} /></div></ReactFlowProvider>);
+
+    const preview = screen.getByRole('button', { name: 'Open image generation editor' });
+    expect(preview.closest('.nowheel')).toBeNull();
+    fireEvent.wheel(preview, { deltaY: -120 });
+    expect(canvasWheel).toHaveBeenCalledOnce();
   });
 
   it('uses a lightweight node shell in a low-zoom overview and restores full controls when zoomed in', async () => {
@@ -147,6 +171,37 @@ describe('ModuleNodeCard', () => {
     view.rerender(<ReactFlowProvider><FlowZoom zoom={0.7}><ModuleNodeCard id={node.id} data={node.data} selected={false} /></FlowZoom></ReactFlowProvider>);
     await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'full'));
     expect(screen.getByRole('button', { name: '锁定位置 / Lock position' })).toBeInTheDocument();
+  });
+
+  it('uses the lightweight overview earlier on large canvases while preserving selected node controls', async () => {
+    const node = createCanvasModuleNode('large-canvas-overview-node', 'image_generation', { x: 0, y: 0 });
+    const view = render(<ReactFlowProvider><FlowZoom zoom={0.55} nodeCount={300}>
+      <ModuleNodeCard id={node.id} data={node.data} selected={false} />
+    </FlowZoom></ReactFlowProvider>);
+
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'overview'));
+    expect(screen.getByLabelText('模块端口 / Module ports')).toBeInTheDocument();
+
+    view.rerender(<ReactFlowProvider><FlowZoom zoom={0.55} nodeCount={300}>
+      <ModuleNodeCard id={node.id} data={node.data} selected />
+    </FlowZoom></ReactFlowProvider>);
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'full'));
+    expect(screen.getByRole('button', { name: 'Open image generation editor' })).toBeInTheDocument();
+
+    view.rerender(<ReactFlowProvider><FlowZoom zoom={0.55} nodeCount={300}>
+      <ModuleNodeCard id={node.id} data={node.data} selected={false} />
+    </FlowZoom></ReactFlowProvider>);
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'overview'));
+
+    view.rerender(<ReactFlowProvider><FlowZoom zoom={0.75} nodeCount={300}>
+      <ModuleNodeCard id={node.id} data={node.data} selected={false} />
+    </FlowZoom></ReactFlowProvider>);
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'overview'));
+
+    view.rerender(<ReactFlowProvider><FlowZoom zoom={0.9} nodeCount={300}>
+      <ModuleNodeCard id={node.id} data={node.data} selected={false} />
+    </FlowZoom></ReactFlowProvider>);
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'full'));
   });
 
   it.each([
@@ -321,6 +376,28 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('img', { name: 'Generated image 9 full preview' })).toHaveAttribute('src', images[8]!.displayUrl);
   });
 
+  it('allows an unchanged read-only image editor to close without saving its initialization draft', async () => {
+    const node = createCanvasModuleNode('readonly-color-draft', 'image_generation', { x: 0, y: 0 });
+    useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [node], edges: [] }, saveStatus: 'read_only' } as never);
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    await act(async () => { expect(await useAppStore.getState().preparePersistenceForClose()).toBe(true); });
+  });
+
+  it('flushes the last color edit before immediate native close preparation', async () => {
+    const node = createCanvasModuleNode('close-color-draft', 'image_generation', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, resultAssetIds: [projectImage.assetId], resultState: 'fresh' };
+    const draftGenerationNodeConfig = vi.fn(async () => true);
+    useAppStore.setState({ projectImages: [projectImage], project: { ...useAppStore.getState().project, nodes: [node], edges: [] }, draftGenerationNodeConfig, saveStatus: 'saved' } as never);
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    fireEvent.click(screen.getByRole('button', { name: '图片颜色校正' }));
+    fireEvent.change(screen.getByRole('slider', { name: '饱和度' }), { target: { value: '117' } });
+    await act(async () => { await useAppStore.getState().preparePersistenceForClose(); });
+    expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({
+      imageColorCorrections: { [projectImage.assetId]: expect.objectContaining({ saturation: 117 }) },
+    }));
+  });
+
   it('offers provider-independent color correction above completed image results and persists it', async () => {
     vi.stubGlobal('Image', class {
       naturalWidth = 96;
@@ -352,25 +429,28 @@ describe('ModuleNodeCard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '图片颜色校正' }));
     const panel = screen.getByRole('dialog', { name: '图片颜色校正' });
-    fireEvent.click(within(panel).getByRole('button', { name: '自动中和红紫偏色' }));
+    fireEvent.click(within(panel).getByRole('button', { name: '自动中和偏色' }));
 
     await waitFor(() => expect(result.style.filter).toContain('url("#image-color-correction-color-correction-results-0")'));
     expect(compare).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(compare);
-    expect(result.style.filter).toBe('none');
+    expect(result.style.filter).toContain('url("#image-color-correction-color-correction-results-0")');
+    expect(screen.getByRole('slider', { name: '原图与校正后对比线' })).toHaveValue('50');
+    expect(document.querySelectorAll('.module-node__generation-comparison-original img')).toHaveLength(1);
     expect(compare).toHaveAttribute('aria-pressed', 'true');
     fireEvent.click(compare);
     expect(result.style.filter).toContain('url("#image-color-correction-color-correction-results-0")');
+    expect(screen.queryByRole('slider', { name: '原图与校正后对比线' })).not.toBeInTheDocument();
     expect(compare).toHaveAttribute('aria-pressed', 'false');
     await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({
-      colorCorrection: expect.objectContaining({ mode: 'auto', version: 2, temperature: 0, tint: 0 }),
+      imageColorCorrections: { [projectImage.assetId]: expect.objectContaining({ mode: 'auto', version: 2, temperature: 0, tint: 0 }) },
     })));
-    expect(correctionTrigger).toHaveTextContent('自动中和');
+    expect(correctionTrigger).toHaveTextContent('已中和');
 
     fireEvent.click(within(panel).getByRole('button', { name: '自定义颜色校正' }));
     fireEvent.change(within(panel).getByRole('slider', { name: '洋红绿色' }), { target: { value: '-14' } });
     await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({
-      colorCorrection: expect.objectContaining({ mode: 'custom', tint: -14 }),
+      imageColorCorrections: { [projectImage.assetId]: expect.objectContaining({ mode: 'custom', tint: -14 }) },
     })));
 
     fireEvent.doubleClick(screen.getByRole('button', { name: 'Generated image 1; double click to preview' }));
@@ -383,7 +463,7 @@ describe('ModuleNodeCard', () => {
     fireEvent.click(within(lightbox).getByRole('button', { name: '切换原图对比' }));
     expect(lightboxImage.style.filter).toBe('none');
     await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({
-      colorCorrection: expect.objectContaining({ mode: 'custom', temperature: -18, tint: -14 }),
+      imageColorCorrections: { [projectImage.assetId]: expect.objectContaining({ mode: 'custom', temperature: -18, tint: -14 }) },
     })));
   });
 
@@ -1479,7 +1559,7 @@ describe('ModuleNodeCard', () => {
     expect(within(screen.getByLabelText('Agent model route')).getAllByRole('option', { name: 'Gemini 3.1 Pro' })).toHaveLength(2);
   });
 
-  it('preserves same-name fixed-resolution image routes instead of collapsing their 2K and 4K identities', () => {
+  it('shows one image model family while clarity retains its exact fixed-resolution routes', () => {
     const node = createCanvasModuleNode('dedupe-image-family-resolution', 'image_generation', { x: 0, y: 0 });
     const data = {
       ...node.data,
@@ -1501,11 +1581,12 @@ describe('ModuleNodeCard', () => {
     openImageGenerationEditor();
 
     const routeSelect = screen.getByLabelText('Image generation model route');
-    expect(within(routeSelect).getAllByRole('option')).toHaveLength(2);
-    expect(within(routeSelect).getByRole('option', { name: 'GPT Image 2 · 2K' })).toHaveValue('comfly-gpt-image-2-2k');
-    expect(within(routeSelect).getByRole('option', { name: 'GPT Image 2' })).toHaveValue('comfly-gpt-image-2');
+    expect(within(routeSelect).getAllByRole('option')).toHaveLength(1);
+    expect(within(routeSelect).getByRole('option', { name: 'GPT Image 2' })).toHaveValue('comfly-gpt-image-2-2k');
     expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['1K', '2K', '4K']);
     expect(screen.getByRole('menuitemradio', { name: '1K' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '4K' }));
+    expect(routeSelect).toHaveValue('comfly-gpt-image-2');
   });
 
   it('keeps the active provider route when duplicate reverse names are supplied', () => {
@@ -1821,6 +1902,23 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByText('运行中')).toBeVisible();
   });
 
+  it('keeps the image-generation unlock control available with the compact title treatment', () => {
+    const node = createCanvasModuleNode('locked-image-generator', 'image_generation', { x: 0, y: 0 });
+    const toggleNodeLock = vi.fn(async () => true);
+    useAppStore.setState({ toggleNodeLock });
+
+    render(
+      <ReactFlowProvider>
+        <ModuleNodeCard id={node.id} data={{ ...node.data, locked: true }} selected={false} />
+      </ReactFlowProvider>,
+    );
+
+    const unlock = screen.getByRole('button', { name: '解锁位置 / Unlock position' });
+    expect(unlock).toBeVisible();
+    fireEvent.click(unlock);
+    expect(toggleNodeLock).toHaveBeenCalledWith(node.id);
+  });
+
   it('renders stable typed handles from the registry', () => {
     const node = createCanvasModuleNode('generator', 'image_generation', { x: 0, y: 0 });
 
@@ -1858,7 +1956,7 @@ describe('ModuleNodeCard', () => {
     expect(document.querySelector('.module-node__icon svg')).toHaveAttribute('width', '18');
   });
 
-  it('uses the Canvas two-endpoint contract for generation nodes', () => {
+  it('exposes the reference, result, and image endpoints for image generation and layering', () => {
     const node = createCanvasModuleNode('generator-round-ports', 'image_generation', { x: 0, y: 0 });
 
     render(
@@ -1868,7 +1966,11 @@ describe('ModuleNodeCard', () => {
     );
 
     const handles = [...document.querySelectorAll('.react-flow__handle[data-port-id]')];
-    expect(handles).toHaveLength(2);
+    expect(handles.map((port) => `${port.getAttribute('data-port-direction')}:${port.getAttribute('data-port-id')}`)).toEqual([
+      'input:references',
+      'output:result',
+      'output:image',
+    ]);
     expect(handles.every((port) => port.getAttribute('data-port-shape') === 'circle')).toBe(true);
   });
 
@@ -2341,6 +2443,20 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('img', { name: 'Generated image 1 full preview' })).toHaveAttribute('src', projectImage.displayUrl);
   });
 
+  it('allows dragging an expanded empty image preview while keeping prompt editing isolated', () => {
+    const node = createCanvasModuleNode('expanded-drag', 'image_generation', { x: 0, y: 0 });
+    const pointer = vi.fn();
+    render(<div onPointerDown={pointer}><ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider></div>);
+    fireEvent.click(screen.getByRole('button', { name: 'Open image generation editor' }));
+    const preview = screen.getByLabelText('Image generation preview');
+    fireEvent.pointerDown(preview, {button:0,clientX:100,clientY:100});
+    expect(pointer).toHaveBeenCalledOnce();
+    expect(preview.closest('.nodrag')).toBeNull();
+    pointer.mockClear();
+    fireEvent.pointerDown(screen.getByLabelText('Image generation prompt workspace'));
+    expect(pointer).not.toHaveBeenCalled();
+  });
+
   it('shows exact dimensions and copies the image directly from the detail viewer', async () => {
     const node = createCanvasModuleNode('image-lightbox-copy', 'image_generation', { x: 0, y: 0 });
     node.data.config = { ...node.data.config, resultState: 'fresh', colorCorrection: ORIGINAL_IMAGE_COLOR_CORRECTION };
@@ -2368,10 +2484,11 @@ describe('ModuleNodeCard', () => {
   });
 
   it('zooms the generated-image lightbox with the mouse wheel and resets the detail view', () => {
+    const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480, toJSON() {} });
     const node = createCanvasModuleNode('image-lightbox-zoom', 'image_generation', { x: 0, y: 0 });
     node.data.config = { ...node.data.config, resultState: 'fresh' };
     useAppStore.setState({
-      projectImages: [projectImage],
+      projectImages: [{ ...projectImage, width: 640, height: 480 }],
       modelJobs: [{ id: 'completed-zoom-job', promptNodeId: node.id, status: 'completed', resultAssetId: projectImage.assetId }],
     } as never);
 
@@ -2383,7 +2500,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Generated image zoom level')).toHaveTextContent('100%');
     expect(viewer).toHaveAttribute('data-zoomed', 'false');
 
-    fireEvent.wheel(viewer, { deltaY: -120, clientX: 0, clientY: 0 });
+    fireEvent.wheel(viewer, { deltaY: -120, clientX: 320, clientY: 240 });
 
     expect(screen.getByLabelText('Generated image zoom level')).toHaveTextContent('125%');
     expect(viewer).toHaveAttribute('data-zoomed', 'true');
@@ -2397,6 +2514,7 @@ describe('ModuleNodeCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reset generated image zoom' }));
     expect(screen.getByLabelText('Generated image zoom level')).toHaveTextContent('100%');
     expect(image).toHaveStyle({ transform: 'translate3d(0px, 0px, 0) scale(1)' });
+    bounds.mockRestore();
   });
 
   it('uses a connected image-input edge as the image-generation reference slot and submit input', () => {
@@ -3327,6 +3445,7 @@ describe('ModuleNodeCard', () => {
     expect(readGenerationParameterOptions('Video preview aspect ratio')).toEqual(['AUTO', '16:9', '9:16']);
     const videoSettingsTrigger = screen.getByRole('button', { name: '打开视频参数设置' });
     expect(videoSettingsTrigger).toHaveAttribute('aria-expanded', 'true');
+    expect(videoSettingsTrigger).toHaveTextContent(/· 4s · 1个/u);
     expect(readGenerationParameterOptions('Video preview resolution')).toEqual(['480P', '720P', '1080P']);
     expect(within(screen.getByLabelText('Video preview duration')).getAllByRole('option').map((item) => item.textContent)).toEqual(['4秒', '6秒', '8秒']);
     expect(within(screen.getByLabelText('Video preview quantity')).getAllByRole('option').map((item) => item.getAttribute('value'))).toEqual(['1', '2']);
@@ -3367,9 +3486,12 @@ describe('ModuleNodeCard', () => {
     expect(screen.queryByLabelText('Video preview audio')).toBeNull();
     const settings = screen.getByRole('dialog', { name: '视频生成参数' });
     expect(within(settings).queryByLabelText('生成音频')).toBeNull();
-    expect(within(settings).queryByRole('slider')).toBeNull();
-    expect(within(settings).getByRole('menuitemradio', { name: '5秒' })).toBeVisible();
-    expect(within(settings).getByRole('menuitemradio', { name: '10秒' })).toBeVisible();
+    const constrainedSlider = within(settings).getByRole('slider', { name: '视频时长' });
+    expect(constrainedSlider).toHaveAttribute('min', '0');
+    expect(constrainedSlider).toHaveAttribute('max', '1');
+    expect(constrainedSlider).toHaveAttribute('aria-valuetext', '10秒');
+    fireEvent.change(constrainedSlider, { target: { value: '0' } });
+    expect(within(settings).getByText('5s')).toBeVisible();
 
     fireEvent.change(screen.getByLabelText('Video preview duration'), { target: { value: '5' } });
     fireEvent.change(screen.getByLabelText('Video preview prompt'), { target: { value: 'Julun audited video' } });
@@ -3395,7 +3517,7 @@ describe('ModuleNodeCard', () => {
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
     openVideoGenerationEditor();
 
-    expect(readGenerationParameterOptions('Video preview aspect ratio')).toEqual(['AUTO', '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9']);
+    expect(readGenerationParameterOptions('Video preview aspect ratio')).toEqual(['AUTO', '1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']);
     expect(readGenerationParameterOptions('Video preview resolution')).toEqual(['360P', '480P', '512P', '540P', '720P', '768P', '1080P', '2K', '4K']);
     expect(within(screen.getByLabelText('Video preview quantity')).getAllByRole('option').map((item) => item.getAttribute('value'))).toEqual(['1']);
     chooseGenerationParameterOption('Video preview aspect ratio', 'AUTO');
@@ -3405,7 +3527,7 @@ describe('ModuleNodeCard', () => {
       aspectRatio: 'Auto', resolution: '1080p', durationSeconds: 5, outputCount: 1,
     }));
   });
-  it('uses the 4, 8 and 12 second product duration fallback without provider duration metadata', () => {
+  it('offers seconds through 30 when provider duration metadata is absent', () => {
     const node = createCanvasModuleNode('video-duration-fallback', 'video_generation', { x: 0, y: 0 });
     const data = { ...node.data, videoGenerationRoutes: [{
       provider: 'comfly', modelRoute: 'video-no-duration', displayName: 'Video no duration', modelId: 'video-no-duration',
@@ -3413,20 +3535,38 @@ describe('ModuleNodeCard', () => {
     }] } as typeof node.data;
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
     openVideoGenerationEditor();
-    expect(within(screen.getByLabelText('Video preview duration')).getAllByRole('option').map((item) => item.textContent)).toEqual(['4秒', '8秒', '12秒']);
+    const options = within(screen.getByLabelText('Video preview duration')).getAllByRole('option').map((item) => item.textContent);
+    expect(options).toHaveLength(30);
+    expect(options[options.length - 1]).toBe('30秒');
   });
-  it('exposes a 1-15 second video duration slider and persists its value', () => {
+  it('exposes 30 seconds and up to four videos in the generic video settings', () => {
     const node = createCanvasModuleNode('video-duration-slider', 'video_generation', { x: 0, y: 0 });
-    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    const runVideoPreviewNode = vi.fn(async () => true);
+    useAppStore.setState({ runVideoPreviewNode } as never);
+    const data = { ...node.data, videoGenerationRoutes: [{
+      provider: 'relayme', modelRoute: 'generic-video-30', displayName: 'Generic Video', modelId: 'generic-video-30',
+      capabilities: ['video_generation'], capabilityStatus: 'complete',
+      constraints: { video: { outputCounts: [1, 2, 3, 4] } },
+    }] } as typeof node.data;
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
     openVideoGenerationEditor();
     fireEvent.click(screen.getByRole('button', { name: '打开视频参数设置' }));
     const slider = screen.getByRole('dialog', { name: '视频生成参数' });
     expect(slider).toBeVisible();
     const input = within(slider).getByRole('slider');
     expect(input).toHaveAttribute('min', '1');
-    expect(input).toHaveAttribute('max', '15');
-    fireEvent.change(input, { target: { value: '15' } });
-    expect(within(slider).getByText('15s')).toBeVisible();
+    expect(input).toHaveAttribute('max', '30');
+    fireEvent.change(input, { target: { value: '30' } });
+    expect(within(slider).getByText('30s')).toBeVisible();
+    const quantity = within(slider).getByRole('combobox', { name: '生成数量' });
+    expect(within(quantity).getAllByRole('option').map((option) => option.getAttribute('value'))).toEqual(['1', '2', '3', '4']);
+    fireEvent.change(quantity, { target: { value: '4' } });
+    expect(screen.getByRole('button', { name: '打开视频参数设置' })).toHaveTextContent('4个');
+    fireEvent.change(screen.getByLabelText('Video preview prompt'), { target: { value: 'Thirty second product scene' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成视频' }));
+    expect(runVideoPreviewNode).toHaveBeenCalledWith(node.id, expect.objectContaining({
+      modelRoute: 'generic-video-30', durationSeconds: 30, outputCount: 4,
+    }));
   });
   it('runs an offline video preview from the prompt and leaves media resolution to the connected port', () => {
     const node = createCanvasModuleNode('video-preview', 'video_generation' as never, { x: 0, y: 0 });
@@ -3492,7 +3632,7 @@ describe('ModuleNodeCard', () => {
       modelRoute: 'seedance-1.5-pro',
       aspectRatio: '16:9',
       keyframe: 'auto',
-      durationSeconds: 4,
+      durationSeconds: 5,
       resolution: '1080p',
       audioEnabled: true,
       outputCount: 1,
@@ -3520,7 +3660,7 @@ describe('ModuleNodeCard', () => {
     openVideoGenerationEditor();
     expect(screen.getByLabelText('Video preview model')).toHaveTextContent('模型');
     expect(screen.getByLabelText('Video preview mode')).toHaveTextContent('图生视频');
-    expect(screen.getByLabelText('Video preview duration')).toHaveValue('4');
+    expect(screen.getByLabelText('Video preview duration')).toHaveValue('5');
     expect(screen.getByLabelText('Video preview resolution')).toHaveValue('1080p');
   });
 
@@ -3531,6 +3671,7 @@ describe('ModuleNodeCard', () => {
 
     openVideoGenerationEditor();
     const parameterLabels = Array.from(screen.getByLabelText('Video preview parameter controls').children)
+      .filter((element) => !element.classList.contains('module-node__parameter-labels'))
       .map((element) => element.getAttribute('aria-label') ?? element.querySelector('[aria-label]')?.getAttribute('aria-label'));
 
     expect(parameterLabels).toEqual([
@@ -4184,6 +4325,7 @@ describe('ModuleNodeCard', () => {
       requestedResolution: '4K',
       resultAssetIds: [projectImage.assetId],
       resultState: 'fresh',
+      colorCorrection: AUTO_IMAGE_COLOR_CORRECTION,
     };
     const returnedImage = { ...projectImage, origin: 'generated' as const, width: 1696, height: 2528 };
     useAppStore.setState({ projectImages: [returnedImage], modelJobs: [] } as never);
@@ -4193,6 +4335,15 @@ describe('ModuleNodeCard', () => {
 
     expect(screen.getByText('请求 4K · 实际 1696×2528，供应商返回尺寸低于所选清晰度。')).toBeVisible();
     expect(screen.getByRole('img', { name: 'Generated image 1' })).toBeVisible();
+    const warning = document.querySelector<HTMLElement>('.module-node__resolution-warning');
+    expect(warning).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '切换原图对比' }));
+    const stage = document.querySelector<HTMLElement>('.module-node__generation-comparison-stage');
+    expect(stage).not.toBeNull();
+    expect(stage).toContainElement(document.querySelector<HTMLElement>('.module-node__generation-comparison-original'));
+    expect(stage).toContainElement(document.querySelector<HTMLElement>('.module-node__image-comparison-divider'));
+    expect(stage).not.toContainElement(warning);
+    expect(stage?.parentElement).toBe(warning?.parentElement);
   });
 
   it('accepts the provider maximum-pixel square size as a 4K result', () => {
@@ -5254,6 +5405,53 @@ describe('ModuleNodeCard', () => {
     expect(cancelModelJob).not.toHaveBeenCalledWith('other-job');
   });
 
+  it('reuses project image options across position commits and refreshes imported choices', async () => {
+    const persistence = createProjectPersistenceClient();
+    replaceProjectPersistenceClientForTests({
+      ...persistence,
+      commit: async (request) => ({ ok: true, project: request.nextProject, revision: request.baseRevision + 1 }),
+    });
+    try {
+      const node = createCanvasModuleNode('image-option-cache', 'image_input', { x: 0, y: 0 });
+      node.data.config = { assetId: projectImage.assetId };
+      const readOptionLabel = vi.fn(() => 'Side material');
+      const sideImage = { ...projectImage, assetId: '0000000000000001', get label() { return readOptionLabel(); } };
+      const assets = [projectImage, sideImage];
+      useAppStore.setState({
+        project: {
+          version: 1, graphVersion: 2, id: 'image-option-project', name: 'Image option cache',
+          nodes: [node], edges: [], projectMemory: [], skillPromotionCandidates: [],
+          assets: assets.map(({ displayUrl: _displayUrl, usageCount: _usageCount, ...asset }) => ({ ...asset, sha256: asset.assetId.repeat(4) })),
+        },
+        projectImages: assets,
+      });
+      render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+      expect(screen.getByRole('option', { name: 'Side material' })).toHaveValue(sideImage.assetId);
+      readOptionLabel.mockClear();
+
+      await act(async () => {
+        expect(await useAppStore.getState().commitNodePositions([
+          { nodeId: node.id, position: { x: 160, y: 120 } },
+        ])).toBe(true);
+      });
+      expect(useAppStore.getState().project.nodes[0]!.position).toEqual({ x: 160, y: 120 });
+      expect(useAppStore.getState().projectImages).toBe(assets);
+      expect(readOptionLabel).not.toHaveBeenCalled();
+
+      const importedImage = { ...projectImage, assetId: '0000000000000002', label: 'New material', sha256: '0000000000000002'.repeat(4) };
+      const { displayUrl: _displayUrl, usageCount: _usageCount, ...importedAsset } = importedImage;
+      act(() => useAppStore.setState((state) => ({
+        project: { ...state.project, assets: [...state.project.assets!, importedAsset] },
+        projectImages: [...assets, importedImage],
+      })));
+      expect(screen.getByRole('option', { name: 'New material' })).toHaveValue(importedImage.assetId);
+      fireEvent.change(screen.getByLabelText('选择项目图像 / Choose project image'), { target: { value: importedImage.assetId } });
+      await waitFor(() => expect(useAppStore.getState().project.nodes[0]!.data).toMatchObject({ config: { assetId: importedImage.assetId } }));
+    } finally {
+      replaceProjectPersistenceClientForTests(persistence);
+    }
+  });
+
   it('renders managed preview metadata and opens only the confined desktop import action', () => {
     window.novusDesktop = {} as typeof window.novusDesktop;
     const node = createCanvasModuleNode('image-input', 'image_input', { x: 0, y: 0 });
@@ -5571,6 +5769,29 @@ describe('ModuleNodeCard', () => {
     expect(screen.queryByText('待配置')).not.toBeInTheDocument();
   });
 
+  it.each(['image_input', 'video_input'] as const)('allows dragging loaded %s media without starting playback on pointer down', (type) => {
+    const node = createCanvasModuleNode('media-drag', type, { x: 0, y: 0 });
+    node.data.config = { assetId: type === 'image_input' ? projectImage.assetId : projectVideo.assetId };
+    useAppStore.setState({ projectImages: [projectImage], projectVideos: [projectVideo] });
+    const pointer = vi.fn();
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+    render(<div onPointerDown={pointer}><ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider></div>);
+    const media = document.querySelector('.module-node__media-frame')!;
+    expect(media.closest('.nodrag')).toBeNull();
+    fireEvent.pointerDown(media.querySelector('img,video')!, { button: 0, clientX: 100, clientY: 100 });
+    expect(pointer).toHaveBeenCalledOnce();
+    expect(play).not.toHaveBeenCalled();
+    if (type === 'video_input') {
+      const surface=screen.getByRole('button',{name:'播放或暂停视频'});
+      fireEvent.pointerDown(surface,{button:0,clientX:100,clientY:100});
+      fireEvent.pointerMove(window,{clientX:180,clientY:130});
+      fireEvent.pointerUp(window,{clientX:180,clientY:130});
+      expect(play).not.toHaveBeenCalled();
+      fireEvent.click(surface);
+      expect(play).toHaveBeenCalledOnce();
+    }
+  });
+
   it('bounds extreme image dimensions and renders a managed video preview', () => {
     const imageNode = createCanvasModuleNode('extreme-image', 'image_input', { x: 0, y: 0 });
     imageNode.data.config = { assetId: projectImage.assetId };
@@ -5601,7 +5822,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByText('2 KB')).toBeVisible();
   });
 
-  it('starts a restored managed video when its preview is clicked', async () => {
+  it('keeps native playback controls without starting a restored video when a drag begins', async () => {
     const videoNode = createCanvasModuleNode('clickable-video-input', 'video_input', { x: 0, y: 0 });
     videoNode.data.config = { assetId: projectVideo.assetId };
     useAppStore.setState({ projectVideos: [projectVideo] });
@@ -5610,7 +5831,8 @@ describe('ModuleNodeCard', () => {
     render(<ReactFlowProvider><ModuleNodeCard id={videoNode.id} data={videoNode.data} selected={false} /></ReactFlowProvider>);
 
     fireEvent.pointerDown(screen.getByLabelText('Product turntable'));
-    expect(play).toHaveBeenCalledOnce();
+    expect(screen.getByLabelText('Product turntable')).toHaveAttribute('controls');
+    expect(play).not.toHaveBeenCalled();
     play.mockRestore();
   });
 
@@ -5702,6 +5924,20 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('button', { name: '深度反推' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '快速反推' })).toBeDisabled();
     expect(screen.getByRole('status', { name: '当前反推强度' })).toHaveTextContent('深度反推');
+  });
+
+  it('keeps a newly selected reverse intensity while an older standard draft arrives', () => {
+    const node = createCanvasModuleNode('reverse-depth-stale', 'reverse_agent', { x: 0, y: 0 });
+    const data = {
+      ...node.data,
+      reverseAgentRoutes: [{ provider: 'comfly', modelRoute: 'gemini-video', displayName: 'Gemini Video', modelId: 'gemini-video', capabilities: ['reverse_prompt', 'gemini_native'] }],
+    } as typeof node.data;
+    const view = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+
+    fireEvent.click(screen.getByRole('button', { name: '深度反推' }));
+    expect(screen.getByRole('button', { name: '深度反推' })).toHaveAttribute('aria-pressed', 'true');
+    view.rerender(<ReactFlowProvider><ModuleNodeCard id={node.id} data={{ ...data, config: { ...data.config, analysisDepth: 'standard' } }} selected={false} /></ReactFlowProvider>);
+    expect(screen.getByRole('button', { name: '深度反推' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('sends edited reverse fields to the autosave draft before Start is pressed', async () => {
@@ -6830,5 +7066,26 @@ describe('ModuleNodeCard', () => {
     expect(within(videoSelector).getByRole('option', { name: 'Kling 3', hidden: true })).toBeInTheDocument();
     expect(videoSelector).not.toHaveTextContent('Comfly ·');
     expect(videoSelector).not.toHaveTextContent('RelayMe ·');
+  });
+
+  it('shows one image-generation output socket while preserving both typed handles', () => {
+    const image = createCanvasModuleNode('typed-image-generation-outputs', 'image_generation', { x: 0, y: 0 });
+    render(<ReactFlowProvider><ModuleNodeCard id={image.id} data={image.data} selected={false} /></ReactFlowProvider>);
+
+    const card = screen.getByTestId('module-node-card');
+    expect(card.querySelector('[data-port-id="result"][data-port-type="generation_result"] .react-flow__handle')).not.toBeNull();
+    expect(card.querySelectorAll('.module-node__ports-column--outputs .module-node__port-row')).toHaveLength(1);
+    expect(card.querySelector('[data-port-id="image"].react-flow__handle[data-port-type="image_asset"][data-visual-alias="true"]')).not.toBeNull();
+  });
+
+  it('shows one original-or-layer input socket on image layering while retaining its output', () => {
+    const node = createCanvasModuleNode('layering-single-input', 'image_layering', { x: 0, y: 0 });
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+
+    const card = screen.getByTestId('module-node-card');
+    expect(card.querySelectorAll('.module-node__ports-column--inputs .module-node__port-row')).toHaveLength(1);
+    expect(card.querySelector('.module-node__port-row[data-port-id="image"] .react-flow__handle[data-port-id="image"]')).not.toBeNull();
+    expect(card.querySelector('.react-flow__handle[data-port-id="layerImages"][data-visual-alias="true"]')).not.toBeNull();
+    expect(card.querySelectorAll('.module-node__ports-column--outputs .module-node__port-row')).toHaveLength(1);
   });
 });

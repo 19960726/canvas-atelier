@@ -100,6 +100,16 @@ export function repairComflyGptImage25AsyncCapability(profile: ProviderBridgePro
   return { ...profile, capabilities: [...profile.capabilities, 'async_tasks'] };
 }
 
+/** Repair stale UI resolution tiers using exact documented GPT model families. */
+export function repairComflyGptImageConstraints(profile: ProviderBridgeProfile): ProviderBridgeProfile {
+  if (profile.provider !== 'comfly' || !profile.capabilities.includes('image_generation') || !profile.modelId) return profile;
+  const legacy = /^gpt-image-1(?:\.5|-mini)?(?:-\d{4}-\d{2}-\d{2})?$/u.test(profile.modelId);
+  if (!legacy && profile.modelId !== 'gpt-image-2-all') return profile;
+  const image = { ...profile.constraints?.image, resolutions: legacy ? ['1K', '2K'] as const : ['1K'] as const,
+    ...(legacy ? { sizes: ['1024x1024', '1536x1024', '1024x1536'] } : {}) };
+  return { ...profile, constraints: { ...profile.constraints, image: { ...image, resolutions: [...image.resolutions] } } };
+}
+
 export function repairComflyGeminiNativeReverseCapability(profile: ProviderBridgeProfile): ProviderBridgeProfile {
   if (profile.provider !== 'comfly'
     || profile.capabilityStatus === 'incomplete'
@@ -122,7 +132,7 @@ export function buildComflyModelProfiles(catalog: ComflyAccessibleModelCatalog):
     seenModelKeys.add(key);
     return true;
   });
-  return ensureUniqueModelRoutes(validModels.map((model) => repairComflyGptImage25AsyncCapability(repairComflyImageEditCapability(ProviderBridgeProfileSchema.parse({
+  return ensureUniqueModelRoutes(validModels.map((model) => repairComflyGptImageConstraints(repairComflyGptImage25AsyncCapability(repairComflyImageEditCapability(ProviderBridgeProfileSchema.parse({
     provider: 'comfly',
     modelRoute: `comfly-${routeSlug(model.key)}`,
     displayName: model.name,
@@ -131,7 +141,7 @@ export function buildComflyModelProfiles(catalog: ComflyAccessibleModelCatalog):
     capabilityStatus: model.capabilityStatus,
     constraints: constraintsForComflyModel(model),
     reasoning: reasoningForComflyModel(model),
-  })))));
+  }))))));
 }
 
 export function buildRelayMeModelProfiles(models: readonly RelayMeModel[]): ProviderBridgeProfile[] {
@@ -200,7 +210,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 export function mergeProviderModelProfiles(profiles: readonly ProviderBridgeProfile[]): ProviderBridgeProfile[] {
   const merged = new Map<string, ProviderBridgeProfile>();
   for (const profile of profiles) {
-    const parsed = repairComflyGptImage25AsyncCapability(repairComflyImageEditCapability(ProviderBridgeProfileSchema.parse(profile)));
+    const parsed = repairComflyGptImageConstraints(repairComflyGptImage25AsyncCapability(repairComflyImageEditCapability(ProviderBridgeProfileSchema.parse(profile))));
     const key = `${parsed.provider}::${parsed.modelRoute}`;
     if (!merged.has(key)) merged.set(key, parsed);
   }

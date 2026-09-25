@@ -1,4 +1,4 @@
-export { ComflyClient, decodeGeminiInlineImage, normalizeBaseUrl, parseGeminiImageResponse } from './client';
+export { ComflyClient, decodeGeminiInlineImage, isComflyGptImageModel, normalizeBaseUrl, parseGeminiImageResponse } from './client';
 export { mergeComflyModelRegistries } from './model-registry';
 export { redactProviderLog } from './redact';
 

@@ -1,12 +1,51 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ProviderModelCatalog } from './ProviderModelCatalog';
 
 afterEach(cleanup);
 
 describe('ProviderModelCatalog', () => {
+  it('shows provider aliases with the same friendly image name as one selectable series', () => {
+    const profiles = [
+      { provider: 'comfly' as const, modelRoute: 'banana', modelId: 'nano-banana-2', displayName: 'Nano Banana 2', capabilities: ['image_generation' as const] },
+      { provider: 'comfly' as const, modelRoute: 'gemini', modelId: 'gemini-3.1-flash-image-preview', displayName: 'Nano Banana 2', capabilities: ['image_generation' as const] },
+    ];
+    const onToggleFamily = vi.fn();
+    render(<ProviderModelCatalog profiles={profiles} onToggleFamily={onToggleFamily} />);
+    const group = screen.getByRole('region', { name: '生图模型' });
+    expect(within(group).getAllByRole('listitem')).toHaveLength(1);
+    fireEvent.click(within(group).getByRole('checkbox', { name: '启用 Nano Banana 2' }));
+    expect(onToggleFamily).toHaveBeenCalledWith(profiles, false);
+  });
+  it('shows image resolution variants once and enables the whole family', () => {
+    const onToggleFamily = vi.fn();
+    const profiles = [
+      { provider: 'comfly' as const, modelRoute: 'flare', modelId: 'gpt-image-2.5-flare', displayName: 'GPT Image 2.5 Flare', capabilities: ['image_generation' as const] },
+      { provider: 'comfly' as const, modelRoute: 'flare-2k', modelId: 'gpt-image-2.5-flare-2k', displayName: 'GPT Image 2.5 Flare 2K', capabilities: ['image_generation' as const] },
+      { provider: 'comfly' as const, modelRoute: 'flare-4k', modelId: 'gpt-image-2.5-flare-4k', displayName: 'GPT Image 2.5 Flare 4K', capabilities: ['image_generation' as const] },
+    ];
+    render(<ProviderModelCatalog profiles={profiles} enabledProfileKeys={profiles.map((profile) => `comfly:${profile.modelRoute}`)} defaultProfileKeys={{ image_generation: 'comfly:flare-4k' }} onToggleFamily={onToggleFamily} onDefaultProfileChange={() => undefined} />);
+    const group = screen.getByRole('region', { name: '生图模型' });
+    expect(within(group).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(within(group).getByRole('listitem')).getByText('GPT Image 2.5 Flare')).toBeVisible();
+    expect(within(group).queryByText('GPT Image 2.5 Flare 4K')).not.toBeInTheDocument();
+    expect(within(group).getByRole('combobox', { name: '生图默认模型' })).toHaveValue('comfly:flare');
+    fireEvent.click(within(group).getByRole('checkbox', { name: '启用 GPT Image 2.5 Flare' }));
+    expect(onToggleFamily).toHaveBeenCalledWith(profiles, false);
+  });
+  it('filters a long model list by name without hiding the selected default route', () => {
+    render(<ProviderModelCatalog profiles={[
+      { provider: 'comfly', modelRoute: 'image/gpt-2', displayName: 'GPT Image 2', capabilities: ['image_generation'] },
+      { provider: 'comfly', modelRoute: 'image/banana', displayName: 'Nano Banana 2', capabilities: ['image_generation'] },
+    ]} defaultProfileKeys={{ image_generation: 'comfly:image/gpt-2' }} onDefaultProfileChange={() => undefined} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: '搜索当前分类模型' }), { target: { value: 'banana' } });
+    const group = screen.getByRole('region', { name: '生图模型' });
+    expect(within(group).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(within(group).getByRole('listitem')).getByText('Nano Banana 2')).toBeVisible();
+    expect(within(group).getByRole('combobox', { name: '生图默认模型' })).toHaveValue('comfly:image/gpt-2');
+  });
   it('uses a compact capability tab bar and renders one model workspace at a time', () => {
     render(<ProviderModelCatalog profiles={[
       { provider: 'comfly', modelRoute: 'image/gpt-image-2', displayName: 'GPT Image 2', capabilities: ['image_generation'] },
@@ -84,15 +123,15 @@ describe('ProviderModelCatalog', () => {
 
     const group = screen.getByRole('region', { name: '生图模型' });
     const pendingRow = within(group).getAllByRole('listitem')
-      .find((row) => within(row).queryByText('GPT Image 2 4K') !== null);
-    expect(pendingRow).not.toBeNull();
+      .find((row) => within(row).queryByText('GPT Image 2') !== null);
+    expect(pendingRow).toBeDefined();
     expect(within(pendingRow!).getByText('协议待验证')).toBeVisible();
-    expect(within(pendingRow!).getByRole('checkbox', { name: '启用 GPT Image 2 4K' })).toBeDisabled();
+    expect(within(pendingRow!).getByRole('checkbox', { name: '启用 GPT Image 2' })).toBeDisabled();
     expect(within(group).getByText('2 个可用 · 1 个已启用')).toBeVisible();
 
     const defaultSelect = within(group).getByRole('combobox', { name: '生图默认模型' });
     expect(within(defaultSelect).getByRole('option', { name: 'GPT Image 1.5' })).toBeVisible();
-    expect(within(defaultSelect).queryByRole('option', { name: 'GPT Image 2 4K' })).not.toBeInTheDocument();
+    expect(within(defaultSelect).queryByRole('option', { name: 'GPT Image 2' })).not.toBeInTheDocument();
   });
 
   it('keeps equal visible names isolated when profiles from different providers are supplied', () => {

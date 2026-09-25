@@ -35,6 +35,13 @@ interface CurrentProjectState {
   readonly revision: number;
 }
 
+interface ValidatedProjectReplay {
+  readonly root: string;
+  readonly snapshotIdentity: string;
+  readonly recordChecksums: readonly string[];
+  readonly state: CurrentProjectState;
+}
+
 export const MAX_WIN7_PROJECT_ROOT_PATH_LENGTH = 180;
 
 export interface OpenedProjectSession {
@@ -114,6 +121,7 @@ export const PROJECT_DIRECTORIES = [
 ] as const;
 
 export class ProjectRepository {
+  private currentReplay: ValidatedProjectReplay | undefined;
   private readonly channel: PersistenceChannel;
   private readonly createId: () => string;
   private readonly deviceId: string;
@@ -236,6 +244,7 @@ export class ProjectRepository {
   }
 
   async close(session: OpenedProjectSession): Promise<void> {
+    if (this.currentReplay?.root === session.root) this.currentReplay = undefined;
     if (session.mode !== 'write' || session.lock === null) {
       return;
     }
@@ -527,6 +536,7 @@ export class ProjectRepository {
     });
 
     if (journal.records.length === 0) {
+      if (this.currentReplay?.root === root) this.currentReplay = undefined;
       return {
         project: stableProject,
         revision: manifest.stableSnapshotRevision,
@@ -534,15 +544,28 @@ export class ProjectRepository {
     }
 
     try {
-      const stableCanvasProject = requireCanvasProject(
-        stableProject,
-        'Active journal replay',
-      );
+      // Disk snapshot and every journal record have been verified above. Only
+      // reuse a replay when the snapshot and the complete validated prefix match;
+      // changed/truncated/rotated history must go through the normal full replay.
+      const snapshotIdentity = `${manifest.stableSnapshotRevision}:${manifest.nextSequence}:${sha256Canonical(stableProject)}`;
+      const recordChecksums = journal.records.map(record => record.payloadSha256);
+      const cached = this.currentReplay;
+      const reusable = cached?.root === root && cached.snapshotIdentity === snapshotIdentity
+        && cached.recordChecksums.length <= recordChecksums.length
+        && cached.recordChecksums.every((checksum, index) => checksum === recordChecksums[index]);
+      if (reusable && cached.recordChecksums.length === recordChecksums.length) return structuredClone(cached.state);
+      const stableCanvasProject = reusable
+        ? cached.state.project as CanvasProject
+        : requireCanvasProject(stableProject, 'Active journal replay');
       const replayed = replayJournal(
         stableCanvasProject,
-        manifest.stableSnapshotRevision,
-        journal.records,
+        reusable ? cached.state.revision : manifest.stableSnapshotRevision,
+        reusable ? journal.records.slice(cached.recordChecksums.length) : journal.records,
       );
+      this.currentReplay = {
+        root, snapshotIdentity, recordChecksums,
+        state: { project: structuredClone(replayed.project) as ProjectState, revision: replayed.revision },
+      };
       return {
         project: replayed.project as ProjectState,
         revision: replayed.revision,

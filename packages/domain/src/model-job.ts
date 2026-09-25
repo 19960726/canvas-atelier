@@ -129,7 +129,13 @@ export const modelJobSchema = z.object({
   resultAssetIds: z.array(idSchema).min(1).max(4).optional(),
   providerAckPending: z.boolean().optional(),
   terminalStatus: modelJobTerminalStatusSchema.optional(),
-}).strict();
+  layeringGroupId: idSchema.optional(),
+  layeringLayerId: idSchema.optional(),
+}).strict().superRefine((job, context) => {
+  if ((job.layeringGroupId === undefined) !== (job.layeringLayerId === undefined)) {
+    context.addIssue({ code: 'custom', path: ['layeringGroupId'], message: 'Layering group and layer identifiers must be stored together.' });
+  }
+});
 
 export type ModelJobStatus = z.infer<typeof modelJobStatusSchema>;
 export type ModelJob = z.infer<typeof modelJobSchema>;
@@ -161,6 +167,8 @@ export interface ConfirmedModelJobInput {
   prompt?: string;
   createdAt?: string;
   queueIndex?: number;
+  layeringGroupId?: string;
+  layeringLayerId?: string;
 }
 
 const legalTransitions: Record<ModelJobStatus, readonly ModelJobStatus[]> = {

@@ -34,14 +34,14 @@ test('manual acceptance keeps model, storage, and Agent controls interactive', a
   await page.getByTestId('agent-toggle').click();
   const composer = page.getByTestId('agent-composer-input');
   await expect(composer).toBeVisible();
-  await page.getByRole('tab', { name: '对话' }).click();
+  await page.getByLabel('Agent 模式').selectOption('chat');
   await page.getByTestId('agent-model-trigger').click();
   await page.locator('.skill-chat-workbench__sheet button').filter({ hasText: 'gpt-5.6-sol' }).first().click();
   const fileChooserPromise = page.waitForEvent('filechooser');
   await page.locator('.skill-chat-workbench__composer-footer > button').first().click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles({ name: 'agent-reference.png', mimeType: 'image/png', buffer: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]) });
-  await expect(page.locator('.skill-chat-workbench__image-tags img')).toBeVisible();
+  await expect(composer.locator('[data-media-mention="image"]')).toBeVisible();
   const send = page.locator('.skill-chat-workbench__composer button[type="submit"]');
   await composer.fill('Test Agent message');
   await expect(send).toBeEnabled();
@@ -70,6 +70,7 @@ test('manual canvas upload renders the selected image bytes in input and connect
 
   await imageInput.locator('[data-port-id="image"].react-flow__handle').dragTo(imageGeneration.locator('[data-port-id="references"].react-flow__handle'));
   await expect.poll(async () => (await e2eState(page)).edgeCount).toBe(1);
+  await imageGeneration.getByRole('button', { name: 'Open image generation editor' }).click();
   const connectedThumbnail = imageGeneration.getByLabel('Image generation reference slots').locator('img');
   await expect(connectedThumbnail).toBeVisible();
   await expect.poll(async () => connectedThumbnail.getAttribute('src')).toMatch(/^data:image\/png;base64,/u);

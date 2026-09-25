@@ -2,7 +2,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile 
 import { tmpdir } from 'node:os';
 import { basename, join, normalize } from 'node:path';
 import type { CanvasProject } from '@agent-canvas/domain';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { sha256Canonical } from './canonical-json';
 import {
@@ -14,6 +14,7 @@ import {
 } from './contracts';
 import { NodeFileSystem, writeAtomic, type FileHandleLike, type FileSystem } from './file-system';
 import { readValidJournal, replayJournal } from './journal-writer';
+import * as journalModule from './journal-writer';
 import {
   MAX_WIN7_PROJECT_ROOT_PATH_LENGTH,
   ProjectRepository,
@@ -51,9 +52,46 @@ describe('ProjectRepository', () => {
   const tempRoots: string[] = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await Promise.all(
       tempRoots.splice(0).map((tempRoot) => rm(tempRoot, { force: true, recursive: true })),
     );
+  });
+
+  it('replays only appended history during repeated current-state reads and keeps returned projects isolated', async () => {
+    const root = join(await createTempRoot(tempRoots), 'Typing.novus-project');
+    const repository = createRepository();
+    const project = makeCanvasProject('project-typing');
+    const session = await repository.create(root, {project, projectId:project.id});
+    const writer = await repository.openJournalWriter(session);
+    const append = (revision: number) => writer.commit({projectId:project.id,baseRevision:revision,kind:'canvas',transaction:{id:`typing-${revision}`,label:'Typing',operations:[{kind:'canvas',operation:{kind:'create_node',node:{id:`prompt-${revision}`,type:'prompt',position:{x:0,y:0},data:{prompt:`Text ${revision}`,requirementIds:[]}}}}]}});
+    await append(0);
+    const replay = vi.spyOn(journalModule, 'replayJournal');
+    const first = await repository.readCurrentProject(session);
+    expect(first.nodes.map(node => node.id)).toEqual(['prompt-0']);
+    replay.mockClear();
+    (first as unknown as {nodes: unknown[]}).nodes.length = 0;
+    expect((await repository.readCurrentProject(session)).nodes.map(node => node.id)).toEqual(['prompt-0']);
+    expect(await repository.readCurrentRevision(session)).toBe(1);
+    expect(replay).not.toHaveBeenCalled();
+    await append(1);
+    expect((await repository.readCurrentProject(session)).nodes.map(node => node.id)).toEqual(['prompt-0', 'prompt-1']);
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect(replay.mock.calls[0]?.[1]).toBe(1);
+    expect(replay.mock.calls[0]?.[2]).toHaveLength(1);
+    const snapshotPath = join(root, ...session.manifest.stableSnapshotPath!.split('/'));
+    const snapshot = await readJson<SnapshotEnvelope>(snapshotPath);
+    const changedProject = { ...snapshot.project, name: 'Verified replacement snapshot' };
+    await writeFile(snapshotPath, JSON.stringify({ ...snapshot, project: changedProject, projectSha256: sha256Canonical(changedProject) }));
+    expect((await repository.readCurrentProject(session)).name).toBe('Verified replacement snapshot');
+    expect(replay).toHaveBeenCalledTimes(2);
+    expect(replay.mock.calls[1]?.[1]).toBe(0);
+    expect(replay.mock.calls[1]?.[2]).toHaveLength(2);
+    const journalPath = join(root, 'journal', 'active.ndjson');
+    const raw = await readFile(journalPath, 'utf8');
+    await writeFile(journalPath, raw.replace('Text 0', 'Fake 0'));
+    await expect(repository.readCurrentProject(session)).rejects.toMatchObject({code:'CORRUPT_JOURNAL'});
+    await repository.close(session);
   });
 
   it('creates the project layout with only relative internal paths in the manifest', async () => {

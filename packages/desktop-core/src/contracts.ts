@@ -13,6 +13,7 @@ import type {
 } from '@agent-canvas/domain';
 export type {
   PhotoshopCapability,
+  PhotoshopColorCorrection,
   PhotoshopImportErrorCode,
   PhotoshopImportRequest,
   PhotoshopImportResult,

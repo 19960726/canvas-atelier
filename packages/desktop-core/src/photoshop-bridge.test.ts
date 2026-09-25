@@ -46,6 +46,48 @@ describe('Photoshop desktop bridge', () => {
       expect(place).toHaveBeenCalledWith({
         absolutePath: expect.stringMatching(new RegExp(`${asset.assetId}\\.png$`, 'u')),
         layerName: asset.label,
+        mediaType: 'image/png',
+      });
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'photoshop-project');
+    }
+  });
+
+  it('keeps managed-asset validation when color correction is requested', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'photoshop-bridge-corrected-'));
+    roots.push(root);
+    const projectRoot = join(root, 'Photoshop.novus-project');
+    const repository = new ProjectRepository({ createId: sequence('repository'), processId: 7822 });
+    const created = await repository.create(projectRoot, {
+      project: project(),
+      projectId: 'photoshop-project',
+      projectName: 'Photoshop Project',
+    });
+    await repository.close(created);
+    const place = vi.fn().mockResolvedValue({ ok: true, layerName: 'Generated image' });
+    const handlers = createDesktopBridgeHandlers({
+      createId: sequence('bridge'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      photoshopSmartObjectAdapter: { place },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const colorCorrection = { temperature: -4, tint: 7, saturation: 108, contrast: 102, brightness: 99 };
+      const asset = await handlers.storeGeneratedImage(opened!.sessionId, createSolidPng(), 'image/png');
+      await expect(handlers.importProjectImageToPhotoshop({}, {
+        sessionId: opened!.sessionId,
+        assetId: asset.assetId,
+        colorCorrection,
+      })).resolves.toEqual({ ok: true, layerName: 'Generated image' });
+
+      expect(place).toHaveBeenCalledWith({
+        absolutePath: expect.stringMatching(new RegExp(`${asset.assetId}\\.png$`, 'u')),
+        layerName: asset.label,
+        mediaType: 'image/png',
+        colorCorrection,
       });
     } finally {
       await handlers.closeAllProjects();
@@ -65,6 +107,11 @@ describe('Photoshop desktop bridge', () => {
       sessionId: 'session-1',
       assetId: '0123456789abcdef',
       script: 'app.activeDocument.save()',
+    })).rejects.toThrow();
+    await expect(handlers.importProjectImageToPhotoshop({}, {
+      sessionId: 'session-1',
+      assetId: '0123456789abcdef',
+      correctedPngBytes: createSolidPng(),
     })).rejects.toThrow();
     expect(place).not.toHaveBeenCalled();
   });

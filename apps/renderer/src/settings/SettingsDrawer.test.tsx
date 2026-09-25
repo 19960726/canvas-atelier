@@ -15,26 +15,28 @@ afterEach(() => {
 });
 
 describe('SettingsDrawer', () => {
-  it('exposes the Canvas settings heading, close control, and segmented tabs with readable Chinese labels', () => {
+  it('exposes the Canvas settings heading, close control, and navigation with readable Chinese labels', () => {
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 
     expect(screen.getByTestId('settings-drawer')).toHaveAttribute('data-canvas-surface', 'settings');
     expect(screen.getByTestId('settings-drawer-heading')).toHaveTextContent('设置');
     expect(screen.getByTestId('settings-drawer-heading')).toHaveTextContent('Settings');
     expect(screen.getByTestId('settings-drawer-close')).toHaveAccessibleName('关闭设置');
-    expect(screen.getByRole('tablist', { name: '设置分类' })).toHaveAttribute('data-canvas-tabs', 'segmented');
+    expect(screen.getByRole('tablist', { name: '设置分类' })).toHaveAttribute('data-canvas-tabs', 'navigation');
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
       'API 与模型', '存储与备份', 'MCP 联动', '同步',
     ]);
     expect(screen.queryByRole('tab', { name: '使用说明' })).not.toBeInTheDocument();
   });
 
-  it('uses four equal shared-theme columns for the four settings tabs', () => {
-    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
-    const tabsRule = css.match(/\.workspace--canvas-layout \.settings-tabs \{[^}]+\}/u)?.[0];
-
-    expect(tabsRule).toContain('grid-template-columns: repeat(4, minmax(104px, 1fr))');
-    expect(tabsRule).not.toContain('repeat(5');
+  it('links navigation to the active panel and resets scroll when changing category', () => {
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    const panel = screen.getByRole('tabpanel', { name: 'API 与模型' });
+    panel.scrollTop = 400;
+    fireEvent.click(screen.getByRole('tab', { name: '存储与备份' }));
+    expect(screen.getByRole('tabpanel', { name: '存储与备份' })).toHaveAttribute('id', 'settings-panel-storage');
+    expect(panel.scrollTop).toBe(0);
+    expect(screen.getByRole('heading', { name: '存储与备份' })).toBeVisible();
   });
 
   it('uses a four-provider final layout and compact capability metadata in both themes', () => {
@@ -139,7 +141,7 @@ describe('SettingsDrawer', () => {
       onProviderStatusChange={vi.fn()}
     />);
 
-    expect(screen.getByRole('region', { name: 'API 与模型' })).toBeVisible();
+    expect(screen.getByRole('region', { name: '供应商路由' })).toBeVisible();
     expect(screen.getByRole('list', { name: '模型供应商' })).toBeVisible();
     expect(screen.getByRole('listitem', { name: /Comfly/i })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByLabelText('API 服务地址（Base URL）')).toHaveValue('https://ai.comfly.org');
@@ -152,7 +154,7 @@ describe('SettingsDrawer', () => {
     expect(screen.queryByText('密钥名称')).not.toBeInTheDocument();
 
     expect(await screen.findByText('模型目录')).toBeVisible();
-    expect(screen.getByText('4 个模型 · 4 个启用')).toBeVisible();
+    expect(screen.getByText('4 个模型系列')).toBeVisible();
     await waitFor(() => expect(screen.getByRole('region', { name: '生图模型' })).toBeVisible());
     expect(screen.getByRole('tablist', { name: '模型能力分类' })).toBeVisible();
     expect(screen.queryByRole('region', { name: '对话模型' })).not.toBeInTheDocument();
@@ -1017,12 +1019,18 @@ describe('SettingsDrawer', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: '存储与备份' }));
 
-    expect(screen.getByLabelText('下载输出目录')).toBeVisible();
+    expect(screen.getByLabelText('下载保存位置')).toBeVisible();
+    expect(screen.getByText('下载时由系统窗口选择位置')).toBeVisible();
+    expect(screen.queryByRole('checkbox', { name: '固定下载输出目录' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('本地保存')).toBeVisible();
     expect(screen.getByRole('button', { name: '刷新' }).querySelector(':scope > .settings-action-content')).not.toBeNull();
     expect(screen.getByTestId('settings-storage-card')).toHaveAttribute('data-canvas-layout', 'storage');
-    expect(screen.getByRole('button', { name: '清理全部缓存' })).toBeVisible();
-    expect(screen.getAllByRole('button', { name: '清理' })).toHaveLength(4);
+    expect(screen.getByText('历史媒体')).toBeVisible();
+    expect(screen.getByText('已移入回收站')).toBeVisible();
+    expect(screen.queryByText('画布原图')).not.toBeInTheDocument();
+    expect(screen.queryByText('作品输出')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '清理过期回收站媒体' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '清理' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '10GB 清理预览' })).toBeNull();
   });
 
@@ -1080,14 +1088,16 @@ describe('SettingsDrawer', () => {
     fireEvent.click(screen.getByRole('tab', { name: '同步' }));
 
     expect(screen.getByTestId('settings-sync-card')).toBeVisible();
-    expect(screen.getByText('同步与成长记忆')).toBeVisible();
+    expect(screen.getByText('本机知识库')).toBeVisible();
+    expect(screen.queryByText('Canvas 同步（推荐）')).not.toBeInTheDocument();
+    expect(screen.queryByText('已开启')).not.toBeInTheDocument();
     expect(screen.getByRole('group', { name: '知识库同步列表' })).toBeVisible();
     expect(screen.getByText('场景 Skill')).toBeVisible();
     expect(screen.getByText('电商详情页知识库')).toBeVisible();
     expect(screen.getByText('v2')).toBeVisible();
     expect(screen.getByText('v5')).toBeVisible();
-    expect(screen.getByText('百度网盘同步')).toBeVisible();
-    expect(screen.getByText('WebDAV')).toBeVisible();
+    expect(screen.queryByText('百度网盘同步')).not.toBeInTheDocument();
+    expect(screen.queryByText('WebDAV')).not.toBeInTheDocument();
   });
 
   it('summarizes Codex CLI and MCP capability without exposing protected diagnostics', async () => {
@@ -1448,6 +1458,34 @@ it('keeps safe permission defaults and the workflow capability summary below the
 
     render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     expect(await screen.findByLabelText('生图默认模型')).toHaveValue('comfly:image/beta');
+  });
+
+  it('saves image family selection for every configured clarity route', async () => {
+    const updateProfiles = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
+    const profiles = [
+      { provider: 'comfly', modelRoute: 'image/other', displayName: 'Other Image', modelId: 'other-image', capabilities: ['image_generation'], capabilityStatus: 'complete' },
+      { provider: 'comfly', modelRoute: 'image/flare', displayName: 'GPT Image 2.5 Flare', modelId: 'gpt-image-2.5-flare', capabilities: ['image_generation'], capabilityStatus: 'complete' },
+      { provider: 'comfly', modelRoute: 'image/flare-2k', displayName: 'GPT Image 2.5 Flare 2K', modelId: 'gpt-image-2.5-flare-2k', capabilities: ['image_generation'], capabilityStatus: 'complete' },
+      { provider: 'comfly', modelRoute: 'image/flare-4k', displayName: 'GPT Image 2.5 Flare 4K', modelId: 'gpt-image-2.5-flare-4k', capabilities: ['image_generation'], capabilityStatus: 'complete' },
+    ];
+    window.novusDesktop = { provider: { listProfiles: vi.fn(async () => profiles), updateProfiles } } as unknown as typeof window.novusDesktop;
+    render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+
+    const familyToggle = await screen.findByRole('checkbox', { name: '启用 GPT Image 2.5 Flare' });
+    expect(screen.getByRole('region', { name: '生图模型' }).querySelectorAll('[role="listitem"]')).toHaveLength(2);
+    fireEvent.click(familyToggle);
+    expect(familyToggle).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: '保存 Comfly 模型选择' }));
+    await waitFor(() => expect(updateProfiles).toHaveBeenLastCalledWith(expect.objectContaining({
+      profiles: [expect.objectContaining({ modelRoute: 'image/other' })],
+    })));
+    fireEvent.click(familyToggle);
+    fireEvent.click(screen.getByRole('button', { name: '保存 Comfly 模型选择' }));
+    await waitFor(() => expect(updateProfiles).toHaveBeenLastCalledWith(expect.objectContaining({ profiles: expect.arrayContaining([
+      expect.objectContaining({ modelRoute: 'image/flare' }),
+      expect.objectContaining({ modelRoute: 'image/flare-2k' }),
+      expect.objectContaining({ modelRoute: 'image/flare-4k' }),
+    ]) })));
   });
 
   it('never persists a protocol-pending generation route as enabled or default', async () => {

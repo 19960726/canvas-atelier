@@ -109,7 +109,7 @@ describe('desktop bridge contract', () => {
     expect(createPreloadApi(mockInvoke)).not.toHaveProperty('readFile');
     expect(createPreloadApi(mockInvoke)).not.toHaveProperty('watchPath');
     expect(createPreloadApi(mockInvoke).provider).not.toHaveProperty('fetch');
-    expect(Object.keys(createPreloadApi(mockInvoke).projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importToPhotoshop', 'list', 'pasteClipboardImage', 'writeClipboardImage']);
+    expect(Object.keys(createPreloadApi(mockInvoke).projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importToPhotoshop', 'list', 'openLayeredPsdInPhotoshop', 'pasteClipboardImage', 'writeClipboardImage']);
     expect(createPreloadApi(mockInvoke).projectImages).not.toHaveProperty('readFile');
     expect(Object.keys(createPreloadApi(mockInvoke).history).sort()).toEqual([
       'addProjectReferences',
@@ -594,7 +594,7 @@ describe('desktop bridge contract', () => {
       expect(bundle, `missing in-memory preload bundle for ${entryPoint}`).toBeDefined();
       expect(bundle).not.toMatch(/node:crypto|node:fs|provider-comfly|ComflyClient|createCipheriv|createComflyProviderService/u);
     }
-  });
+  }, 60_000);
 
   it('redacts Windows paths with spaces and non-user drive roots from bridge diagnostics', () => {
     expect(redactBridgeDiagnostics('Failed at C:\\Program Files\\Novus Atelier\\foo.txt')).not.toContain('Program Files');

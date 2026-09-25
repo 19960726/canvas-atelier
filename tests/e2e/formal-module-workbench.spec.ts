@@ -139,7 +139,7 @@ for (const theme of ['light', 'dark'] as const) {
       const reverseNode = page.locator('[data-module-type="reverse_agent"]');
       const allNodes = representativeTypes.map((moduleType) => page.locator(`[data-module-type="${moduleType}"]`));
       await expect(generationNode.locator('.module-node__port-row[data-port-id="references"][data-port-direction="input"] .react-flow__handle')).toBeVisible();
-      await expect(generationNode.locator('.module-node__port-row[data-port-id="result"][data-port-direction="output"] .react-flow__handle')).toBeVisible();
+      await expect(generationNode.locator('.module-node__port-row[data-port-id="result"][data-port-direction="output"] .react-flow__handle:not([data-visual-alias="true"])')).toBeVisible();
       await expect(reverseNode.locator('.module-node__port-row[data-port-id="references"][data-port-direction="input"] .react-flow__handle')).toBeVisible();
       await expect(reverseNode.locator('.module-node__port-row[data-port-id="analysis"][data-port-direction="output"] .react-flow__handle')).toBeVisible();
       for (const node of allNodes) {
@@ -165,7 +165,7 @@ for (const theme of ['light', 'dark'] as const) {
       // keeps the Agent panel as the only auxiliary surface, so do not require a
       // hidden legacy region merely to make this layout audit pass.
       await assertLocatorInside(page.locator('body'), page.getByTestId('agent-panel'), `agent panel ${viewport.name} ${theme}`);
-      await page.getByTestId('agent-panel').getByRole('button', { name: '关闭 Codex Agent' }).click();
+      await page.getByTestId('agent-panel').getByRole('button', { name: '关闭 Novus Agent' }).click();
       await expect(page.getByTestId('agent-panel')).toBeHidden();
       await openAgentPanel(page);
 

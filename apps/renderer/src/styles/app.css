@@ -75,6 +75,8 @@ textarea:focus-visible {
 .canvas-stage .react-flow__controls-button { width: 28px; height: 28px; color: var(--text-secondary); background: transparent; border-bottom-color: var(--border-subtle); }
 .canvas-stage .react-flow__controls-button:hover { color: var(--text); background: var(--surface-muted); }
 .canvas-stage .react-flow__minimap { border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow-panel); background: var(--surface-overlay); }
+.canvas-large-minimap-toggle { position: absolute; z-index: 7; top: 12px; right: 72px; display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 9px; color: var(--text-secondary); background: var(--surface-overlay); border: 1px solid var(--border); border-radius: 7px; box-shadow: var(--shadow-panel); font-size: 11px; cursor: pointer; }
+.canvas-large-minimap-toggle:hover, .canvas-large-minimap-toggle[aria-pressed='true'] { color: var(--text); border-color: var(--accent); }
 .canvas-context { position: absolute; right: 60px; bottom: 10px; display: flex; gap: 10px; padding: 5px 8px; color: var(--text-secondary); background: var(--surface-overlay-soft); border: 1px solid var(--border); border-radius: 6px; font-size: 10px; pointer-events: none; }
 .legacy-workbench-migration { position: absolute; z-index: 16; top: 16px; right: 16px; width: min(384px, calc(100% - 96px)); display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; color: var(--text); background: var(--surface-overlay); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: var(--shadow-panel); }
 .legacy-workbench-migration > div { min-width: 0; display: grid; gap: 3px; }
@@ -334,6 +336,21 @@ textarea:focus-visible {
 .module-node__media-frame > img,
 .module-node__media-frame > video { width: 100%; height: 100%; display: block; object-fit: contain; background: var(--surface); }
 .module-node__media-frame.is-video { height: 148px; aspect-ratio: 16 / 9; background: #050608; }
+.module-node__media-frame > .module-node__video-drag-surface {
+  position: absolute;
+  inset: 0 0 56px;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: grab;
+}
+.module-node__video-drag-surface:active { cursor: grabbing; }
+.module-node__video-drag-surface:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .module-node__media-action {
   position: absolute;
   top: 6px;

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { test, expect } from './helpers/e2e-test';
 import { e2eState, failNextModelJobEnqueue, openEmptyApp, queueProjectImageImport, waitForModelSubmissions } from './helpers/app';
 import { makeReferenceImage } from './helpers/fixtures';
@@ -116,6 +117,45 @@ test('a collapsed missing-result warning keeps both editor and reload actions cl
   await warning.getByRole('button', { name: '重新加载返图' }).click();
   await expect(warning).toBeVisible();
   expect((await e2eState(page)).modelSubmissions).toHaveLength(submissionsBeforeReload);
+});
+
+test('a transparent managed result keeps alpha in preview and original download', async ({ page }) => {
+  const fixture = makeReferenceImage('Transparent result.png', [42, 126, 168, 128], { width: 48, height: 48 });
+  await openEmptyApp(page);
+  await page.evaluate(async () => {
+    await window.__NOVUS_E2E__!.createModule('image_input', { x: 40, y: 140 });
+    await window.__NOVUS_E2E__!.createModule('image_generation', { x: 420, y: 140 });
+  });
+  await queueProjectImageImport(page, fixture, { preservePixels: true });
+  await page.locator('[data-module-type="image_input"]').getByRole('button', { name: /Import image/u }).click();
+  const asset = (await e2eState(page)).projectImages[0];
+  expect(asset).toBeDefined();
+  await page.evaluate(async (assetId) => {
+    await window.__NOVUS_E2E__!.configureModule('image_generation', {
+      config: { resultState: 'fresh', resultAssetIds: [assetId] },
+      execution: { state: 'completed' },
+    });
+  }, asset!.assetId);
+
+  const node = page.locator('[data-module-type="image_generation"]');
+  await node.getByRole('button', { name: 'Open image generation editor' }).click();
+  const preview = node.getByRole('button', { name: 'Generated image 1; double click to preview' }).locator('img');
+  await expect(preview).toHaveAttribute('src', asset!.displayUrl);
+  const alpha = await preview.evaluate(async (image: HTMLImageElement) => {
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const context = canvas.getContext('2d')!;
+    context.drawImage(image, 0, 0, 1, 1);
+    return context.getImageData(0, 0, 1, 1).data[3];
+  });
+  expect(alpha).toBe(128);
+
+  await node.getByRole('button', { name: 'Generated image 1; double click to preview' }).click({ button: 'right' });
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('menuitem', { name: '下载图片' }).click();
+  const download = await downloadPromise;
+  expect(await readFile(await download.path()!)).toEqual(fixture.buffer);
 });
 
 test('Stop image generation finishes even when provider cancellation never responds', async ({ page }) => {

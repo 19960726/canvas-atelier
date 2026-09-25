@@ -50,6 +50,23 @@ describe('renderer stylesheet precedence', () => {
     expect(release).toMatch(/\.skill-chat-workbench__model-pill \{[\s\S]*?border-radius: 17px !important;/);
   });
 
+  it('keeps floating Agent quick-task titles left-aligned after their icons', () => {
+    const floating = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/agent-floating.css'));
+    expect(floating).toMatch(/\.skill-chat-workbench__suggestions > button > span:last-child \{[\s\S]*?text-align: left !important;/);
+  });
+
+  it('centers the Agent welcome mark after the compact intro width limit', () => {
+    const floating = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/agent-floating.css'));
+    expect(floating).toMatch(/\.skill-chat-workbench__intro--codex \{[\s\S]*?justify-self: center !important;[\s\S]*?width: min\(100%, 300px\) !important;[\s\S]*?margin-inline: auto !important;/);
+  });
+
+  it('uses the right panel as the single scroll container for long layering plans', () => {
+    const layering = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/image-layering.css'));
+    expect(layering).toMatch(/\.image-layering-dialog__controls \{[^}]*overflow-y: auto;/);
+    expect(layering).toMatch(/\.image-layering-dialog__layer-list \{[^}]*overflow: visible;/);
+    expect(layering).not.toMatch(/\.image-layering-dialog__layer-list \{[^}]*overflow-y: auto;/);
+  });
+
   it('keeps all twenty media slots draggable without permanent arrow overlays', () => {
     const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
     const rowRules = [...release.matchAll(/\.workspace--canvas-layout \.connected-agent-media-slots__row \{[^}]+\}/gu)];
@@ -90,7 +107,7 @@ describe('renderer stylesheet precedence', () => {
     const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
 
     expect(release).toContain('MODULE NODE CONTROL SIZE CONTRACT');
-    expect(release).toMatch(/\.workspace--canvas-layout \.module-node :is\(button, select, input\) \{[\s\S]*?height: 38px !important;[\s\S]*?min-height: 38px !important;/);
+    expect(release).toMatch(/\.workspace--canvas-layout \.module-node :is\(button, select, input\):not\(\.module-node__video-drag-surface\) \{[\s\S]*?height: 38px !important;[\s\S]*?min-height: 38px !important;/);
     expect(release).toMatch(/\.workspace--canvas-layout \.module-node :is\(\.module-node__icon-button, \.module-node__collapse-editor\) \{[\s\S]*?width: 36px !important;[\s\S]*?height: 36px !important;/);
     expect(release).toMatch(/\.workspace--canvas-layout \.module-node :is\(\.module-node__agent-media-slot, \.connected-agent-media-slots__item\) \{[\s\S]*?width: 36px !important;[\s\S]*?height: 36px !important;/);
   });

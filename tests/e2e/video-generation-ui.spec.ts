@@ -54,8 +54,8 @@ for (const theme of ['dark', 'light'] as const) {
     await expect(mediaTray).toHaveCSS('width', '614px');
     await expect(mediaTray).toHaveCSS('height', '54px');
     const pendingSlot = mediaTray.getByLabel('Video preview reference slot pending');
-    await expect(pendingSlot).toHaveCSS('width', '40px');
-    await expect(pendingSlot).toHaveCSS('height', '40px');
+    await expect(pendingSlot).toHaveCSS('width', '36px');
+    await expect(pendingSlot).toHaveCSS('height', '36px');
     await expect(mediaTray.locator('.module-node__connected-video-media-source')).toHaveCount(0);
     await expect(mediaTray.locator('.module-node__reference-slots--inline')).toHaveCount(0);
     await expect(pendingSlot.getByLabel('图槽编号 1')).toHaveText('1');
@@ -126,19 +126,25 @@ for (const theme of ['dark', 'light'] as const) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
     await openEmptyApp(page);
-    await page.evaluate(async () => {
-      await window.__NOVUS_E2E__.createModule('video_generation', { x: 100, y: 112 });
+  await page.evaluate(async () => {
+    await window.__NOVUS_E2E__.createModule('image_input', { x: 1100, y: 1100 });
+    await window.__NOVUS_E2E__.createModule('video_generation', { x: 100, y: 112 });
+    });
+    await queueProjectImageImport(page, makeReferenceImage('Video result poster.png', [20, 132, 108, 255]));
+    await page.locator('[data-module-type="image_input"]').getByRole('button', { name: /Import image/u }).click();
+    const posterAssetId = (await e2eState(page)).projectImages.at(-1)!.assetId;
+    await page.evaluate(async (posterAssetId) => {
       await window.__NOVUS_E2E__.configureModule('video_generation', {
         config: {
           resultState: 'fresh',
           videoResults: [
-            { assetId: 'video-result-1', mediaType: 'video/mp4', durationMs: 5000, posterUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' },
-            { assetId: 'video-result-2', mediaType: 'video/mp4', durationMs: 8000, posterUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' },
+            { assetId: 'video-result-1', mediaType: 'video/mp4', durationMs: 5000, posterAssetId },
+            { assetId: 'video-result-2', mediaType: 'video/mp4', durationMs: 8000, posterAssetId },
           ],
         },
         execution: { state: 'completed' },
       });
-    });
+    }, posterAssetId);
 
     const generation = page.locator('[data-module-type="video_generation"]');
     await expect(page.locator('[data-module-type="video_result"]')).toHaveCount(0);
@@ -149,7 +155,7 @@ for (const theme of ['dark', 'light'] as const) {
     await expect(generation.locator('[data-port-id="result"].react-flow__handle')).toBeVisible();
     await captureLayoutScreenshot(page, testInfo, `video-results-inline-${theme}-${viewport.name}`);
   });
-  test(`video generation uses the shared collapsed and expanded card contract in ${theme} at ${viewport.name}`, async ({ page }, testInfo) => {
+  test(`video generation uses the collapsed card and detached preview with aligned composer in ${theme} at ${viewport.name}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
     await openEmptyApp(page);
@@ -165,17 +171,45 @@ for (const theme of ['dark', 'light'] as const) {
 
     const viewportTransformBefore = await page.locator('.react-flow__viewport').evaluate((element) => getComputedStyle(element).transform);
     await videoNode.getByRole('button', { name: 'Open video generation editor' }).click();
-    await expect(videoNode).toHaveCSS('width', '900px');
-    await expect(videoNode).toHaveCSS('height', '830px');
+    await expect(videoNode).toHaveCSS('width', '704px');
+    await expect(videoNode).toHaveCSS('height', '742px');
     await expect(videoNode.getByLabel('Video generation composer')).toBeVisible();
-    await expect(videoNode.getByLabel('Video preview prompt workspace')).toBeVisible();
-    await expect(videoNode.getByLabel('Video preview parameter controls')).toBeVisible();
+    const preview = videoNode.locator('.module-node__result');
+    const media = videoNode.getByLabel('Connected video media editor', { exact: true });
+    const prompt = videoNode.getByLabel('Video preview prompt workspace');
+    const controls = videoNode.getByLabel('Video preview parameter controls');
+    await expect(preview).toHaveCSS('width', '676px');
+    await expect(preview).toHaveCSS('height', '380px');
+    for (const rail of [media, prompt, controls]) {
+      await expect(rail).toBeVisible();
+      await expect(rail).toHaveCSS('width', '702px');
+    }
+    const [previewBox, mediaBox, promptBox, controlsBox] = await Promise.all(
+      [preview, media, prompt, controls].map((locator) => locator.boundingBox()),
+    );
+    expect(previewBox).not.toBeNull();
+    expect(mediaBox).not.toBeNull();
+    expect(promptBox).not.toBeNull();
+    expect(controlsBox).not.toBeNull();
+    expect(Math.abs(previewBox!.x + previewBox!.width / 2 - (mediaBox!.x + mediaBox!.width / 2))).toBeLessThanOrEqual(1);
+    expect(mediaBox!.y - (previewBox!.y + previewBox!.height)).toBeCloseTo(0, 0);
+    expect(Math.abs(mediaBox!.x - promptBox!.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(promptBox!.x - controlsBox!.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(mediaBox!.y + mediaBox!.height - promptBox!.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(promptBox!.y + promptBox!.height - controlsBox!.y)).toBeLessThanOrEqual(1);
     const runButton = videoNode.locator('.module-node__run-generation');
+    const settingsTrigger = videoNode.getByRole('button', { name: '打开视频参数设置' });
+    const settingsSummary = settingsTrigger.locator('.module-node__video-settings-summary');
     const composer = videoNode.getByLabel('Video generation composer');
     await expect(runButton).toBeVisible();
+    await expect(settingsTrigger).toContainText(/· \d+s · \d个/u);
+    const summaryMetrics = await settingsSummary.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
+    expect(summaryMetrics.scrollWidth).toBeLessThanOrEqual(summaryMetrics.clientWidth + 1);
     const [composerBox, runBox] = await Promise.all([composer.boundingBox(), runButton.boundingBox()]);
     expect(composerBox).not.toBeNull();
     expect(runBox).not.toBeNull();
+    expect(runBox!.width).toBeLessThanOrEqual(92);
+    expect(runBox!.height).toBe(34);
     expect(runBox!.x).toBeGreaterThanOrEqual(composerBox!.x);
     expect(runBox!.x + runBox!.width).toBeLessThanOrEqual(composerBox!.x + composerBox!.width);
     expect(await page.locator('.react-flow__viewport').evaluate((element) => getComputedStyle(element).transform)).toBe(viewportTransformBefore);
@@ -189,7 +223,7 @@ for (const theme of ['dark', 'light'] as const) {
     await captureLayoutScreenshot(page, testInfo, `video-generation-${theme}-${viewport.name}`);
   });
 
-  test(`video generation keeps the Canvas teal focus treatment in ${theme} at ${viewport.name}`, async ({ page }, testInfo) => {
+  test(`video generation keeps one teal selected border without a second focus halo in ${theme} at ${viewport.name}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
     await openEmptyApp(page);
@@ -198,15 +232,17 @@ for (const theme of ['dark', 'light'] as const) {
     });
 
     const videoNode = page.locator('[data-module-type="video_generation"]');
+    await videoNode.locator('.module-node__header').click();
     await videoNode.evaluate((element) => {
       const flowNode = element.closest('.react-flow__node') as HTMLElement | null;
       flowNode?.focus();
     });
 
-    expect(
-      await videoNode.evaluate((element) => getComputedStyle(element).outlineColor),
-      'The Canvas UI Gate uses teal interaction affordances; a legacy blue React Flow focus ring must never surround video generation.',
-    ).toBe(theme === 'dark' ? 'rgb(66, 199, 181)' : 'rgb(15, 118, 110)');
+    await expect(videoNode).toHaveClass(/is-selected/u);
+    await expect(videoNode).toHaveCSS('border-top-color', 'rgb(24, 169, 153)');
+    await expect(videoNode).toHaveCSS('border-top-style', 'solid');
+    await expect(videoNode).toHaveCSS('outline-style', 'none');
+    await expect(videoNode).toHaveCSS('box-shadow', 'none');
     await captureLayoutScreenshot(page, testInfo, `video-generation-focus-${theme}-${viewport.name}`);
   });
 }
@@ -246,11 +282,14 @@ test('a completed video remains inside its source node after reload without an e
 for (const viewport of viewports) {
 for (const theme of ['dark', 'light'] as const) {
 test(`captures completed video posters inside the generation card in ${theme} at ${viewport.name}`, async ({ page }, testInfo) => {
-  await page.setViewportSize({ width: viewport.width, height: viewport.height });
+  await page.setViewportSize({ width: viewport.width, height: 1600 });
   await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
   await openEmptyApp(page);
   await page.evaluate(async () => {
     await window.__NOVUS_E2E__.createModule('image_input', { x: 80, y: 228 });
+    for (let index = 0; index < 4; index += 1) {
+      await window.__NOVUS_E2E__.createModule('video_input', { x: 1200, y: 40 + index * 300 });
+    }
     await window.__NOVUS_E2E__.createModule('video_generation', { x: 460, y: 85 });
   });
   await queueProjectImageImport(page, makeReferenceImage('video-poster.png', [20, 132, 108, 255], { width: 1280, height: 720 }));
@@ -259,29 +298,41 @@ test(`captures completed video posters inside the generation card in ${theme} at
   expect(poster?.assetId).toBeTruthy();
   expect(poster?.displayUrl).toBeTruthy();
 
+  const videoInputs = page.locator('[data-module-type="video_input"]');
+  const importedVideos: Array<{ assetId: string; displayUrl: string }> = [];
+  for (let index = 0; index < 4; index += 1) {
+    await queueProjectVideoImport(page, { label: `Completed result fixture ${index + 1}.mp4` });
+    await videoInputs.nth(index).getByRole('button', { name: /Import video/u }).click();
+    const importedVideo = (await e2eState(page)).projectVideos.at(-1);
+    expect(importedVideo?.assetId).toBeTruthy();
+    expect(importedVideo?.displayUrl).toBeTruthy();
+    importedVideos.push(importedVideo!);
+  }
+
   const imageNode = page.locator('[data-module-type="image_input"]');
   const videoNode = page.locator('[data-module-type="video_generation"]');
   await imageNode.locator('[data-port-id="image"].react-flow__handle').dragTo(videoNode.locator('[data-port-id="media"].react-flow__handle'));
   await expect.poll(async () => (await e2eState(page)).edgeCount).toBe(1);
-  await page.evaluate(async ({ posterAssetId, posterUrl }) => {
+  await page.evaluate(async ({ posterAssetId, posterUrl, videoAssetIds }) => {
     await window.__NOVUS_E2E__.configureModule('video_generation', {
       config: {
         resultState: 'fresh',
-        videoResults: [{
-          assetId: 'generated-video-result-1',
+        videoResults: Array.from({ length: 4 }, (_, index) => ({
+          assetId: videoAssetIds[index],
           mediaType: 'video/mp4',
-          durationMs: 5000,
+          durationMs: 5000 + index * 1000,
           posterAssetId,
           posterUrl,
-        }],
+        })),
       },
       execution: { state: 'completed' },
     });
-  }, { posterAssetId: poster!.assetId, posterUrl: poster!.displayUrl });
+  }, { posterAssetId: poster!.assetId, posterUrl: poster!.displayUrl, videoAssetIds: importedVideos.map((video) => video.assetId) });
+  await page.setViewportSize({ width: viewport.width, height: viewport.height });
 
   await expect(page.locator('[data-module-type="video_result"]')).toHaveCount(0);
   await expect(videoNode.getByLabel('Video generation preview')).toBeVisible();
-  await expect(videoNode.getByRole('img', { name: 'Generated video preview 1' })).toBeVisible();
+  await expect(videoNode.getByRole('img', { name: /^Generated video preview \d+$/u })).toHaveCount(4);
   await expect(videoNode.getByLabel('Connected video media')).toHaveCount(0);
 
   await videoNode.getByRole('button', { name: 'Open video generation editor' }).click();
@@ -289,7 +340,13 @@ test(`captures completed video posters inside the generation card in ${theme} at
   await expect(videoNode.getByLabel('Connected video media editor').locator('img')).toBeVisible();
   await expect(videoNode.getByLabel('Video preview prompt workspace')).toBeVisible();
   await expect(videoNode.getByLabel('Video preview parameter controls')).toBeVisible();
-  await captureLayoutScreenshot(page, testInfo, `video-generation-completed-${theme}-${viewport.name}`);
+  await expect(videoNode.getByText('正在加载返回视频')).toHaveCount(0);
+  const gallery = videoNode.getByLabel('Completed video results');
+  const galleryColumns = await gallery.evaluate((element) => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/u).length);
+  expect(galleryColumns, 'Four completed videos should be shown as a fixed two-column by two-row gallery.').toBe(2);
+  await page.setViewportSize({ width: viewport.width, height: Math.max(viewport.height, 920) });
+  await videoInputs.evaluateAll((nodes) => nodes.forEach((node) => { (node as HTMLElement).style.visibility = 'hidden'; }));
+  await page.screenshot({ path: testInfo.outputPath(`video-generation-completed-${theme}-${viewport.name}.png`), fullPage: true });
 });
 }
 }

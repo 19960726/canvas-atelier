@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent, type PointerEvent, type WheelEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent } from 'react';
 import { ChevronLeft, ChevronRight, Image as ImageIcon, Video } from 'lucide-react';
 import { MAX_GENERATION_REFERENCES } from '@agent-canvas/domain';
 import { CONNECTED_MEDIA_DRAG_MIME, encodeConnectedMediaDragPayload } from './connected-media-drag';
@@ -15,8 +15,9 @@ interface ConnectedAgentMediaSlotsProps {
   readonly ariaLabel: string;
   readonly media: readonly ConnectedAgentMediaSlotItem[];
   readonly title?: string;
-  readonly onReorder?: (media: ConnectedAgentMediaSlotItem[]) => void;
+  readonly onReorder?: (media: ConnectedAgentMediaSlotItem[]) => void | boolean | Promise<void | boolean>;
   readonly onRemove?: (item: ConnectedAgentMediaSlotItem) => void;
+  readonly onPreview?: (item: ConnectedAgentMediaSlotItem, index: number) => void;
   readonly onAdd?: () => void;
   readonly slotRowAriaLabel?: string;
   readonly emptySlotKind?: 'image' | 'video';
@@ -32,6 +33,7 @@ export function ConnectedAgentMediaSlots({
   title = '已连接素材',
   onReorder,
   onRemove,
+  onPreview,
   onAdd,
   slotRowAriaLabel,
   emptySlotKind,
@@ -56,11 +58,33 @@ export function ConnectedAgentMediaSlots({
       : hydrateMediaPresentation(current, nextMedia));
   }, [mediaSignature, mediaPresentationSignature, preserveOverflow]);
   const visibleMedia = orderedMedia;
-  const hasOverflow = visibleMedia.length > 10;
+  const hasOverflow = visibleMedia.length > 7;
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const [pointerDragIndex, setPointerDragIndex] = useState<number | null>(null);
   const nativeDragActiveRef = useRef(false);
+  const latestMedia = useRef(media);
+  latestMedia.current = media;
+  const reorderSequence = useRef(0);
+  const [reorderError, setReorderError] = useState(false);
+  const trayRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const cancelPointerDrag = (event: Event) => {
+      if (event.type === 'pointerup' && event.target instanceof Element
+        && event.target.closest('.connected-agent-media-slots__item')
+        && trayRef.current?.contains(event.target)) return;
+      setPointerDragIndex(null);
+      setDropIndex(null);
+    };
+    window.addEventListener('pointerup', cancelPointerDrag, true);
+    window.addEventListener('pointercancel', cancelPointerDrag, true);
+    window.addEventListener('blur', cancelPointerDrag);
+    return () => {
+      window.removeEventListener('pointerup', cancelPointerDrag, true);
+      window.removeEventListener('pointercancel', cancelPointerDrag, true);
+      window.removeEventListener('blur', cancelPointerDrag);
+    };
+  }, []);
 
   const reorder = (fromIndex: number, toIndex: number) => {
     if (!onReorder || fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= visibleMedia.length || toIndex >= visibleMedia.length) return;
@@ -69,7 +93,16 @@ export function ConnectedAgentMediaSlots({
     if (!item) return;
     next.splice(toIndex, 0, item);
     setOrderedMedia(next);
-    onReorder(next);
+    setReorderError(false);
+    const sequence = ++reorderSequence.current;
+    const rollback = () => {
+      if (sequence !== reorderSequence.current) return;
+      setOrderedMedia(preserveOverflow ? [...latestMedia.current] : latestMedia.current.slice(0, MAX_GENERATION_REFERENCES));
+      setReorderError(true);
+    };
+    try {
+      Promise.resolve(onReorder(next)).then((accepted) => { if (accepted === false) rollback(); }, rollback);
+    } catch { rollback(); }
   };
   const finishDrop = (event: DragEvent<HTMLElement>, toIndex: number) => {
     event.preventDefault();
@@ -79,23 +112,33 @@ export function ConnectedAgentMediaSlots({
     setDropIndex(null);
   };
   const stopPointer = (event: PointerEvent<HTMLElement>) => event.stopPropagation();
-  const scrollSlots = (event: WheelEvent<HTMLDivElement>) => {
-    const element = event.currentTarget;
-    if (element.scrollWidth <= element.clientWidth) return;
-    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    element.scrollLeft += event.deltaY;
-  };
+  const scrollRowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = scrollRowRef.current;
+    if (!element) return;
+    const scrollSlots = (event: WheelEvent) => {
+      if (element.scrollWidth <= element.clientWidth || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientWidth : 1);
+      element.scrollLeft += delta;
+    };
+    // React delegates wheel as passive; cancellation needs an explicit native listener.
+    element.addEventListener('wheel', scrollSlots, { passive: false });
+    return () => element.removeEventListener('wheel', scrollSlots);
+  }, []);
 
   return (
-    <section className="module-node__agent-media-slots module-node__unified-media-slots connected-agent-media-slots nodrag nopan" aria-label={ariaLabel} onPointerDown={stopPointer}>
+    <section ref={trayRef} className="module-node__agent-media-slots module-node__unified-media-slots connected-agent-media-slots nodrag nopan" aria-label={ariaLabel} onPointerDown={stopPointer}>
       <header><span>{title}</span><b>{visibleMedia.length} / {MAX_GENERATION_REFERENCES}</b></header>
+      {reorderError && <span role="alert">换位未保存，已恢复原顺序，请重试。</span>}
       <div
-        className="module-node__agent-media-slot-row connected-agent-media-slots__row"
+        className="module-node__agent-media-slot-row connected-agent-media-slots__row nowheel"
         aria-label={slotRowAriaLabel}
         data-overflow={hasOverflow ? 'true' : undefined}
-        onWheel={scrollSlots}
+        data-layout={visibleMedia.length > 12 ? 'two-rows' : 'single-row'}
+        style={{ '--media-columns': Math.max(1, visibleMedia.length > 12 ? Math.ceil(visibleMedia.length / 2) : visibleMedia.length) } as CSSProperties}
+        ref={scrollRowRef}
       >
         {visibleMedia.map((item, index) => (
           <div
@@ -134,6 +177,12 @@ export function ConnectedAgentMediaSlots({
             onDragEnd={() => { nativeDragActiveRef.current = false; setDraggedItemId(null); setDropIndex(null); }}
             onDragOver={(event) => { event.preventDefault(); setDropIndex(index); }}
             onDrop={(event) => finishDrop(event, index)}
+            onDoubleClick={(event) => {
+              if (item.kind !== 'image' || !onPreview) return;
+              event.preventDefault();
+              event.stopPropagation();
+              onPreview(item, index);
+            }}
           >
             {item.kind === 'image'
               ? item.previewUrl ? <img src={item.previewUrl} alt={item.label} draggable={false} /> : <ImageIcon size={16} aria-hidden="true" />

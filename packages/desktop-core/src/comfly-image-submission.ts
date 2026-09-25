@@ -1,4 +1,4 @@
-import type { ComflyClient } from '@agent-canvas/provider-comfly';
+import { isComflyGptImageModel, type ComflyClient } from '@agent-canvas/provider-comfly';
 import type { ProviderBridgeProfile, SubmitImageJobBridgeRequest } from './provider-contracts.js';
 
 // Comfly currently exposes Flux Pro 1.1 through its DALL-E-compatible edits
@@ -22,8 +22,13 @@ export function submitComflyImage(
   references: readonly { readonly bytes: Uint8Array; readonly mediaType: string }[],
 ) {
   const model = profile.modelId ?? profile.modelRoute;
-  const usesGptEdits = references.length > 0 && /^gpt-image-2(?:-(?:all|2k|4k|vip)|\.5-(?:flare|sunburst)(?:-(?:2k|4k))?)?$/u.test(model);
+  const usesGptEdits = references.length > 0 && isComflyGptImageModel(model);
   const usesEditTransport = usesGptEdits || usesComflyImageEditTransport(model);
+  if (input.imageBackground === 'transparent' && input.imageOutputFormat === 'jpeg') {
+    throw Object.assign(new Error('Transparent image output requires PNG or WebP'), {
+      code: 'CAPABILITY_UNSUPPORTED', retryable: false,
+    });
+  }
   const request = {
     model,
     prompt,
@@ -33,7 +38,11 @@ export function submitComflyImage(
     ...(input.aspectRatio === undefined ? {} : { aspect_ratio: input.aspectRatio }),
     ...(input.resolution === undefined ? {} : { size: input.resolution }),
     ...(input.quality === undefined ? {} : { quality: input.quality }),
-    ...(input.imageOutputFormat === undefined || input.imageOutputFormat === 'png' ? {} : { output_format: input.imageOutputFormat }),
+    ...(input.imageBackground === 'transparent'
+      ? { output_format: input.imageOutputFormat ?? 'png' }
+      : input.imageOutputFormat === undefined || input.imageOutputFormat === 'png'
+        ? {}
+        : { output_format: input.imageOutputFormat }),
     ...(input.imageBackground === undefined || input.imageBackground === 'auto' ? {} : { background: input.imageBackground }),
     ...(input.outputCount === undefined ? {} : { n: input.outputCount }),
   };

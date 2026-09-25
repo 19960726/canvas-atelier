@@ -1,6 +1,7 @@
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import { supportsVerifiedComflyVideoInputMode, type ImageQuality } from '@agent-canvas/domain';
 import { normalizeImageQuality, supportsGptImageQuality } from '../app/image-generation-quality';
+import { resolveImageResolutionRoute, type ImageResolutionTier } from '../app/image-resolution-routing';
 import { orderProviderProfilesBySavedDefault } from '../settings/provider-model-defaults';
 
 export type GenerationKind = 'image' | 'video';
@@ -79,7 +80,7 @@ export function resolveGenerationPreference(
   // but safely fall back to a compatible route for this request so the action
   // can still be reviewed and the user can choose another compatible model.
   const canRecoverFixedSelection = referenceCount > 0 || preference.modelRoute === undefined;
-  const profile = preference.mode === 'fixed'
+  let profile = preference.mode === 'fixed'
     ? fixedProfile
       ?? (canRecoverFixedSelection
         ? suggestedProfile ?? candidates[0]
@@ -94,6 +95,11 @@ export function resolveGenerationPreference(
   }
   const usedReferenceFallback = preference.mode === 'fixed' && fixedProfile === undefined;
   const parameters = preference.mode === 'fixed' && !usedReferenceFallback ? { ...preference.parameters } : {};
+  if (kind === 'image' && parameters.resolution) {
+    const routed = resolveImageResolutionRoute(candidates, profile, parameters.resolution as ImageResolutionTier);
+    if (routed === undefined) throw new Error('固定生成参数不受当前模型支持，请重新选择。');
+    profile = routed;
+  }
   if (kind === 'image' && supportsGptImageQuality(profile)) {
     parameters.imageQuality = normalizeImageQuality(parameters.imageQuality) ?? 'medium';
   } else if (parameters.imageQuality !== undefined) {

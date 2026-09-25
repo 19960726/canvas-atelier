@@ -35,7 +35,7 @@ describe('project image bridge', () => {
     const invoke = vi.fn(async () => null) as DesktopBridgeInvoke;
     const api = createPreloadApi(invoke);
 
-    expect(Object.keys(api.projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importToPhotoshop', 'list', 'pasteClipboardImage', 'writeClipboardImage']);
+    expect(Object.keys(api.projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importToPhotoshop', 'list', 'openLayeredPsdInPhotoshop', 'pasteClipboardImage', 'writeClipboardImage']);
     expect(api.projectImages).not.toHaveProperty('readFile');
     expect(api.projectImages).not.toHaveProperty('resolvePath');
     await api.projectImages.importImage({
@@ -217,6 +217,7 @@ describe('project image bridge', () => {
   });
 
   it('stores a generated image in the active project asset catalog without exposing bytes', async () => {
+    const transparentPng = createSolidPng(2, 2, [42, 126, 168, 128]);
     const tempRoot = await createTempRoot(tempRoots, 'generated-image-asset-');
     const projectRoot = join(tempRoot, 'Generated.novus-project');
     const repository = new ProjectRepository({ createId: sequentialId('generated-repo'), processId: 6171 });
@@ -234,12 +235,15 @@ describe('project image bridge', () => {
 
     try {
       const opened = await handlers.openProject({}, { mode: 'write' });
-      const result = await handlers.storeGeneratedImage(opened!.sessionId, validClipboardPngBytes, 'image/png');
+      const result = await handlers.storeGeneratedImage(opened!.sessionId, transparentPng, 'image/png');
       expect(result).toMatchObject({ assetId: expect.stringMatching(/^[a-f0-9]{16}$/), mediaType: 'image/png', origin: 'generated' });
       expect(result).not.toHaveProperty('bytes');
       expect(result).not.toHaveProperty('base64');
       const listed = await handlers.listProjectImages({}, { sessionId: opened!.sessionId });
       expect(listed).toEqual([expect.objectContaining({ assetId: result.assetId, mediaType: 'image/png' })]);
+      const storedPath = await handlers.resolveProjectImagePath(listed[0]!.displayUrl);
+      expect(storedPath).not.toBeNull();
+      expect(await readFile(storedPath!)).toEqual(transparentPng);
     } finally {
       await handlers.closeAllProjects();
       releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'generated-project');

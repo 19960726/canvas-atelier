@@ -6,6 +6,12 @@ const tokens = readFileSync('apps/renderer/src/styles/tokens.css', 'utf8');
 const appStyles = readFileSync('apps/renderer/src/styles/app.css', 'utf8');
 
 describe('theme token contrast', () => {
+  it('keeps the warm light palette readable for text, secondary labels and actions', () => {
+    const light = readTokenBlock(tokens, ':root');
+    for (const [foreground, background] of [['--text', '--surface'], ['--text-secondary', '--surface-muted'], ['--on-accent', '--accent']] as const) {
+      expect(contrastRatio(parseHexColor(readToken(light, foreground)), parseHexColor(readToken(light, background)))).toBeGreaterThanOrEqual(4.5);
+    }
+  });
   it('keeps dark primary-action labels readable at normal and hover states', () => {
     const darkTokens = readTokenBlock(tokens, ":root[data-theme='dark']");
     const foreground = parseHexColor(readToken(darkTokens, '--on-accent'));

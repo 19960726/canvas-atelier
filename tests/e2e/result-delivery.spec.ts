@@ -105,6 +105,8 @@ test('reverse completion creates and fills a connected result node', async ({ pa
   await page.waitForTimeout(350);
   await page.evaluate(() => window.__NOVUS_E2E__!.reopenProject());
   await expect(page.locator('[data-module-type="reverse_agent"]')).toContainText('Edited persisted reverse prompt');
+  await expect(page.locator('[data-module-type="reverse_agent"]').getByRole('button', { name: '深度反推' }))
+    .toHaveAttribute('aria-pressed', 'true');
   const reopenedResult = page.locator('[data-module-type="reverse_result"]');
   await expect(reopenedResult).toHaveCount(1);
   await expect(reopenedResult.getByRole('region', { name: 'Reverse analysis result' }))
@@ -150,18 +152,20 @@ test('a completed generated image is visible inside its generation node', async 
   await expect(lightbox.getByLabel('图片尺寸')).toHaveText('1024 × 1024 px');
   await expect(lightbox.getByRole('button', { name: '复制图片' })).toBeVisible();
   await expect(detailViewer).toHaveAttribute('data-zoomed', 'false');
-  expect(await detailViewer.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe('rgb(16, 22, 28)');
+  expect(await detailViewer.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+  const fitPercentage = await lightbox.getByLabel('Generated image zoom level').textContent();
+  const fitWidth = (await lightbox.getByRole('img').boundingBox())!.width;
 
   const viewerBox = await detailViewer.boundingBox();
   expect(viewerBox).not.toBeNull();
   await page.mouse.move(viewerBox!.x + viewerBox!.width / 2, viewerBox!.y + viewerBox!.height / 2);
   await page.mouse.wheel(0, -240);
-  await expect(lightbox.getByLabel('Generated image zoom level')).toHaveText('125%');
+  await expect.poll(async () => (await lightbox.getByRole('img').boundingBox())!.width / fitWidth).toBeCloseTo(1.25, 2);
   await expect(detailViewer).toHaveAttribute('data-zoomed', 'true');
   await lightbox.screenshot({ path: zoomPreviewArtifact });
 
   await lightbox.getByRole('button', { name: 'Reset generated image zoom' }).click();
-  await expect(lightbox.getByLabel('Generated image zoom level')).toHaveText('100%');
+  await expect(lightbox.getByLabel('Generated image zoom level')).toHaveText(fitPercentage!);
 });
 
 test('double-clicking a canvas material opens the shared detail viewer with exact dimensions', async ({ page }) => {

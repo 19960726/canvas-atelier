@@ -16,6 +16,18 @@ import {
 } from './canvas-module';
 
 describe('canvas module registry', () => {
+  it('offers a compatible original image input and many independent layer inputs on the composite', () => {
+    const definition = getCanvasModuleDefinition('image_layering');
+    expect(definition.category).toBe('editing');
+    expect(definition.ports.map(port => [port.id, port.direction, port.dataType, port.cardinality])).toEqual([
+      ['image', 'input', 'image_asset', 'one'],
+      ['layerImages', 'input', 'image_asset', 'many'],
+      ['layers', 'output', 'image_list', 'one'],
+    ]);
+    expect(getCanvasModuleDefinition('image_layer').ports.map(port => [port.id, port.direction, port.dataType, port.cardinality])).toEqual([
+      ['image', 'output', 'image_asset', 'one'],
+    ]);
+  });
   it('uses a selectable 2K tier for new image generation nodes and normalizes legacy saved dimensions', () => {
     expect(createCanvasModuleNode('new-image', 'image_generation', { x: 0, y: 0 }).data.config.resolution).toBe('2K');
     expect(normalizeCanvasModuleConfig('image_generation', { resolution: '1536x1024', aspectRatio: '16:9' })).toMatchObject({
@@ -57,6 +69,7 @@ describe('canvas module registry', () => {
   it('registers every current type exactly once', () => {
     const types = listCanvasModuleDefinitions().map((item) => item.type);
     expect(types).toContain('image_generation');
+    expect(types).toContain('image_layer');
     expect(types).toContain('reverse_agent');
     expect(types).not.toContain('image_generation_v1' as never);
     expect(types).not.toContain('image_generation_v2' as never);

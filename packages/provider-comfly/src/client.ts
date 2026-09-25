@@ -373,6 +373,9 @@ export function mapComflyGptImageExactSize(
 
 function mapComflyImageGenerationInput(input: ComflyImageGenerationInput): Record<string, unknown> {
   const { async: _async, ...request } = input;
+  if (input.model === 'gpt-image-2-all' && (input.size === '2K' || input.size === '4K')) {
+    throw Object.assign(new Error('GPT Image 2 All supports the 1K output tier only'), { code: 'CAPABILITY_UNSUPPORTED', retryable: false });
+  }
   if (input.size !== '1K' && input.size !== '2K' && input.size !== '4K') return request;
   if (isNanoBananaImageModel(input.model)) {
     const { size, ...rest } = request;
@@ -381,6 +384,14 @@ function mapComflyImageGenerationInput(input: ComflyImageGenerationInput): Recor
   if (isGptImageExactSizeModel(input.model)) {
     const { aspect_ratio: _aspectRatio, ...rest } = request;
     return { ...rest, size: mapComflyGptImageExactSize(input.size, input.aspect_ratio) };
+  }
+  if (isComflyGptImageModel(input.model)) {
+    // GPT Image 1/1.5 accept the three native sizes, not resolution tiers or
+    // aspect_ratio. Keep square requests square even at the UI's default 2K.
+    const { aspect_ratio: ratio = '1:1', ...rest } = request;
+    if (input.size === '4K') return { ...rest, size: mapComflyImageResolutionTier(input.size, input.aspect_ratio) };
+    const [width, height] = String(ratio).split(':').map(Number);
+    return { ...rest, size: width === height ? '1024x1024' : width! > height! ? '1536x1024' : '1024x1536' };
   }
   // Seedream V5's documented unified request accepts the provider tier itself
   // (`size: "2K"`). Converting it to a generic pixel pair changes the contract.
@@ -391,6 +402,11 @@ function mapComflyImageGenerationInput(input: ComflyImageGenerationInput): Recor
 function isGptImageExactSizeModel(model: string): boolean {
   return /^gpt-image-2(?:-(?:all|2k|4k|vip)|\.5-(?:flare|sunburst)(?:-(?:2k|4k))?)?$/u
     .test(model.trim().toLocaleLowerCase());
+}
+
+export function isComflyGptImageModel(model: string): boolean {
+  return isGptImageExactSizeModel(model)
+    || /^gpt-image-1(?:\.5|-mini)?(?:-\d{4}-\d{2}-\d{2})?$/u.test(model.trim().toLocaleLowerCase());
 }
 
 function isNanoBananaImageModel(model: string): boolean {
@@ -517,7 +533,11 @@ export class ComflyClient {
   }
 
   async editImage(input: ComflyImageEditRequest) {
-    if (isGptImageExactSizeModel(input.model)) {
+    // Comfly's async switch is a query parameter for edits as well as
+    // generations. Dropping it leaves large reference edits waiting on one
+    // synchronous connection until the provider's gateway can time out.
+    const endpoint = `/v1/images/edits${input.async === true ? '?async=true' : ''}`;
+    if (isComflyGptImageModel(input.model)) {
       const references = z.array(z.object({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']), bytes: z.instanceof(Uint8Array) })).min(1).parse(input.image);
       const { image: _image, ...parameters } = mapComflyImageGenerationInput(input as ComflyImageGenerationInput);
       const form = new FormData();
@@ -530,7 +550,7 @@ export class ComflyClient {
       }
       // Serialize with the platform encoder; Electron net requires raw bytes.
       const encoded = new Response(form);
-      return this.request('/v1/images/edits', {
+      return this.request(endpoint, {
         method: 'POST',
         rawBody: new Uint8Array(await encoded.arrayBuffer()),
         contentType: encoded.headers.get('content-type')!,
@@ -539,11 +559,12 @@ export class ComflyClient {
         timeoutMs: this.generationTimeoutMs,
       });
     }
-    return this.request('/v1/images/edits', {
+    const { async: _async, ...body } = input;
+    return this.request(endpoint, {
       method: 'POST',
-      body: input,
+      body,
       model: input.model,
-      schema: imageResultSchema,
+      schema: input.async === true ? imageGenerationResultSchema : imageResultSchema,
     });
   }
 

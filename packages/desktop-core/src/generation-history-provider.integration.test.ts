@@ -983,7 +983,8 @@ describe('provider generation history production sink', () => {
       expect(source).toContain('const generationHistorySink = new GenerationHistoryProviderSink({');
       expect(source).toContain('historySink: generationHistorySink');
       expect(source).toContain('relayme: createRelayMeProviderService({');
-      expect(source).toContain('trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage)');
+      expect(source).toContain('trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage, {');
+      expect(source).toContain('createWebpDecodeWindow: createSandboxedImageDecodeWindow');
       expect(source).toContain("lookup(hostname, { all: true, verbatim: true })");
     }
   });

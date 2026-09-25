@@ -1,9 +1,13 @@
+import { readImageSourceBlob } from './image-source-blob';
+
 export type ImageColorCorrectionMode = 'original' | 'auto' | 'custom';
 
 export interface ImageColorCorrection {
   /** Version 2 distinguishes a user-selected correction from the old automatic default. */
   readonly version?: 1 | 2;
   readonly mode: ImageColorCorrectionMode;
+  readonly profile?: 'nano-banana';
+  readonly strength?: number;
   readonly temperature: number;
   readonly tint: number;
   readonly saturation: number;
@@ -26,7 +30,21 @@ export const ORIGINAL_IMAGE_COLOR_CORRECTION: ImageColorCorrection = {
   mode: 'original',
 };
 
+export const NANO_BANANA_IMAGE_COLOR_CORRECTION: ImageColorCorrection = {
+  ...AUTO_IMAGE_COLOR_CORRECTION, profile: 'nano-banana', strength: 60,
+};
+
 export const DEFAULT_IMAGE_COLOR_CORRECTION = ORIGINAL_IMAGE_COLOR_CORRECTION;
+
+/** Asset identity, never grid position, owns a result's non-destructive adjustments. */
+export function normalizeImageColorCorrections(value: unknown, legacy: unknown, resultIds: unknown): Record<string, ImageColorCorrection> {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    return Object.fromEntries(Object.entries(value).map(([id, correction]) => [id, normalizeImageColorCorrection(correction)]));
+  }
+  const firstId = Array.isArray(resultIds) ? resultIds[0] : undefined;
+  const correction = normalizeImageColorCorrection(legacy);
+  return typeof firstId === 'string' && correction.mode !== 'original' ? { [firstId]: correction } : {};
+}
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
@@ -47,6 +65,7 @@ export function normalizeImageColorCorrection(value: unknown): ImageColorCorrect
   return {
     version: 2,
     mode,
+    ...(input.profile === 'nano-banana' ? { profile: 'nano-banana' as const, strength: boundedNumber(input.strength, 60, 0, 100) } : {}),
     temperature: boundedNumber(input.temperature, defaults.temperature, -30, 30),
     tint: boundedNumber(input.tint, defaults.tint, -30, 30),
     saturation: boundedNumber(input.saturation, defaults.saturation, 70, 130),
@@ -59,9 +78,10 @@ export function normalizeImageColorCorrection(value: unknown): ImageColorCorrect
  * Saturated subjects, warm skin/wood and existing neutral anchors must not
  * become white-balance references. Ambiguous images remain unchanged.
  */
-export function analyzeImageColorCorrection(pixels: Uint8ClampedArray): ImageColorCorrection {
+export function analyzeImageColorCorrection(pixels: Uint8ClampedArray, profile?: 'nano-banana'): ImageColorCorrection {
   const redRatios: number[] = [];
   const blueRatios: number[] = [];
+  const highlights: Array<readonly [number, number]> = [];
   let opaquePixels = 0;
   let neutralAnchors = 0;
   let castPixels = 0;
@@ -81,39 +101,75 @@ export function analyzeImageColorCorrection(pixels: Uint8ClampedArray): ImageCol
     const blueRatio = blue / green;
     redRatios.push(redRatio);
     blueRatios.push(blueRatio);
+    // Bright, low-chroma surfaces can also reveal yellow, blue or green casts.
+    // Do not use darker skin/wood as a substitute for a neutral highlight.
+    if (minimum >= 160 && (red * 0.2126 + green * 0.7152 + blue * 0.0722) >= 205) {
+      highlights.push([redRatio, blueRatio]);
+    }
     // A blue deficit is usually warm material/light rather than magenta.
     if (redRatio > 1.035 && blueRatio >= 0.98) castPixels += 1;
   }
-  const count = redRatios.length;
-  if (count < 16 || count < opaquePixels * 0.12 || neutralAnchors > count * 0.2 || castPixels < count * 0.7) {
-    return AUTO_IMAGE_COLOR_CORRECTION;
+  let count = redRatios.length;
+  let highlightOnly = false;
+  if (profile === 'nano-banana') {
+    // Opt-in red/magenta/yellow correction. Require agreement across low-chroma
+    // surfaces, not just the brightest warm wall. Mixed light and existing
+    // neutrals are evidence against a global cast. This is not a gray card.
+    if (count < 16 || count < opaquePixels * 0.25 || neutralAnchors > count * 0.2) return AUTO_IMAGE_COLOR_CORRECTION;
+    const medianRed = [...redRatios].sort((a, b) => a - b)[Math.floor(count / 2)]!;
+    const medianBlue = [...blueRatios].sort((a, b) => a - b)[Math.floor(count / 2)]!;
+    const consistent = redRatios.filter((red, i) => Math.abs(red - medianRed) < 0.035 && Math.abs(blueRatios[i]! - medianBlue) < 0.035).length;
+    const redOrMagentaCast = medianRed >= 1.035;
+    const yellowCast = medianRed >= 0.99 && medianBlue <= 0.965;
+    if (consistent < count * 0.8 || (!redOrMagentaCast && !yellowCast)) return AUTO_IMAGE_COLOR_CORRECTION;
+  } else if (count < 16 || count < opaquePixels * 0.12 || neutralAnchors > count * 0.2 || castPixels < count * 0.7) {
+    highlightOnly = true;
+    count = highlights.length;
+    if (count < 16 || count < opaquePixels * 0.08 || neutralAnchors > count * 0.2) return AUTO_IMAGE_COLOR_CORRECTION;
+    const medianRed = highlights.map(([red]) => red).sort((a, b) => a - b)[Math.floor(count / 2)]!;
+    const medianBlue = highlights.map(([, blue]) => blue).sort((a, b) => a - b)[Math.floor(count / 2)]!;
+    const consistent = highlights.filter(([red, blue]) => Math.abs(red - medianRed) < 0.04 && Math.abs(blue - medianBlue) < 0.04);
+    if (consistent.length < count * 0.7 || Math.max(Math.abs(medianRed - 1), Math.abs(medianBlue - 1)) < 0.035) return AUTO_IMAGE_COLOR_CORRECTION;
+    redRatios.splice(0, redRatios.length, ...consistent.map(([red]) => red));
+    blueRatios.splice(0, blueRatios.length, ...consistent.map(([, blue]) => blue));
+    count = consistent.length;
   }
   redRatios.sort((a, b) => a - b);
   blueRatios.sort((a, b) => a - b);
   const greenOverRed = 1 / redRatios[Math.floor(count / 2)]!;
   const greenOverBlue = 1 / blueRatios[Math.floor(count / 2)]!;
-  // Solve r * redGain = g * greenGain = b * blueGain for the existing
-  // temperature/tint transform; retain 20% of the cast to avoid overcorrection.
+  // Solve r * redGain = g * greenGain = b * blueGain for the existing transform.
   const tint = (greenOverRed + greenOverBlue - 2) / (0.004 * (1 + greenOverRed + greenOverBlue));
   const temperature = (greenOverRed - 1 - (0.002 + 0.004 * greenOverRed) * tint) / 0.004;
-  return normalizeImageColorCorrection({ ...AUTO_IMAGE_COLOR_CORRECTION, temperature: temperature * 0.8, tint: tint * 0.8 });
+  // Pale walls/materials under warm or cool lighting are not a known gray card.
+  // A highlight-only estimate must preserve the scene's lighting: remove at
+  // most 20% of its cast and bound channel changes to ~2% including rounding.
+  const largestGainChange = Math.max(Math.abs(temperature * 0.004 + tint * 0.002), Math.abs(tint * 0.004), Math.abs(-temperature * 0.004 + tint * 0.002));
+  const strength = profile === 'nano-banana'
+    ? Math.min(0.6, 0.04 / Math.max(largestGainChange, 0.04))
+    : highlightOnly ? Math.min(0.2, 0.016 / Math.max(largestGainChange, 0.016)) : 0.8;
+  return normalizeImageColorCorrection({ ...AUTO_IMAGE_COLOR_CORRECTION, temperature: temperature * strength, tint: tint * strength });
 }
 
-const analysisCache = new Map<string, Promise<ImageColorCorrection>>();
+export type ImageColorAnalysis = { correction: ImageColorCorrection; status: 'applied' | 'unchanged' | 'unavailable' };
+const analysisCache = new Map<string, Promise<ImageColorAnalysis>>();
 const MAX_ANALYSIS_CACHE_ENTRIES = 128;
 const ANALYSIS_EDGE = 96;
 
-function sampleImageColorCorrection(sourceUrl: string): Promise<ImageColorCorrection> {
+function sampleImageColorCorrection(sourceUrl: string, profile?: 'nano-banana'): Promise<ImageColorAnalysis> {
   return new Promise((resolve) => {
     const image = new Image();
     image.crossOrigin = 'anonymous';
     image.decoding = 'async';
-    const finish = (value: ImageColorCorrection) => {
+    const unavailable: ImageColorAnalysis = { correction: AUTO_IMAGE_COLOR_CORRECTION, status: 'unavailable' };
+    const timeout = setTimeout(() => finish(unavailable), 8_000);
+    const finish = (value: ImageColorAnalysis) => {
+      clearTimeout(timeout);
       image.onload = null;
       image.onerror = null;
       resolve(value);
     };
-    image.onerror = () => finish(AUTO_IMAGE_COLOR_CORRECTION);
+    image.onerror = () => finish(unavailable);
     image.onload = () => {
       try {
         const scale = Math.min(1, ANALYSIS_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
@@ -121,11 +177,12 @@ function sampleImageColorCorrection(sourceUrl: string): Promise<ImageColorCorrec
         canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
         canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
         const context = canvas.getContext('2d', { willReadFrequently: true });
-        if (context === null) return finish(AUTO_IMAGE_COLOR_CORRECTION);
+        if (context === null) return finish(unavailable);
         context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        finish(analyzeImageColorCorrection(context.getImageData(0, 0, canvas.width, canvas.height).data));
+        const correction = analyzeImageColorCorrection(context.getImageData(0, 0, canvas.width, canvas.height).data, profile);
+        finish({ correction, status: hasImageColorCorrection(correction) ? 'applied' : 'unchanged' });
       } catch {
-        finish(AUTO_IMAGE_COLOR_CORRECTION);
+        finish(unavailable);
       }
     };
     image.src = sourceUrl;
@@ -136,14 +193,35 @@ function sampleImageColorCorrection(sourceUrl: string): Promise<ImageColorCorrec
 export function resolveImageColorCorrection(sourceUrl: string, value: ImageColorCorrection): Promise<ImageColorCorrection> {
   const correction = normalizeImageColorCorrection(value);
   if (correction.mode !== 'auto') return Promise.resolve(correction);
-  const cached = analysisCache.get(sourceUrl);
+  return resolveImageColorAnalysis(sourceUrl, correction).then((result) => result.correction);
+}
+
+export function resolveImageColorAnalysis(sourceUrl: string, value: ImageColorCorrection = AUTO_IMAGE_COLOR_CORRECTION): Promise<ImageColorAnalysis> {
+  const request = normalizeImageColorCorrection(value);
+  return resolveBaseImageColorAnalysis(sourceUrl, request.profile).then((result) => {
+    if (request.profile !== 'nano-banana') return result;
+    const strength = (request.strength ?? 60) / 100;
+    const correction = normalizeImageColorCorrection({ ...result.correction, profile: request.profile, strength: request.strength,
+      temperature: result.correction.temperature * strength, tint: result.correction.tint * strength });
+    return { correction, status: result.status === 'unavailable' ? 'unavailable' : hasImageColorCorrection(correction) ? 'applied' : 'unchanged' };
+  });
+}
+
+function resolveBaseImageColorAnalysis(sourceUrl: string, profile?: 'nano-banana'): Promise<ImageColorAnalysis> {
+  const key = JSON.stringify([sourceUrl, profile ?? 'generic']);
+  const cached = analysisCache.get(key);
   if (cached !== undefined) {
-    analysisCache.delete(sourceUrl);
-    analysisCache.set(sourceUrl, cached);
+    analysisCache.delete(key);
+    analysisCache.set(key, cached);
     return cached;
   }
-  const analysis = sampleImageColorCorrection(sourceUrl).catch(() => AUTO_IMAGE_COLOR_CORRECTION);
-  analysisCache.set(sourceUrl, analysis);
+  const analysis = sampleImageColorCorrection(sourceUrl, profile)
+    .catch((): ImageColorAnalysis => ({ correction: AUTO_IMAGE_COLOR_CORRECTION, status: 'unavailable' }))
+    .then((result) => {
+      if (result.status === 'unavailable' && analysisCache.get(key) === analysis) analysisCache.delete(key);
+      return result;
+    });
+  analysisCache.set(key, analysis);
   if (analysisCache.size > MAX_ANALYSIS_CACHE_ENTRIES) analysisCache.delete(analysisCache.keys().next().value!);
   return analysis;
 }
@@ -181,7 +259,7 @@ function hasImageColorCorrection(correction: ImageColorCorrection): boolean {
 
 export function imageColorCorrectionLabel(value: ImageColorCorrection): string {
   const correction = normalizeImageColorCorrection(value);
-  if (correction.mode === 'auto') return '自动中和';
+  if (correction.mode === 'auto') return correction.profile === 'nano-banana' ? 'Nano Banana 去偏色' : '自动中和';
   if (correction.mode === 'custom') return '自定义';
   return '原图';
 }
@@ -217,9 +295,7 @@ export async function renderImageColorCorrectionBlob(
   value: ImageColorCorrection,
 ): Promise<Blob> {
   const correction = await resolveImageColorCorrection(sourceUrl, value);
-  const response = await fetch(sourceUrl);
-  if (!response.ok) throw new Error('Generated image could not be loaded for color correction');
-  const source = await response.blob();
+  const source = await readImageSourceBlob(sourceUrl);
   if (correction.mode === 'original' || (!hasImageColorCorrection(correction) && source.type === 'image/png')) return source;
   const bitmap = await createImageBitmap(source);
   try {

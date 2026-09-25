@@ -3,7 +3,9 @@
   | 'model'
   | 'generation'
   | 'reasoning'
+  | 'reasoning-model'
   | 'reference'
+  | 'conversation-history'
   | 'quick-insert'
   | 'project-menu';
 

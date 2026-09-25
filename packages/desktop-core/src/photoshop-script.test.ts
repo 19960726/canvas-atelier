@@ -167,6 +167,17 @@ describe('Photoshop placement script contract', () => {
     expect(runnerSource).not.toContain('successful duplication is already a valid import');
   });
 
+  it('detects open Photoshop documents through the Windows COM Count property', async () => {
+    const runnerPath = fileURLToPath(new URL('./photoshop-windows-runner.js', import.meta.url));
+    const source = (await readFile(runnerPath, 'utf8')).replace(/WScript\.Quit\(0\);/gu, 'return;');
+    const output: string[] = [];
+    runInNewContext(source, {
+      GetObject: () => ({ version: '27.0', documents: { Count: 1 } }),
+      WScript: { Arguments: { length: 1, Item: () => '--inspect' }, StdOut: { Write: (value: string) => output.push(value) } },
+    });
+    expect(JSON.parse(output[0]!)).toMatchObject({ kind: 'running', activeDocument: true });
+  });
+
   it('keeps the Windows Script Host runner compatible with legacy JScript syntax', async () => {
     const runnerPath = fileURLToPath(new URL('./photoshop-windows-runner.js', import.meta.url));
     const runnerSource = await readFile(runnerPath, 'utf8');

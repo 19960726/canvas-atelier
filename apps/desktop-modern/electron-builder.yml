@@ -24,7 +24,7 @@ extraResources:
     to: photoshop
 win:
   icon: icon.ico
-  signAndEditExecutable: false
+  signAndEditExecutable: true
 artifactName: CanvasAtelier-Win10-11-x64-${version}.exe
 nsis:
   oneClick: false

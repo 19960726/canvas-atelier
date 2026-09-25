@@ -24,7 +24,7 @@ for (const theme of ['light', 'dark'] as const) {
               lightingAndColor: '午后侧逆光', materialsAndTextures: '针织与玻璃', effectsOrFluids: '轻微热气',
               styleAndQuality: '高级电商摄影', rationale: ['主体到摄影参数'],
             },
-            positivePromptZh: '可直接复制的中文生图提示词',
+            positivePromptZh: '可直接复制的中文生图提示词。'.repeat(80),
             seedance25: {
               taskType: 'video_edit', rationale: '存在唯一编辑母版。',
               assetBindings: [{ sourceId: '@视频1', target: '唯一编辑母版', adopt: ['运镜'], reject: ['原商品'] }],
@@ -45,5 +45,16 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(article.getByRole('region', { name: '中文生图提示词' })).toContainText('可直接复制的中文生图提示词');
     await expect(article.getByRole('region', { name: 'Seedance 中文提示词' })).toContainText('编辑@视频1');
     await expect(article.locator('pre').first()).toHaveCSS('user-select', 'text');
+    const scroll = reverse.locator('.module-node__agent-result-scroll');
+    const metrics = await scroll.evaluate((element) => ({
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      overflowY: getComputedStyle(element).overflowY,
+    }));
+    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+    expect(metrics.clientHeight).toBeLessThanOrEqual(420);
+    expect(metrics.overflowY).toBe('auto');
+    await expect(reverse.getByRole('button', { name: 'Copy reverse result' })).toBeVisible();
+    await expect(reverse.getByRole('button', { name: 'Start reverse analysis' })).toBeVisible();
   });
 }

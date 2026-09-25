@@ -187,6 +187,105 @@ describe('persistent model job store', () => {
     });
   });
 
+  it('persists the layering group and layer identity on each queued edit request', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const store = createModelJobStore({ storage, executor: createExecutor(), commitProjectTransaction: vi.fn(), now: fixedNow });
+
+    await store.enqueueConfirmedJobs({
+      conversationId: 'image-layering-group-a', projectId: 'project-a', projectSessionId: 'session-a', confirmedAt,
+      requests: [request({
+        id: 'layer-job-background', promptNodeId: 'image-layer-group-a-background', prompt: 'Create opaque background',
+        layeringGroupId: 'group-a', layeringLayerId: 'background', imageOutputFormat: 'png', imageBackground: 'opaque', outputCount: 1,
+      })],
+    });
+
+    expect(await storage.get('layer-job-background')).toMatchObject({
+      projectId: 'project-a', projectSessionId: 'session-a', promptNodeId: 'image-layer-group-a-background',
+      layeringGroupId: 'group-a', layeringLayerId: 'background', imageOutputFormat: 'png', imageBackground: 'opaque', outputCount: 1,
+    });
+  });
+
+  it('materializes a completed layering task into its owned image layer node', async () => {
+    const assetId = 'abcdef0123456789';
+    const layerNode = createCanvasModuleNode('image-layer-group-a-subject', 'image_layer', { x: 500, y: 200 });
+    layerNode.data.config = {
+      ...layerNode.data.config, groupId: 'group-a', layerId: 'subject', layerKind: 'transparent',
+      sourceAssetId: assetId, jobId: 'layer-job-subject', status: 'running',
+    };
+    let project: CanvasProject = { ...createStarterProject(), nodes: [layerNode], edges: [] };
+    const commitProjectTransaction = vi.fn(async (
+      build: BuildResultMaterialization,
+      _job: ModelJob,
+      isOwnerRunning: () => Promise<boolean>,
+    ) => {
+      const materialization = build(project);
+      if (!await isOwnerRunning()) return { committed: false, resultNodeId: materialization.resultNodeId };
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
+    });
+    const store = createModelJobStore({
+      storage: createInMemoryModelJobStorage(),
+      executor: createExecutor({ poll: vi.fn(async () => ({ status: 'completed' as const, result: { assetId: 'fedcba9876543210', width: 1024, height: 768 } })) }),
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'image-layering-group-a', projectId: project.id, confirmedAt,
+      requests: [request({
+        id: 'layer-job-subject', promptNodeId: layerNode.id, prompt: 'Create one transparent foreground layer',
+        referenceAssetIds: [assetId], layeringGroupId: 'group-a', layeringLayerId: 'subject', imageOutputFormat: 'png', imageBackground: 'transparent', outputCount: 1,
+      })],
+    });
+
+    await store.processQueue();
+    await store.pollActiveJobs();
+
+    expect(project.nodes).toHaveLength(1);
+    expect(project.nodes[0]).toMatchObject({ type: 'module', data: { moduleType: 'image_layer', config: {
+      groupId: 'group-a', layerId: 'subject', jobId: 'layer-job-subject', resultAssetId: 'fedcba9876543210',
+      resultWidth: 1024, resultHeight: 768, status: 'validating',
+    } } });
+    expect(await store.listJobs()).toMatchObject([{ id: 'layer-job-subject', status: 'completed', resultNodeId: layerNode.id }]);
+    expect(commitProjectTransaction).toHaveBeenCalledOnce();
+  });
+
+  it('recovers a submitted layering job by polling its saved provider task without another submit', async () => {
+    const submit = vi.fn(async () => ({ providerTaskId: 'must-not-resubmit' }));
+    const poll = vi.fn(async () => ({ status: 'running' as const, progress: 0.6 }));
+    const storage = createInMemoryModelJobStorage();
+    const store = createModelJobStore({ storage, executor: createExecutor({ submit, poll }), commitProjectTransaction: vi.fn(), now: fixedNow,
+      canRecoverRunningJob: async () => true });
+    const [job] = await store.enqueueConfirmedJobs({
+      conversationId: 'image-layering-group-a', projectId: 'project-a', confirmedAt,
+      requests: [request({ id: 'layer-restart', promptNodeId: 'image-layer-group-a-subject', layeringGroupId: 'group-a', layeringLayerId: 'subject' })],
+    });
+    await storage.put({ ...job!, status: 'running', providerTaskId: 'saved-provider-task' });
+
+    await store.recover({ resumeOwnedJobs: true });
+    await store.pollActiveJobs();
+
+    expect(submit).not.toHaveBeenCalled();
+    expect(poll).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'layer-restart', providerTaskId: 'saved-provider-task', layeringGroupId: 'group-a', layeringLayerId: 'subject',
+    }));
+    expect(await storage.get('layer-restart')).toMatchObject({ status: 'running', providerTaskId: 'saved-provider-task', progress: 0.6 });
+  });
+
+  it('keeps layer ownership when retrying a failed layer task without submitting it', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const submit = vi.fn(async () => ({ providerTaskId: 'new-task' }));
+    const store = createModelJobStore({ storage, executor: createExecutor({ submit }), commitProjectTransaction: vi.fn(), now: fixedNow });
+    const [job] = await store.enqueueConfirmedJobs({ conversationId: 'image-layering-group-a', projectId: 'project-a', confirmedAt,
+      requests: [request({ id: 'failed-layer', promptNodeId: 'image-layer-group-a-subject', layeringGroupId: 'group-a',
+        layeringLayerId: 'subject', imageOutputFormat: 'png', imageBackground: 'transparent', outputCount: 1 })] });
+    await storage.put({ ...job!, status: 'failed' });
+    const retry = await store.retryJob(job!.id, { id: 'retried-layer' });
+    expect(retry).toMatchObject({ id: 'retried-layer', status: 'queued', layeringGroupId: 'group-a',
+      layeringLayerId: 'subject', imageBackground: 'transparent', imageOutputFormat: 'png' });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   it('does not poll or keep its run loop alive for another active project', async () => {
     const foreign = {
       ...request({ id: 'foreign-running-project-job' }),

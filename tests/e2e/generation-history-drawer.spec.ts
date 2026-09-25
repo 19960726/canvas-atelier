@@ -18,7 +18,7 @@ test('opens and closes the generation history drawer from an empty canvas', asyn
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
 });
 
-test('filters real image and video history cards and renders an MP4 preview', async ({ page }) => {
+test('filters image and video history records in the browser harness', async ({ page }) => {
   await openEmptyApp(page);
   await page.evaluate(() => {
     const records = [
@@ -97,16 +97,16 @@ test('filters real image and video history cards and renders an MP4 preview', as
 
   await page.getByTestId('history-toggle').click();
   const drawer = page.getByTestId('history-drawer');
-  await expect(drawer.getByRole('img', { name: 'Browser image history' })).toBeVisible();
-  const videoPreview = drawer.locator('video.history-video-preview[aria-label="Browser video history"]');
-  await expect(videoPreview).toHaveCount(1);
-  await expect(videoPreview).toHaveAttribute('src', 'novus-history://asset/history_browser_video_asset');
+  const imageCard = drawer.getByRole('button', { name: '查看 Browser image history' });
+  const videoCard = drawer.getByRole('button', { name: '查看 Browser video history' });
+  await expect(imageCard).toBeVisible();
+  await expect(videoCard).toBeVisible();
 
   await drawer.getByRole('button', { name: '视频', exact: true }).click();
-  await expect(drawer.getByRole('img', { name: 'Browser image history' })).toHaveCount(0);
-  await expect(videoPreview).toHaveCount(1);
+  await expect(imageCard).toHaveCount(0);
+  await expect(videoCard).toBeVisible();
 
   await drawer.getByRole('button', { name: '图片', exact: true }).click();
-  await expect(drawer.getByRole('img', { name: 'Browser image history' })).toBeVisible();
-  await expect(videoPreview).toHaveCount(0);
+  await expect(imageCard).toBeVisible();
+  await expect(videoCard).toHaveCount(0);
 });

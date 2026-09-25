@@ -6,10 +6,22 @@ import type {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  AUTO_IMAGE_COLOR_CORRECTION,
+  ORIGINAL_IMAGE_COLOR_CORRECTION,
+  resolveImageColorCorrection,
+  type ImageColorCorrection,
+} from './image-color-correction';
+
+import {
   getPhotoshopImportAvailability,
   importGeneratedImageToPhotoshop,
   photoshopImportMessage,
 } from './photoshop-import';
+
+vi.mock('./image-color-correction', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./image-color-correction')>();
+  return { ...actual, resolveImageColorCorrection: vi.fn() };
+});
 
 const generatedImage: ProjectImageAssetSummary = {
   assetId: '0123456789abcdef',
@@ -29,6 +41,7 @@ const originalDesktopBridge = window.novusDesktop;
 
 afterEach(() => {
   window.novusDesktop = originalDesktopBridge;
+  vi.mocked(resolveImageColorCorrection).mockReset();
 });
 
 describe('Photoshop renderer import client', () => {
@@ -50,7 +63,7 @@ describe('Photoshop renderer import client', () => {
     const importToPhotoshop = vi.fn().mockResolvedValue({ ok: true, layerName: 'Generated image' });
     window.novusDesktop = desktopBridgeWithPhotoshop(importToPhotoshop);
 
-    await expect(importGeneratedImageToPhotoshop(generatedImage, 'session-1'))
+    await expect(importGeneratedImageToPhotoshop(generatedImage, 'session-1', ORIGINAL_IMAGE_COLOR_CORRECTION))
       .resolves.toEqual({ ok: true, layerName: 'Generated image' });
     expect(importToPhotoshop).toHaveBeenCalledTimes(1);
     expect(importToPhotoshop).toHaveBeenCalledWith({
@@ -59,6 +72,40 @@ describe('Photoshop renderer import client', () => {
     });
     expect(importToPhotoshop.mock.calls[0]?.[0]).not.toHaveProperty('displayUrl');
     expect(importToPhotoshop.mock.calls[0]?.[0]).not.toHaveProperty('path');
+    expect(importToPhotoshop.mock.calls[0]?.[0]).not.toHaveProperty('correctedPngBytes');
+    expect(resolveImageColorCorrection).not.toHaveBeenCalled();
+  });
+
+  it('resolves automatic correction and submits only bounded correction parameters', async () => {
+    const importToPhotoshop = vi.fn().mockResolvedValue({ ok: true, layerName: 'Generated image' });
+    const resolvedCorrection: ImageColorCorrection = {
+      version: 2,
+      mode: 'auto',
+      temperature: -4,
+      tint: 7,
+      saturation: 108,
+      contrast: 102,
+      brightness: 99,
+    };
+    vi.mocked(resolveImageColorCorrection).mockResolvedValue(resolvedCorrection);
+    window.novusDesktop = desktopBridgeWithPhotoshop(importToPhotoshop);
+
+    await expect(importGeneratedImageToPhotoshop(generatedImage, 'session-1', AUTO_IMAGE_COLOR_CORRECTION))
+      .resolves.toEqual({ ok: true, layerName: 'Generated image' });
+
+    expect(resolveImageColorCorrection).toHaveBeenCalledWith(generatedImage.displayUrl, AUTO_IMAGE_COLOR_CORRECTION);
+    expect(importToPhotoshop).toHaveBeenCalledWith({
+      assetId: generatedImage.assetId,
+      sessionId: 'session-1',
+      colorCorrection: {
+        temperature: -4,
+        tint: 7,
+        saturation: 108,
+        contrast: 102,
+        brightness: 99,
+      },
+    });
+    expect(importToPhotoshop.mock.calls[0]?.[0]).not.toHaveProperty('correctedPngBytes');
   });
 
   it('does not call the bridge when the asset is unavailable', async () => {

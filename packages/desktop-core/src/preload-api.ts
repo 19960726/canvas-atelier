@@ -163,6 +163,7 @@ export const BRIDGE_CHANNELS = {
   importDroppedProjectMedia: 'novus-desktop:import-dropped-project-media',
   importProjectImage: 'novus-desktop:import-project-image',
   importProjectImageToPhotoshop: 'novus-desktop:import-project-image-to-photoshop',
+  openLayeredPsdInPhotoshop: 'novus-desktop:open-layered-psd-in-photoshop',
   importProjectVideo: 'novus-desktop:import-project-video',
   pasteProjectClipboardImage: 'novus-desktop:paste-project-clipboard-image',
   writeClipboardImage: 'novus-desktop:write-clipboard-image',
@@ -331,6 +332,11 @@ export interface DesktopGenerationHistoryBridgeApi {
 export interface DesktopProjectImageBridgeApi {
   importImage(request: ImportProjectImageBridgeRequest): Promise<ImportProjectImageBridgeResult | null>;
   importToPhotoshop(request: PhotoshopImportRequest): Promise<PhotoshopImportResult>;
+  openLayeredPsdInPhotoshop(bytes: Uint8Array): Promise<{
+    readonly ok: boolean;
+    readonly code?: 'invalid_psd' | 'photoshop_not_installed' | 'discovery_failed' | 'cancelled' | 'dialog_failed' | 'save_failed' | 'open_failed';
+    readonly saved?: boolean;
+  }>;
   importDroppedMedia(request: ImportDroppedProjectMediaBridgeRequest, file: unknown): Promise<ImportDroppedProjectMediaBridgeResult | null>;
   list(request: ListProjectImagesBridgeRequest): Promise<ProjectImageAssetSummary[]>;
   pasteClipboardImage(request: PasteProjectClipboardImageBridgeRequest): Promise<PasteProjectClipboardImageBridgeResult | null>;
@@ -541,6 +547,9 @@ export function createPreloadApi(
       },
       importToPhotoshop(request) {
         return invoke<PhotoshopImportResult>(BRIDGE_CHANNELS.importProjectImageToPhotoshop, request);
+      },
+      openLayeredPsdInPhotoshop(bytes) {
+        return invoke(BRIDGE_CHANNELS.openLayeredPsdInPhotoshop, bytes);
       },
       async importDroppedMedia() {
         // A native preload replaces this method after resolving the dropped

@@ -30,7 +30,8 @@ test('captures every current node family and verifies visible controls stay insi
       const nodeRect = card.getBoundingClientRect();
       const buttons = Array.from(card.querySelectorAll<HTMLElement>('button')).filter((button) => {
         const style = getComputedStyle(button);
-        return style.display !== 'none' && style.visibility !== 'hidden' && button.getBoundingClientRect().width > 0;
+        return button.getAttribute('aria-label') !== '锁定位置 / Lock position'
+          && style.display !== 'none' && style.visibility !== 'hidden' && button.getBoundingClientRect().width > 0;
       });
       const outsideButtons = buttons.filter((button) => {
         const rect = button.getBoundingClientRect();
@@ -63,7 +64,7 @@ test('captures every current node family and verifies visible controls stay insi
   await openEmptyApp(page);
   await openAgentPanel(page);
   const panel = page.getByTestId('agent-panel');
-  await panel.getByRole('tab', { name: '对话' }).click();
+  await panel.getByLabel('Agent 模式').selectOption('chat');
   await panel.getByTestId('agent-model-trigger').click();
   await panel.getByRole('button', { name: '使用 gpt-5.6-sol' }).first().click();
   const pastedImage = makeReferenceImage('agent-paste-proof.png', [24, 142, 122, 255], { width: 160, height: 120 });
@@ -73,10 +74,10 @@ test('captures every current node family and verifies visible controls stay insi
     element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
   }, Array.from(pastedImage.buffer));
   await expect(panel.getByTestId('agent-composer-input')).toContainText('图片1');
-  await expect(panel.getByLabel('Selected image references')).toBeVisible();
+  await expect(panel.getByTestId('agent-composer-input').locator('[data-media-mention="image"]')).toBeVisible();
   await page.screenshot({ path: path.join(auditDirectory, '04-agent-image-paste.png'), fullPage: true });
 
-  await panel.getByRole('button', { name: '关闭 Codex Agent' }).click();
+  await panel.getByRole('button', { name: '关闭 Novus Agent' }).click();
   await page.getByTestId('settings-toggle').click();
   const settings = page.getByTestId('settings-drawer');
   await settings.getByRole('tab', { name: '存储与备份' }).click();

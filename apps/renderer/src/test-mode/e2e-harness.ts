@@ -7,6 +7,7 @@ import type {
   SubmitImageJobBridgeRequest,
   UpdateState,
 } from '@agent-canvas/desktop-core';
+import { confirmLayeringPlan, type LayeringPlanLayer } from '../app/layering-plan';
 import {
   createSkillPromotionCandidateFingerprint,
   createCanvasModuleNode,
@@ -18,6 +19,7 @@ import {
   type CanvasMcpRequest,
   type CanvasMcpResponse,
   type CanvasProject,
+  type CanvasNode,
   type CanvasModuleNode,
   type ModelJob,
   type PlacementObject,
@@ -87,6 +89,7 @@ interface RuntimeState {
   failNextProjectCommit: boolean;
   failNextModelJobEnqueue: boolean;
   failNextReverseAnalysis: boolean;
+  layeringAnalysisReply: string | null;
   knowledgeListeners: Set<(states: KnowledgeBaseStateSummary[]) => void>;
   knowledgeStates: KnowledgeBaseStateSummary[];
   managedRules: Map<string, string>;
@@ -177,6 +180,7 @@ export function installRendererE2EHarness(): void {
       runtime.failNextProjectCommit = false;
       runtime.failNextModelJobEnqueue = false;
       runtime.failNextReverseAnalysis = false;
+      runtime.layeringAnalysisReply = null;
       runtime.knowledgeStates = [];
       runtime.managedRules = new Map();
       runtime.modelCancellationMode = 'complete';
@@ -207,6 +211,7 @@ export function installRendererE2EHarness(): void {
       runtime.failNextProjectCommit = false;
       runtime.failNextModelJobEnqueue = false;
       runtime.failNextReverseAnalysis = false;
+      runtime.layeringAnalysisReply = null;
       runtime.knowledgeStates = [];
       runtime.managedRules = new Map();
       runtime.modelCancellationMode = 'complete';
@@ -224,7 +229,7 @@ export function installRendererE2EHarness(): void {
       replaceModelJobExecutorForTests(createModelExecutor(runtime));
       replaceModelJobStorageForTests(runtime.storage);
       resetAppStoreForTests({ project: 'empty' });
-      useAppStore.setState({ project: runtime.currentProject });
+      await useAppStore.getState().hydratePersistence();
       await useAppStore.getState().initializeKnowledge();
     },
     async reopenProject() {
@@ -260,6 +265,7 @@ export function installRendererE2EHarness(): void {
     queueProjectImageImport(input) {
       runtime.pendingImageImports.push({
         byteSize: Math.max(1, Math.min(256 * 1024 * 1024, Math.floor(input.byteSize))),
+        ...(input.displayUrl?.startsWith('data:image/png;base64,') ? { displayUrl: input.displayUrl } : {}),
         height: clampE2EDimension(input.height),
         label: sanitizeE2EImageLabel(input.label),
         mediaType: 'image/png',
@@ -291,6 +297,13 @@ export function installRendererE2EHarness(): void {
     async createModule(moduleType, position = { x: 240, y: 180 }) {
       return useAppStore.getState().addModuleNode(moduleType, position);
     },
+    queueLayeringAnalysisReply(reply) {
+      runtime.layeringAnalysisReply = reply;
+    },
+    seedCanvasNodeForAudit(node) {
+      const project = useAppStore.getState().project;
+      useAppStore.setState({ project: { ...project, nodes: [node], edges: [] } });
+    },
     async configureModule(moduleType, patch) {
       const state = useAppStore.getState();
       const target = findModuleNodeByType(state.project, moduleType);
@@ -308,9 +321,35 @@ export function installRendererE2EHarness(): void {
             }
           : node),
       };
-      runtime.currentProject = nextProject;
-      useAppStore.setState({ project: nextProject });
-      return true;
+      return state.commitProjectTransaction({
+        id: `e2e-configure-${target.id}-${Date.now()}`,
+        label: 'Configure acceptance module',
+        operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextProject.nodes.find((node) => node.id === target.id)! } }],
+      }, { kind: 'system' });
+    },
+    async configureModuleById(nodeId, patch) {
+      const state = useAppStore.getState();
+      const target = state.project.nodes.find((node): node is CanvasModuleNode => node.type === 'module' && node.id === nodeId);
+      if (!target) return false;
+      const nextNode: CanvasModuleNode = {
+        ...target,
+        data: {
+          ...target.data,
+          config: { ...target.data.config, ...(patch.config ?? {}) },
+          execution: patch.execution ?? target.data.execution,
+        },
+      };
+      return state.commitProjectTransaction({
+        id: `e2e-configure-node-${target.id}-${Date.now()}`,
+        label: 'Configure acceptance module by id',
+        operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+      }, { kind: 'system' });
+    },
+    async seedImageLayeringGroup(sourceAssetId, width, height, layers) {
+      const state = useAppStore.getState();
+      const plan = { sourceAssetId, canvasWidth: width, canvasHeight: height, layers };
+      const confirmation = await confirmLayeringPlan(plan, 'comfly', 'comfly-gpt-image-2', '2K', new Date().toISOString());
+      return state.createConfirmedLayeringGroup({ plan, confirmation, groupId: `e2e-layering-${Date.now()}` });
     },
     async seedGeneratedImageResult(outputCount: 1 | 2 | 3 | 4 = 1) {
       const state = useAppStore.getState();
@@ -383,6 +422,8 @@ export function installRendererE2EHarness(): void {
       const state = useAppStore.getState();
       return {
         commitCount: runtime.commitLog.length,
+        recentTransactionLabels: runtime.commitLog.slice(-8).map(({ id, label }) => ({ id, label })),
+        saveStatus: state.saveStatus,
         durableImageGenerationConfigs: runtime.currentProject.nodes
           .filter((node): node is CanvasModuleNode => node.type === 'module' && node.data.moduleType === 'image_generation')
           .map((node) => ({ ...node.data.config })),
@@ -437,6 +478,7 @@ function createRuntimeState(): RuntimeState {
     failNextProjectCommit: false,
     failNextModelJobEnqueue: false,
     failNextReverseAnalysis: false,
+    layeringAnalysisReply: null,
     knowledgeListeners: new Set(),
     knowledgeStates: [],
     managedRules: new Map(),
@@ -780,7 +822,6 @@ async function seedModuleStressGraph(runtime: RuntimeState, nodeCount: number, e
     };
     const committed = await useAppStore.getState().commitProjectTransaction(transaction, {
       kind: 'system',
-      nextProject: fixture.project,
     });
     if (!committed) return false;
     runtime.currentProject = useAppStore.getState().project;
@@ -1123,6 +1164,11 @@ function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClien
     },
     async chatSkill(input) {
       const latestMessage = input.messages[input.messages.length - 1]?.content.trim() ?? '';
+      if (latestMessage.startsWith('请分析唯一引用图片 @图片1') && runtime.layeringAnalysisReply !== null) {
+        const message = runtime.layeringAnalysisReply;
+        runtime.layeringAnalysisReply = null;
+        return { message, modelRoute: input.modelRoute, sources: [] };
+      }
       if (latestMessage === 'force skill chat failure') {
         throw new Error('E2E skill chat is unavailable');
       }
@@ -1591,15 +1637,24 @@ declare global {
         targetPortId: string,
       ): Promise<boolean>;
       createModule(moduleType: CanvasModuleType, position?: { x: number; y: number }): Promise<boolean>;
+      queueLayeringAnalysisReply(reply: string): void;
+      seedCanvasNodeForAudit(node: CanvasNode): void;
       configureModule(moduleType: CanvasModuleType, patch: {
         config?: Record<string, unknown>;
         execution?: { state: CanvasModuleExecutionState; latestExecutionId?: string };
       }): Promise<boolean>;
+      configureModuleById(nodeId: string, patch: {
+        config?: Record<string, unknown>;
+        execution?: { state: CanvasModuleExecutionState; latestExecutionId?: string };
+      }): Promise<boolean>;
+      seedImageLayeringGroup(sourceAssetId: string, width: number, height: number, layers: readonly LayeringPlanLayer[]): Promise<boolean>;
       invokeMcp(request: CanvasMcpRequest): Promise<CanvasMcpResponse>;
       seedGeneratedImageResult(outputCount?: 1 | 2 | 3 | 4): Promise<boolean>;
       getState(): {
-        commitCount: number;
-        durableImageGenerationConfigs: Array<Record<string, unknown>>;
+      commitCount: number;
+      recentTransactionLabels: Array<{ id: string; label: string }>;
+      saveStatus: string;
+      durableImageGenerationConfigs: Array<Record<string, unknown>>;
         durableNodeCount: number;
         durableProjectContainsTransientImageUrl: boolean;
         edgeCount: number;
@@ -1639,6 +1694,7 @@ declare global {
       nonce: string;
       queueProjectImageImport(input: {
         byteSize: number;
+        displayUrl?: string;
         height: number;
         label: string;
         mediaType: 'image/png';

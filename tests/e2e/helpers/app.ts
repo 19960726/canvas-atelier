@@ -10,7 +10,11 @@ export interface PanZoomFrameMetrics {
 
 export interface InteractionStallEvidence {
   edgeCount: number;
+  maxEntryName: string | null;
+  maxEntryType: string | null;
   maxStallMs: number;
+  maxStallOverlapMs: number;
+  maxStallStartOffsetMs: number | null;
   measurementSupported: boolean;
   nodeCount: number;
   observerTypes: string[];
@@ -21,8 +25,22 @@ export interface InteractionStallEvidence {
   zeroSample: boolean;
 }
 
+export interface CanvasFrameGapEvidence {
+  frameCount: number;
+  framesOver33ms: number;
+  firstFrameOffsetMs: number;
+  lastFrameOffsetMs: number;
+  maxFrameGapMs: number;
+  maxFrameGapStartOffsetMs: number | null;
+  operation: string;
+  p50FrameGapMs: number;
+  p95FrameGapMs: number;
+}
+
 type E2EState = {
   commitCount: number;
+  recentTransactionLabels: Array<{ id: string; label: string }>;
+  saveStatus: string;
   durableImageGenerationConfigs: Array<Record<string, unknown>>;
   durableNodeCount: number;
   durableProjectContainsTransientImageUrl: boolean;
@@ -148,16 +166,17 @@ export async function uploadReference(page: Page, testId: string, fixture: Gener
   await page.getByTestId(testId).click();
 }
 
-export async function queueProjectImageImport(page: Page, fixture: GeneratedImageFixture): Promise<void> {
+export async function queueProjectImageImport(page: Page, fixture: GeneratedImageFixture, options?: { preservePixels?: boolean }): Promise<void> {
   const dimensions = {
     height: clampE2EDimension(fixture.height),
     width: clampE2EDimension(fixture.width),
   };
   previewDimensionsByPage.get(page)?.push(dimensions);
-  await page.evaluate(({ byteSize, height, label, mediaType, width }) => {
-    window.__NOVUS_E2E__!.queueProjectImageImport({ byteSize, height, label, mediaType, width });
+  await page.evaluate(({ byteSize, displayUrl, height, label, mediaType, width }) => {
+    window.__NOVUS_E2E__!.queueProjectImageImport({ byteSize, displayUrl, height, label, mediaType, width });
   }, {
     byteSize: fixture.buffer.byteLength,
+    displayUrl: options?.preservePixels ? `data:image/png;base64,${fixture.buffer.toString('base64')}` : undefined,
     height: dimensions.height,
     label: fixture.name,
     mediaType: fixture.mimeType,
@@ -283,6 +302,68 @@ export async function captureLayoutScreenshot(page: Page, testInfo: TestInfo, na
   });
 }
 
+export async function measureCanvasFrameGaps(
+  page: Page,
+  operation: string,
+  action: () => Promise<void>,
+): Promise<CanvasFrameGapEvidence> {
+  await page.evaluate((operationName) => {
+    const state = {
+      active: true,
+      frameHandle: 0,
+      gaps: [] as number[],
+      frameTimes: [] as number[],
+      lastFrame: null as number | null,
+      operation: operationName,
+      startedAt: performance.now(),
+    };
+    const target = window as typeof window & { __NOVUS_FRAME_GAP__?: typeof state };
+    target.__NOVUS_FRAME_GAP__ = state;
+    const tick = (timestamp: number) => {
+      if (!state.active) return;
+      if (state.lastFrame !== null) state.gaps.push(timestamp - state.lastFrame);
+      state.lastFrame = timestamp;
+      state.frameTimes.push(timestamp);
+      state.frameHandle = requestAnimationFrame(tick);
+    };
+    state.frameHandle = requestAnimationFrame(tick);
+  }, operation);
+  try {
+    await action();
+  } catch (error) {
+    await page.evaluate(() => {
+      const target = window as typeof window & { __NOVUS_FRAME_GAP__?: { active: boolean; frameHandle: number } };
+      if (target.__NOVUS_FRAME_GAP__) {
+        target.__NOVUS_FRAME_GAP__.active = false;
+        cancelAnimationFrame(target.__NOVUS_FRAME_GAP__.frameHandle);
+      }
+    });
+    throw error;
+  }
+  return page.evaluate(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const target = window as typeof window & { __NOVUS_FRAME_GAP__?: { active: boolean; frameHandle: number; gaps: number[]; frameTimes: number[]; operation: string; startedAt: number } };
+    const state = target.__NOVUS_FRAME_GAP__;
+    if (!state) throw new Error('Canvas animation-frame observer was not initialized');
+    state.active = false;
+    cancelAnimationFrame(state.frameHandle);
+    const sorted = [...state.gaps].sort((left, right) => left - right);
+    const maxGapIndex = state.gaps.indexOf(sorted.at(-1) ?? 0);
+    const percentile = (fraction: number) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * fraction) - 1))] ?? 0;
+    return {
+      frameCount: sorted.length,
+      framesOver33ms: sorted.filter((gap) => gap > 33).length,
+      firstFrameOffsetMs: (state.frameTimes[0] ?? state.startedAt) - state.startedAt,
+      lastFrameOffsetMs: (state.frameTimes.at(-1) ?? state.startedAt) - state.startedAt,
+      maxFrameGapMs: sorted.at(-1) ?? 0,
+      maxFrameGapStartOffsetMs: maxGapIndex < 0 ? null : (state.frameTimes[maxGapIndex] ?? state.startedAt) - state.startedAt,
+      operation: state.operation,
+      p50FrameGapMs: percentile(0.5),
+      p95FrameGapMs: percentile(0.95),
+    };
+  });
+}
+
 export async function medianPanZoomFrameInterval(page: Page): Promise<PanZoomFrameMetrics> {
   await page.evaluate(() => performance.clearMarks('novus-pan-zoom-frame'));
   const panePoint = await page.evaluate(() => {
@@ -340,6 +421,7 @@ export async function startInteractionStallObserver(page: Page): Promise<void> {
         state.entries.push({
           duration: entry.duration,
           entryType: entry.entryType,
+          name: entry.name,
           startTime: entry.startTime,
         });
       }
@@ -395,23 +477,36 @@ export async function finishInteractionStallObserver(
         state.entries.push({
           duration: entry.duration,
           entryType: entry.entryType,
+          name: entry.name,
           startTime: entry.startTime,
         });
       }
       observer.disconnect();
     }
     return state.windows.map((windowEntry) => {
-      const durations = state.entries
+      const entries = state.entries
         .filter((entry) => entry.startTime <= windowEntry.endTime
-          && entry.startTime + entry.duration >= windowEntry.startTime)
-        .map((entry) => entry.duration);
+          && entry.startTime + entry.duration >= windowEntry.startTime);
+      const maximum = entries.reduce<typeof entries[number] | null>(
+        (current, entry) => current === null || entry.duration > current.duration ? entry : current,
+        null,
+      );
+      const maximumOverlap = entries.reduce<{ entry: typeof entries[number]; duration: number } | null>((current, entry) => {
+        const duration = Math.max(0, Math.min(windowEntry.endTime, entry.startTime + entry.duration)
+          - Math.max(windowEntry.startTime, entry.startTime));
+        return current === null || duration > current.duration ? { entry, duration } : current;
+      }, null);
       return {
-        maxStallMs: durations.length === 0 ? 0 : Math.max(...durations),
+        maxEntryName: maximum?.name ?? null,
+        maxEntryType: maximum?.entryType ?? null,
+        maxStallMs: maximum?.duration ?? 0,
+        maxStallOverlapMs: maximumOverlap?.duration ?? 0,
+        maxStallStartOffsetMs: maximum === null ? null : maximum.startTime - windowEntry.startTime,
         measurementSupported: state.observerTypes.length > 0,
         observerTypes: [...state.observerTypes],
         operation: windowEntry.operation,
-        sampleCount: durations.length,
-        zeroSample: durations.length === 0,
+        sampleCount: entries.length,
+        zeroSample: entries.length === 0,
       };
     });
   });
@@ -455,6 +550,8 @@ declare global {
   interface Window {
     __NOVUS_E2E__?: {
       commitCount: number;
+      recentTransactionLabels: Array<{ id: string; label: string }>;
+      saveStatus: string;
       connectModules(
         sourceType: CanvasModuleType,
         sourcePortId: string,
@@ -470,6 +567,7 @@ declare global {
       nonce: string;
       queueProjectImageImport(input: {
         byteSize: number;
+        displayUrl?: string;
         height: number;
         label: string;
         mediaType: 'image/png';
@@ -485,11 +583,12 @@ declare global {
       failNextReverseAnalysis(): void;
       reopenProject(): Promise<void>;
       reset(): Promise<void>;
+      seedGeneratedImageResult(outputCount?: 1 | 2 | 3 | 4): Promise<boolean>;
       seedSkillSyncDivergence(): Promise<void>;
       seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean>;
     };
     __NOVUS_STALL_OBSERVER__?: {
-      entries: Array<{ duration: number; entryType: string; startTime: number }>;
+      entries: Array<{ duration: number; entryType: string; name: string; startTime: number }>;
       observers: PerformanceObserver[];
       observerTypes: string[];
       windows: Array<{ endTime: number; operation: string; startTime: number }>;

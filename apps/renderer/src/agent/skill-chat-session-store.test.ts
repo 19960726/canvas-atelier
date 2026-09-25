@@ -81,6 +81,23 @@ describe('skill chat conversation storage', () => {
     expect(deriveAgentConversationTitle('   ')).toBe('新任务');
   });
 
+  it('preserves each submitted reverse depth independently of the current conversation setting', () => {
+    const conversation = {
+      ...createAgentConversation(950), reverseAnalysisDepth: 'fast' as const,
+      messages: [{ id: 'deep-request', role: 'user' as const, content: '反推素材', request: {
+        modelDisplayName: 'Vision', modelRoute: 'vision', knowledgeBaseCount: 0,
+        projectMemoryCount: 0, references: [], status: 'completed' as const,
+        visualAnalysis: true, reverseAnalysisDepth: 'deep' as const,
+      } }],
+    };
+    writeAgentConversationCollection('depth-snapshot', {
+      version: 2, activeConversationId: conversation.id, conversations: [conversation],
+    });
+    const restored = readAgentConversationCollection('depth-snapshot').conversations[0]!;
+    expect(restored.reverseAnalysisDepth).toBe('fast');
+    expect(restored.messages[0]!.request).toMatchObject({ reverseAnalysisDepth: 'deep' });
+  });
+
   it('persists reasoning independently for chat, creative Agent, and Codex plus reverse depth', () => {
     const conversation = {
       ...createAgentConversation(900),

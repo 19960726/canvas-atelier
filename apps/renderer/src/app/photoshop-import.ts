@@ -4,6 +4,10 @@ import type {
   PhotoshopImportResult,
   ProjectImageAssetSummary,
 } from '@agent-canvas/desktop-core';
+import {
+  resolveImageColorCorrection,
+  type ImageColorCorrection,
+} from './image-color-correction';
 
 const PHOTOSHOP_IMPORT_MESSAGES: Readonly<Record<PhotoshopImportErrorCode, string>> = {
   asset_not_found: '原始生成图片不存在，请重新生成或重新导入',
@@ -36,6 +40,7 @@ export function getPhotoshopImportAvailability(
 export async function importGeneratedImageToPhotoshop(
   asset: ProjectImageAssetSummary,
   sessionId: string | null,
+  colorCorrection?: ImageColorCorrection,
 ): Promise<PhotoshopImportResult> {
   const availability = getPhotoshopImportAvailability(asset, sessionId);
   if (!availability.available) {
@@ -43,9 +48,21 @@ export async function importGeneratedImageToPhotoshop(
   }
 
   try {
+    const resolvedCorrection = colorCorrection === undefined || colorCorrection.mode === 'original'
+      ? undefined
+      : await resolveImageColorCorrection(asset.displayUrl, colorCorrection);
     return await window.novusDesktop!.projectImages.importToPhotoshop({
       assetId: asset.assetId,
       sessionId: sessionId!,
+      ...(resolvedCorrection === undefined ? {} : {
+        colorCorrection: {
+          temperature: resolvedCorrection.temperature,
+          tint: resolvedCorrection.tint,
+          saturation: resolvedCorrection.saturation,
+          contrast: resolvedCorrection.contrast,
+          brightness: resolvedCorrection.brightness,
+        },
+      }),
     });
   } catch {
     return { ok: false, code: 'placement_failed' };

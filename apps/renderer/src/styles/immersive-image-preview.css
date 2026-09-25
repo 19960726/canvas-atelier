@@ -1,0 +1,63 @@
+/* Full-window media viewer. Geometry is owned here, after legacy modal rules. */
+html body .generated-image-lightbox.immersive-image-preview {
+  position: fixed; inset: 0; z-index: 10000; padding: 0;
+  background: rgba(0, 0, 0, .78);
+}
+html body .immersive-image-preview .generated-image-lightbox__dialog {
+  position: absolute; inset: 0; display: block; width: 100%; height: 100%;
+  max-width: none; max-height: none; min-height: 0; margin: 0; padding: 0;
+  border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: hidden;
+}
+html body .immersive-image-preview .generated-image-lightbox__stage {
+  position: absolute; inset: 72px 24px; display: flex; align-items: center; justify-content: center;
+  min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 0;
+  background: transparent; overflow: hidden; touch-action: none; cursor: grab;
+}
+html body .immersive-image-preview .generated-image-lightbox__stage[data-dragging='true'] { cursor: grabbing; }
+html body .immersive-image-preview .generated-image-lightbox__stage > img {
+  flex: none; max-width: none; max-height: none; object-fit: contain;
+  transform-origin: center; user-select: none; pointer-events: auto; border-radius: 0;
+}
+.immersive-image-preview__tools, .immersive-image-preview__pager, .immersive-image-preview__hint {
+  position: absolute; z-index: 2; display: flex; align-items: center; gap: 6px; color: #f3f5f3;
+}
+.immersive-image-preview__tools { top: 16px; right: 16px; }
+.immersive-image-preview__tools > :is(span, output),
+.immersive-image-preview :is(.immersive-image-preview__tools, .immersive-image-preview__pager) > button {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 38px; height: 38px;
+  margin: 0; padding: 0 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px;
+  color: #f3f5f3; background: rgba(48,53,50,.9); font-size: 13px; font-weight: 550;
+}
+.immersive-image-preview button { cursor: pointer; }
+.immersive-image-preview button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.immersive-image-preview__tools > output { min-width: 58px; font-variant-numeric: tabular-nums; }
+.immersive-image-preview__pager { bottom: 16px; left: 16px; }
+.immersive-image-preview__pager > span { min-width: 64px; text-align: center; font-size: 12px; }
+.immersive-image-preview__hint {
+  bottom: 16px; left: 50%; transform: translateX(-50%); white-space: nowrap;
+  max-width: calc(100% - 32px); margin: 0; padding: 8px 12px; border-radius: 10px;
+  background: rgba(14,17,15,.86); font-size: 12px; line-height: 20px;
+}
+.immersive-image-preview__hint > button { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; color: inherit; background: transparent; border: 0; border-radius: 5px; }
+.immersive-image-preview__hint > button:hover { background: rgba(255,255,255,.14); }
+html body .immersive-image-preview .generated-image-lightbox__correction-toolbar {
+  position: absolute; top: 16px; left: 16px; z-index: 3; width: auto; padding: 0; margin: 0; border: 0; background: transparent;
+}
+.immersive-image-preview__notice { position: absolute; bottom: 70px; left: 50%; transform: translateX(-50%); z-index: 3; color: #f3f5f3; background: #202523; border-radius: 8px; padding: 10px 16px; font-size: 13px; }
+html body .immersive-image-preview .generated-image-action-menu {
+  z-index: 5; width: 240px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow-y: auto;
+  padding: 7px; border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.3);
+}
+.immersive-image-preview .generated-image-action-menu > strong { display: none; }
+html body .immersive-image-preview .generated-image-action-menu > button {
+  min-height: 41px; padding: 10px; gap: 10px; border-radius: 7px;
+  color: var(--text); background: transparent; font-size: 13px; font-weight: 450;
+}
+html body .immersive-image-preview .generated-image-action-menu > button:is(:hover, :focus-visible):not(:disabled) { background: var(--accent-soft) !important; color: var(--text) !important; }
+@media (max-width: 760px) {
+  html body .immersive-image-preview .generated-image-lightbox__correction-toolbar { top: 62px; }
+  html body .immersive-image-preview .generated-image-lightbox__dialog:has(.generated-image-lightbox__correction-toolbar) .generated-image-lightbox__stage { top: 108px; }
+  .immersive-image-preview__hint { bottom: 62px; font-size: 10px; gap: 2px; padding: 5px 8px; }
+  .immersive-image-preview__tools { gap: 4px; right: 10px; }
+  .immersive-image-preview__tools > :is(span, output), .immersive-image-preview .immersive-image-preview__tools > button { padding-inline: 7px; min-width: 32px; font-size: 11px; }
+}

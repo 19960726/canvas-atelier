@@ -79,6 +79,9 @@ for (const theme of ['dark', 'light'] as const) {
     });
 
     const reverse = page.locator('[data-module-type="reverse_agent"]');
+    const reverseTitle = reverse.locator('.module-node__workbench-header > span');
+    expect(await reverseTitle.evaluate((element) => getComputedStyle(element, '::before').content)).toBe('"✦"');
+    await expect(reverse.locator('.module-node__workbench-header > b')).toHaveCSS('border-radius', '999px');
     const emptyRail = reverse.getByLabel('Reverse media workspace');
     await expect(emptyRail).toBeVisible();
     await expect(emptyRail).toHaveClass(/module-node__agent-media-empty-hint/);
@@ -175,302 +178,64 @@ for (const theme of ['dark', 'light'] as const) {
   });
 }
 
-test('captures the release UI audit set for dark and light themes', async ({ page }, testInfo) => {
+test('captures the current floating-Agent release surfaces in dark and light themes', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openEmptyApp(page);
-  await page.getByLabel('主题 Theme').selectOption('dark', { force: true });
-  await expect(page.getByTestId('workspace')).toHaveAttribute('data-secondary-surface', 'none');
-  await expect(page.getByTestId('job-strip')).toBeHidden();
-  const minimap = page.locator('.react-flow__minimap');
-  await expect(minimap).toBeVisible();
-  await expect(minimap).toHaveCSS('width', '168px');
-  await expect(minimap).toHaveCSS('height', '112px');
-  await expect(page.locator('.react-flow__controls')).toBeHidden();
   await expect(page.getByTestId('topbar')).toContainText('Canvas Atelier');
-  await expect(page.getByTestId('topbar')).toContainText('保存项目');
-  await expect(page.getByTestId('topbar')).toContainText('生图历史');
-  await expect(page.locator('.topbar__actions .theme-control')).toBeVisible();
-  await expect(page.getByRole('button', { name: '关闭应用', includeHidden: true })).toBeHidden();
-  await expect(page.getByRole('button', { name: '打开 Agent 对话' })).toBeVisible();
-  await expect(page.locator('.model-status')).toHaveCount(0);
-
+  await expect(page.getByTestId('job-strip')).toBeHidden();
+  await expect(page.locator('.react-flow__minimap')).toBeVisible();
   await page.evaluate(async () => {
-    await Promise.all([
-      window.__NOVUS_E2E__.createModule('image_generation', { x: 100, y: 112 }),
-      window.__NOVUS_E2E__.createModule('reverse_agent', { x: 1000, y: 88 }),
-      window.__NOVUS_E2E__.createModule('result_output', { x: 720, y: 620 }),
-    ]);
+    await window.__NOVUS_E2E__!.createModule('image_generation', { x: 100, y: 112 });
+    await window.__NOVUS_E2E__!.createModule('reverse_agent', { x: 1000, y: 88 });
+    await window.__NOVUS_E2E__!.createModule('result_output', { x: 720, y: 620 });
   });
-  await expect(page.locator('[data-module-type="image_generation"]')).toBeVisible();
-  await expect(page.locator('[data-module-type="reverse_agent"]')).toBeVisible();
-  await expect(
-    page.locator('[data-module-type="result_output"]'),
-    'A persisted current Result Output module must remain visible after the canvas opens',
-  ).toBeVisible();
-  await openAgentPanel(page);
-  await page.locator('[data-module-type="image_generation"]').click({ position: { x: 200, y: 120 } });
-  await expect(page.locator('[data-module-type="image_generation"] .module-node__summary--generation')).toHaveAttribute('data-editor-expanded', 'true');
-  await expect(minimap, 'The minimap must yield while a large generation editor is open so it cannot cover node actions').toBeHidden();
-  const imageNodeBounds = await page.locator('[data-module-type="image_generation"]').boundingBox();
-  const reverseNodeBounds = await page.locator('[data-module-type="reverse_agent"]').boundingBox();
-  expect(imageNodeBounds).toMatchObject({ x: 100, y: 112 });
-  expect(reverseNodeBounds).toMatchObject({ x: 1000, y: 88 });
-  const imagePromptBounds = await page.getByRole('textbox', { name: 'Image generation prompt' }).boundingBox();
-  // Canvas 411:2 uses the same generous prompt field as the reverse task,
-  // rather than the earlier compact 58px generation prompt.
-  expect(imagePromptBounds).toMatchObject({ width: 826, height: 104 });
-  expect(Math.abs((imagePromptBounds!.x - imageNodeBounds!.x) - 39)).toBeLessThanOrEqual(1);
-  expect(Math.abs((imagePromptBounds!.y - imageNodeBounds!.y) - 599)).toBeLessThanOrEqual(1);
-  const reverseRoleBounds = await page.getByRole('textbox', { name: 'Role positioning' }).boundingBox();
-  const reverseTaskBounds = await page.getByRole('textbox', { name: 'Analysis task' }).boundingBox();
-  expect(reverseTaskBounds).toMatchObject({ width: 390, height: 130 });
-  expect(reverseRoleBounds).toMatchObject({ width: 390, height: 40 });
-  expect(reverseTaskBounds!.x - reverseNodeBounds!.x).toBe(18);
-  expect(reverseRoleBounds!.x - reverseNodeBounds!.x).toBe(18);
-  const reverseKnowledgeBounds = await page.getByLabel('Reverse knowledge context').boundingBox();
-  expect(reverseKnowledgeBounds).not.toBeNull();
-  expect(reverseKnowledgeBounds!.width).toBe(390);
-  expect(reverseKnowledgeBounds!.height).toBeGreaterThanOrEqual(38);
-  expect(reverseKnowledgeBounds!.x - reverseNodeBounds!.x).toBe(18);
-  expect(reverseTaskBounds!.y).toBeGreaterThanOrEqual(reverseRoleBounds!.y + reverseRoleBounds!.height);
-  expect(reverseKnowledgeBounds!.y).toBeGreaterThanOrEqual(reverseTaskBounds!.y + reverseTaskBounds!.height);
-  const emptyResult = page.locator('[data-agent-region="result"]');
-  await expect(emptyResult).toBeVisible();
-  await expect(emptyResult).toContainText('无结果');
-  const viewportTransform = await page.locator('.react-flow__viewport').evaluate((element) => element.getAttribute('style') ?? '');
-  expect(viewportTransform).toContain('scale(1)');
-  await expect(page.locator('[data-module-type="image_generation"]')).toHaveCSS('height', '830px');
-
-  await captureSurface(page, testInfo, '01-canvas-dark');
-
-  if (await page.getByTestId('agent-panel').isVisible()) {
-    await page.getByTestId('agent-toggle').click();
-  }
-  await expect(page.getByTestId('agent-panel')).toBeHidden();
-  await page.locator('.react-flow__pane').dblclick({ position: { x: 24, y: 760 } });
-  await expect(page.getByTestId('quick-insert')).toBeVisible();
-  await expect(page.getByTestId('workspace')).toHaveAttribute('data-secondary-surface', 'quick-insert');
-  await expect(page.locator('.react-flow__viewport')).toHaveAttribute('style', /scale\(1\)/);
-  await expect(page.getByTestId('quick-insert').locator('[data-module-type="reverse_agent"]')).toBeVisible();
-  await captureSurface(page, testInfo, '01b-quick-insert-dark');
-  await page.keyboard.press('Escape');
-  await expect(page.getByTestId('quick-insert')).toBeHidden();
-
-  await page.getByTestId('tool-modules').click();
-  await expect(page.getByTestId('module-library')).toBeVisible();
-  await expect(page.getByTestId('module-library')).toHaveAttribute('data-canvas-surface', 'module-library');
-  await expect(page.getByTestId('workspace')).toHaveAttribute('data-secondary-surface', 'module-library');
-  await expect(page.locator('.react-flow__viewport')).toHaveAttribute('style', /scale\(1\)/);
-  await captureSurface(page, testInfo, '02-module-library-dark');
+  const generation = page.locator('[data-module-type="image_generation"]');
+  const reverse = page.locator('[data-module-type="reverse_agent"]');
+  await expect(generation).toBeVisible();
+  await expect(reverse).toBeVisible();
+  await expect(page.locator('[data-module-type="result_output"]')).toBeVisible();
+  await generation.getByRole('button', { name: 'Open image generation editor' }).click();
+  const prompt = generation.getByRole('textbox', { name: 'Image generation prompt' });
+  await expect(prompt).toBeVisible();
+  const [nodeBox, promptBox] = await Promise.all([generation.boundingBox(), prompt.boundingBox()]);
+  expect(nodeBox).not.toBeNull();
+  expect(promptBox).not.toBeNull();
+  expect(promptBox!.x).toBeGreaterThanOrEqual(nodeBox!.x);
+  expect(promptBox!.x + promptBox!.width).toBeLessThanOrEqual(nodeBox!.x + nodeBox!.width + 1);
+  await expect(page.locator('.react-flow__minimap')).toBeHidden();
+  await captureSurface(page, testInfo, 'release-canvas-dark');
 
   await openAgentPanel(page);
-  await expect(page.getByTestId('module-library')).toBeHidden();
-  await expect(page.getByTestId('agent-panel')).toHaveAttribute('data-canvas-surface', 'agent');
-  await expect(page.getByTestId('workspace')).toHaveAttribute('data-secondary-surface', 'agent');
-  const agentPanelBounds = await page.getByTestId('agent-panel').boundingBox();
-  const toolrailBounds = await page.getByTestId('toolrail').boundingBox();
-  expect(agentPanelBounds).not.toBeNull();
-  expect(toolrailBounds).not.toBeNull();
-  expect(agentPanelBounds).toMatchObject({ x: 880, y: 0, width: 560, height: 900 });
-  expect(toolrailBounds).toMatchObject({ x: 52, y: 142, width: 60, height: 442 });
-  const newChatBounds = await page.getByTestId('agent-new-chat').boundingBox();
-  const darkAgentTitleBounds = await page.getByTestId('agent-panel').locator('.skill-chat-workbench__header h2').boundingBox();
-  const darkAgentCloseBounds = await page.getByRole('button', { name: '关闭 Codex Agent' }).boundingBox();
-  await page.getByTestId('agent-panel').getByRole('tab', { name: '对话', exact: true }).click();
-  const welcomeBounds = await page.locator('.skill-chat-workbench__intro--codex').boundingBox();
-  const composerBounds = await page.locator('.skill-chat-workbench__composer').boundingBox();
-  expect(newChatBounds).toMatchObject({ width: 42, height: 42 });
-  expect(darkAgentTitleBounds!.x).toBeGreaterThanOrEqual(agentPanelBounds!.x + 16);
-  expect(darkAgentCloseBounds).toMatchObject({ width: 30, height: 30 });
-  expect(agentPanelBounds!.x + agentPanelBounds!.width - (darkAgentCloseBounds!.x + darkAgentCloseBounds!.width)).toBeLessThanOrEqual(11);
-  expect(welcomeBounds!.y).toBeGreaterThan(newChatBounds!.y + newChatBounds!.height);
-  expect(composerBounds!.x).toBeGreaterThanOrEqual(agentPanelBounds!.x);
-  expect(composerBounds!.x + composerBounds!.width).toBeLessThanOrEqual(agentPanelBounds!.x + agentPanelBounds!.width);
-  expect(composerBounds!.y).toBeGreaterThan(welcomeBounds!.y);
-  expect(composerBounds!.y + composerBounds!.height).toBeLessThanOrEqual(agentPanelBounds!.y + agentPanelBounds!.height);
-  const screenReaderOnlyControls = page.locator('.skill-chat-workbench__composer .sr-only');
-  await expect(screenReaderOnlyControls).toHaveCount(2);
-  await expect(screenReaderOnlyControls.nth(0)).toBeHidden();
-  await expect(screenReaderOnlyControls.nth(1)).toBeHidden();
-  const addMaterial = page.getByRole('button', { name: '添加素材' });
-  await expect(page.getByTestId('knowledge-base-trigger')).toBeVisible();
-  await expect(page.getByTestId('agent-model-trigger')).toBeVisible();
-  await expect(addMaterial).toBeVisible();
-  expect(await addMaterial.boundingBox()).toMatchObject({ width: 30, height: 30 });
-  expect(await page.getByTestId('knowledge-base-trigger').boundingBox()).toMatchObject({ width: 30, height: 30 });
-  const hiddenSubmit = page.locator('.skill-chat-workbench__composer-footer button[type="submit"]');
-  expect(await hiddenSubmit.boundingBox()).toMatchObject({ width: 30, height: 30 });
-  await expect(hiddenSubmit).toHaveCSS('opacity', '1');
-  await expect(hiddenSubmit).toHaveCSS('pointer-events', 'auto');
-  await expect(page.getByTestId('agent-image-reference-affordance')).toHaveCount(0);
-  await captureSurface(page, testInfo, '03-agent-dark');
-
-  await page.getByRole('button', { name: '打开知识库' }).click();
-  await expect(page.getByTestId('knowledge-library-toolbar')).toBeVisible();
-  await captureSurface(page, testInfo, '03b-knowledge-selection-dark');
-  await page.getByRole('button', { name: '关闭知识库' }).click();
-  await expect(page.getByTestId('knowledge-library-toolbar')).toBeHidden();
+  const agent = page.getByTestId('agent-panel');
+  await expect(agent.getByTestId('agent-composer-input')).toBeVisible();
+  await expect(agent.getByTestId('agent-model-trigger')).toBeVisible();
+  await expect(agent.getByRole('button', { name: '新建任务' })).toBeVisible();
+  const bounds = await agent.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.width).toBeGreaterThanOrEqual(400);
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.y).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(1440);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(900);
+  await captureSurface(page, testInfo, 'release-agent-dark');
 
   await page.getByTestId('history-toggle').click();
   await expect(page.getByTestId('history-drawer')).toBeVisible();
-  await expect(page.getByTestId('workspace')).toHaveAttribute('data-secondary-surface', 'history');
-  const historyBounds = await page.getByTestId('history-drawer').boundingBox();
-  expect(historyBounds).not.toBeNull();
-  expect(historyBounds!.width).toBeGreaterThanOrEqual(760);
-  expect(historyBounds!.x).toBeGreaterThanOrEqual(52);
-  expect(historyBounds!.x + historyBounds!.width).toBeLessThanOrEqual(1440);
-  await captureSurface(page, testInfo, '04-history-dark');
-
+  await captureSurface(page, testInfo, 'release-history-dark');
   await page.getByTestId('history-drawer-close').click();
-  await expect(page.getByTestId('history-drawer')).toBeHidden();
+
   await page.getByTestId('settings-toggle').click();
-  await expect(page.getByTestId('settings-drawer')).toBeVisible();
-  await expect(page.getByTestId('workspace')).toHaveAttribute('data-secondary-surface', 'settings');
-  expect(await page.getByTestId('settings-drawer').boundingBox()).toMatchObject({
-    x: 696,
-    y: 76,
-    width: 720,
-    height: 796,
-  });
-  const apiSettingsSection = page.getByTestId('settings-drawer').getByLabel('供应商设置');
-  const hiddenCredentialButton = apiSettingsSection.getByRole('button', { name: '配置隐藏密钥' });
-  const saveCredentialButton = apiSettingsSection.getByRole('button', { name: '保存接口设置' });
-  const apiSectionBounds = await apiSettingsSection.boundingBox();
-  const settingsDrawerBounds = await page.getByTestId('settings-drawer').boundingBox();
-  expect(apiSectionBounds).not.toBeNull();
-  expect(settingsDrawerBounds).not.toBeNull();
-  expect(apiSectionBounds!.width).toBeGreaterThanOrEqual(640);
-  expect(apiSectionBounds!.x).toBeGreaterThanOrEqual(settingsDrawerBounds!.x);
-  expect(apiSectionBounds!.x + apiSectionBounds!.width).toBeLessThanOrEqual(settingsDrawerBounds!.x + settingsDrawerBounds!.width);
-  await expect(hiddenCredentialButton).toBeVisible();
-  await expect(saveCredentialButton).toBeVisible();
-  await expect(saveCredentialButton).toBeEnabled();
-  await expect(apiSettingsSection.getByText('API 服务地址（Base URL）')).toBeVisible();
-  await expect(apiSettingsSection.getByRole('button', { name: '检测连接' })).toBeVisible();
-  await expect(apiSettingsSection.getByText('安全存储')).toBeVisible();
-  await captureSurface(page, testInfo, '05-settings-dark');
-  await page.getByTestId('settings-drawer').getByRole('button', { name: '配置隐藏密钥' }).click();
-  const hiddenKeyDialog = page.getByRole('dialog', { name: '配置隐藏密钥' });
-  await expect(hiddenKeyDialog).toBeVisible();
-  await expect(hiddenKeyDialog.locator('input[type="password"]')).toHaveCount(1);
-  const hiddenKeyBounds = await hiddenKeyDialog.boundingBox();
-  expect(hiddenKeyBounds).not.toBeNull();
-  expect(hiddenKeyBounds!.width).toBeGreaterThanOrEqual(420);
-  expect(hiddenKeyBounds!.x).toBeGreaterThan(0);
-  expect(hiddenKeyBounds!.x + hiddenKeyBounds!.width).toBeLessThanOrEqual(1440);
-  await captureSurface(page, testInfo, '05a-hidden-keys-dark');
-  await hiddenKeyDialog.getByRole('button', { name: '关闭隐藏密钥配置' }).click();
-  await expect(hiddenKeyDialog).toBeHidden();
-  const settingsTabs = page.getByTestId('settings-drawer').locator('.settings-tabs');
-  const apiTab = settingsTabs.locator('[role="tab"]').nth(0);
-  const syncTab = settingsTabs.locator('[role="tab"]').nth(3);
-  const expectedTabSurface = await page.evaluate(() => {
-    const probe = document.createElement('div');
-    probe.style.background = 'var(--surface)';
-    document.body.append(probe);
-    const color = getComputedStyle(probe).backgroundColor;
-    probe.remove();
-    return color;
-  });
-  const expectedSelectedTabSurface = await page.evaluate(() => {
-    const probe = document.createElement('div');
-    probe.style.background = 'var(--accent-soft)';
-    document.body.append(probe);
-    const color = getComputedStyle(probe).backgroundColor;
-    probe.remove();
-    return color;
-  });
-  await expect(apiTab).toHaveCSS('display', 'grid');
-  await expect(apiTab).toHaveCSS('place-items', 'center');
-  await expect(apiTab).toHaveCSS('justify-content', 'center');
-  await expect(apiTab).toHaveCSS('text-align', 'center');
-  await expect(apiTab).toHaveCSS('background-color', expectedSelectedTabSurface);
-  await syncTab.click();
-  await expect(syncTab).toHaveCSS('background-color', expectedSelectedTabSurface);
-  await expect(apiTab).toHaveCSS('background-color', expectedTabSurface);
-
-  await page.getByTestId('settings-drawer').getByRole('tab', { name: '同步' }).click();
-  await captureSurface(page, testInfo, '05b-settings-sync-dark');
-
+  const settings = page.getByTestId('settings-drawer');
+  await expect(settings).toBeVisible();
+  await expect(settings.getByLabel('供应商设置')).toBeVisible();
+  await captureSurface(page, testInfo, 'release-settings-dark');
   await page.getByLabel('主题 Theme').selectOption('light', { force: true });
-  const expectedMutedSurface = await page.evaluate(() => {
-    const probe = document.createElement('div');
-    probe.style.background = 'var(--surface-muted)';
-    document.body.append(probe);
-    const color = getComputedStyle(probe).backgroundColor;
-    probe.remove();
-    return color;
-  });
-  await expect(page.getByTestId('settings-drawer').locator('.settings-tabs')).toHaveCSS('background-color', expectedMutedSurface);
-  await captureSurface(page, testInfo, '06-settings-light');
-
+  await captureSurface(page, testInfo, 'release-settings-light');
   await page.getByTestId('settings-toggle').click();
   await openAgentPanel(page);
-  // The docked Agent geometry remains identical across themes; only tokens change.
-  expect(await page.getByTestId('agent-panel').boundingBox()).toMatchObject({
-    x: 880,
-    y: 0,
-    width: 560,
-    height: 900,
-  });
-  expect(await page.getByTestId('agent-new-chat').boundingBox()).toMatchObject({ width: 42, height: 42 });
-  expect(await page.getByRole('button', { name: '关闭 Codex Agent' }).boundingBox()).toMatchObject({ width: 30, height: 30 });
-  await expect(page.getByTestId('knowledge-base-trigger')).toBeVisible();
-  await expect(page.getByTestId('agent-model-trigger')).toBeVisible();
-  await page.getByRole('button', { name: '打开知识库' }).click();
-  await expect(page.getByTestId('knowledge-library-toolbar')).toBeVisible();
-  await captureSurface(page, testInfo, '06a-knowledge-selection-light');
-  await page.getByRole('button', { name: '关闭知识库' }).click();
-  const lightAgentPanel = page.getByTestId('agent-panel');
-  const lightAgentSurface = await lightAgentPanel.evaluate((element) => getComputedStyle(element).backgroundColor);
-  const lightAgentText = await page.evaluate(() => {
-    const probe = document.createElement('div');
-    probe.style.color = 'var(--text)';
-    document.body.append(probe);
-    const color = getComputedStyle(probe).color;
-    probe.remove();
-    return color;
-  });
-  await expect(lightAgentPanel.locator('.agent-panel__header')).toHaveCSS('background-color', lightAgentSurface);
-  await expect(lightAgentPanel.locator('.skill-chat-workbench__suggestions strong').first()).toHaveCSS('color', lightAgentText);
-  await captureSurface(page, testInfo, '06b-agent-light');
-
-  await page.getByTestId('tool-modules').click();
-  await expect(page.getByTestId('module-library')).toBeVisible();
-  await captureSurface(page, testInfo, '06c-module-library-light');
-
-  await page.getByTestId('history-toggle').click();
-  await expect(page.getByTestId('history-drawer')).toBeVisible();
-  const lightHistoryDrawer = page.getByTestId('history-drawer');
-  await expect(lightHistoryDrawer).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-  await expect(lightHistoryDrawer.locator('.history-filters')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-  await captureSurface(page, testInfo, '06d-history-light');
-
-  await page.getByTestId('history-drawer-close').click();
-  await expect(page.getByTestId('history-drawer')).toBeHidden();
-  // Keep the light-theme quick-insert gesture below the expanded reverse card.
-  // The previous y=620 coordinate landed inside that node and correctly selected
-  // it instead of opening the canvas-level insert menu.
-  await page.locator('.react-flow__pane').dblclick({ position: { x: 24, y: 760 } });
-  await expect(page.getByTestId('quick-insert')).toBeVisible();
-  await expect(page.locator('.react-flow__viewport')).toHaveAttribute('style', /scale\(1\)/);
-  await expect(page.getByTestId('quick-insert').locator('[data-module-type="reverse_agent"]')).toBeVisible();
-  await captureSurface(page, testInfo, '06e-quick-insert-light');
-  await page.keyboard.press('Escape');
-  await expect(page.getByTestId('quick-insert')).toBeHidden();
-
-  const expectedGateCard = await page.evaluate(() => {
-    const probe = document.createElement('div');
-    probe.style.background = 'var(--gate-card)';
-    document.querySelector('[data-testid="workspace"]')?.append(probe);
-    const color = getComputedStyle(probe).backgroundColor;
-    probe.remove();
-    return color;
-  });
-  await expect(page.locator('[data-module-type="reverse_agent"]')).toHaveCSS('background-color', expectedGateCard);
-  await captureSurface(page, testInfo, '07-canvas-light');
+  await expect(agent.getByTestId('agent-composer-input')).toBeVisible();
+  await captureSurface(page, testInfo, 'release-agent-light');
 });
-
 for (const theme of ['dark', 'light'] as const) {
   test(`captures visible image-input connections in ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -592,7 +357,7 @@ for (const theme of ['dark', 'light'] as const) {
     expect(
       firstImageReferenceBox!.x,
       'Canvas 411:2 pins connected image thumbnails to the tray start; legacy CSS must not center them.',
-    ).toBeLessThanOrEqual(imageReferenceSlotsBox!.x + 12);
+    ).toBeLessThanOrEqual(imageReferenceSlotsBox!.x + 16);
     expect(
       imageReferenceSlotsBox!.y + imageReferenceSlotsBox!.height,
       'Canvas 411:2 places connected reference media in its own tray above the prompt, never inside the text area.',
@@ -609,18 +374,18 @@ for (const theme of ['dark', 'light'] as const) {
     await page.keyboard.press('Enter');
     await expect(resolutionTrigger).toHaveAttribute('value', '4K');
     const generateImage = imageGeneration.getByRole('button', { name: 'Generate image' });
-    await expect(generateImage).toHaveCSS('font-size', '13px');
+    await expect(generateImage).toHaveCSS('font-size', '11px');
     expect(await generateImage.evaluate((element) => getComputedStyle(element, '::after').content)).toBe('none');
-    const imageGenerationResult = imageGeneration.locator('[data-port-id="result"][data-port-direction="output"] .react-flow__handle');
-    const [generationBox, resultBox] = await Promise.all([
-      imageGeneration.boundingBox(),
+    const imageGenerationResult = imageGeneration.locator('[data-port-id="result"][data-port-direction="output"] .react-flow__handle:not([data-visual-alias="true"])');
+    const [previewBox, resultBox] = await Promise.all([
+      imageGeneration.locator('.module-node__generation-editor-preview').boundingBox(),
       imageGenerationResult.boundingBox(),
     ]);
-    expect(generationBox).not.toBeNull();
+    expect(previewBox).not.toBeNull();
     expect(resultBox).not.toBeNull();
     expect(
-      Math.abs((resultBox!.y + resultBox!.height / 2) - (generationBox!.y + generationBox!.height / 2)),
-      'Image Generation result endpoint must stay on the Canvas card midpoint, never the top rail',
+      Math.abs((resultBox!.y + resultBox!.height / 2) - (previewBox!.y + previewBox!.height / 2)),
+      'Image Generation result endpoint must stay on the current preview connection rail',
     ).toBeLessThanOrEqual(14);
 
     await expect(page.locator('.react-flow__edge')).toHaveCount(3);

@@ -7,6 +7,12 @@ import './styles/app.css';
 import './styles/canvas-layout.css';
 import './styles/agent-workbench.css';
 import './styles/release-layout-contract.css';
+import './styles/agent-floating.css';
+import './styles/image-layering.css';
+import './styles/atelier-dark-theme.css';
+import './styles/settings-atelier-polish.css';
+import './styles/immersive-image-preview.css';
+import './styles/knowledge-library.css';
 
 const manualAcceptanceHarness = new URLSearchParams(window.location.search).get('novusHarness') === 'novus-e2e-codex-canvas-layout';
 if (manualAcceptanceHarness) window.__NOVUS_MANUAL_ACCEPTANCE__ = true;

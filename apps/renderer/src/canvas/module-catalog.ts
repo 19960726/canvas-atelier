@@ -15,6 +15,7 @@ const UI_GATE_MODULE_TYPES = new Set([
   'canvas_library',
   'text_prompt',
   'image_generation',
+  'image_layering',
   'video_generation',
   'reverse_agent',
   'video_result',

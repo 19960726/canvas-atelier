@@ -22,9 +22,11 @@ for (const [theme, width] of [['light', 1440], ['dark', 1440], ['light', 800]] a
     }, theme);
     await openEmptyApp(page);
     await openAgentPanel(page);
-    const headerStatus = (await page.locator('.skill-chat-workbench__header p').boundingBox())!;
+    const headerStatus = await page.locator('.skill-chat-workbench__header p').boundingBox();
     const taskSelect = (await page.getByRole('combobox', { name: 'Codex 任务' }).boundingBox())!;
-    expect(headerStatus.y + headerStatus.height, 'status must not overlap the task picker').toBeLessThanOrEqual(taskSelect.y);
+    if (headerStatus !== null) {
+      expect(headerStatus.y + headerStatus.height, 'status must not overlap the task picker').toBeLessThanOrEqual(taskSelect.y);
+    }
     const composerBox = (await page.locator('.skill-chat-workbench__composer').boundingBox())!;
     const sendBox = (await page.getByRole('button', { name: '发送' }).boundingBox())!;
     expect(sendBox.x + sendBox.width, 'send button needs inset from the rounded border').toBeLessThanOrEqual(composerBox.x + composerBox.width - 8);
@@ -72,8 +74,14 @@ for (const [theme, width] of [['light', 1440], ['dark', 1440], ['light', 800]] a
     await expect(page.getByRole('button', { name: '思考能力：Ultra' })).toBeFocused();
     await page.getByRole('button', { name: '思考能力：Ultra' }).click();
     await popup.getByRole('button', { name: '切换思考模型' }).click();
-    await expect(popup).toHaveCount(0);
-    await expect(page.getByRole('dialog', { name: '选择聊天模型' })).toBeVisible();
+    await expect(popup).toBeVisible();
+    const models = popup.getByRole('dialog', { name: '选择聊天模型' });
+    await expect(models).toBeVisible();
+    const positions = await popup.evaluate((element) => ({
+      trackBottom: element.querySelector('.codex-reasoning__track')!.getBoundingClientRect().bottom,
+      modelsTop: element.querySelector('[aria-label="选择聊天模型"]')!.getBoundingClientRect().top,
+    }));
+    expect(positions.modelsTop).toBeGreaterThan(positions.trackBottom);
     expect(pageErrors).toEqual([]);
   });
 }

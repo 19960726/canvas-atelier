@@ -1,12 +1,14 @@
-import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent } from 'react';
+import { memo, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowUp, Bot, Copy, Diamond, Grid3X3, Plus, RotateCcw, SlidersHorizontal, X } from 'lucide-react';
+import { ArrowUp, Bot, Copy, Diamond, GripHorizontal, Grid3X3, History, Maximize2, Minus, PanelRight, Plus, RotateCcw, SlidersHorizontal, X } from 'lucide-react';
 import type { ChatSkillBridgeResult, CodexCliProfile, CodexReasoningEffort, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import type { ImageMentionValue, MentionableImageReference } from './ImageMentionComposer';
 import { reduceTransientPopover } from '../app/transient-popover';
+import { imageModelFamilyDisplayName, imageResolutionFamilyKey, listImageResolutionTiers, resolveImageResolutionRoute, type ImageResolutionTier } from '../app/image-resolution-routing';
 import { listAgentChatProfiles } from '../app/provider-profiles';
 import { ProviderOperationTimeoutError, withProviderOperationTimeout } from '../settings/provider-operation-timeout';
+import { resolveReverseAnalysisOperationTimeoutMs } from '../app/reverse-analysis-operation-budget';
 import { supportsAgentMediaReferences } from './agent-media-capability';
 import { readAgentChatClipboard } from './agent-chat-clipboard';
 import {
@@ -41,6 +43,7 @@ import { CodexReasoningPopover } from './CodexReasoningPopover';
 import { generationProfiles, readGenerationPreferences, writeGenerationPreferences, resolveGenerationPreference, type GenerationKind, type GenerationParameters, type GenerationPreferences } from './generation-preferences';
 import { assessCreativeGenerationPrompt, constrainCreativePlanKind, creativePlanningInstructions, creativeWorkflowSteps, parseCreativePlan, recoverEmptyCreativePlan, type CreativePlanOption } from './creative-plan';
 import { consumeQueuedGeneratedImageForAgent, listQueuedGeneratedImagesForAgent } from './generated-image-agent-transfer';
+import { AgentWindowControlsContext } from './FloatingAgentWindow';
 
 type SkillMessage = {
   readonly id: string;
@@ -89,6 +92,7 @@ type SkillRequestSummary = {
   readonly references: readonly { readonly assetId: string; readonly label: string }[];
   readonly status: SkillRequestStatus;
   readonly visualAnalysis?: boolean;
+  readonly reverseAnalysisDepth?: ReverseAnalysisDepth;
   readonly generationKind?: GenerationKind;
 };
 
@@ -115,7 +119,6 @@ const MEDIA_CAPABILITY_ERRORS = new Set([
   CODEX_MEDIA_CAPABILITY_ERROR,
 ]);
 const AGENT_REQUEST_TIMEOUT_MS = 195_000;
-const AGENT_VISUAL_REQUEST_TIMEOUT_MS = 315_000;
 const MAX_PROVIDER_SKILL_CHAT_MESSAGES = 48;
 const MAX_PROVIDER_SKILL_CHAT_MESSAGE_LENGTH = 8_000;
 const MAX_CODEX_SKILL_CHAT_MESSAGE_LENGTH = 16_000;
@@ -139,10 +142,11 @@ export function resolveAgentRequestTimeoutMs(
   provider: SkillChatRequest['provider'],
   reasoningEffort: CodexReasoningEffort,
   usesVisualAnalysis: boolean,
+  reverseDepth?: ReverseAnalysisDepth,
 ): number {
   return provider === 'codex'
     ? CODEX_REQUEST_TIMEOUTS_MS[reasoningEffort]
-    : usesVisualAnalysis ? AGENT_VISUAL_REQUEST_TIMEOUT_MS : AGENT_REQUEST_TIMEOUT_MS;
+    : usesVisualAnalysis ? resolveReverseAnalysisOperationTimeoutMs(reverseDepth) : AGENT_REQUEST_TIMEOUT_MS;
 }
 
 export function codexAnalysisDelayHint(effort: CodexReasoningEffort, elapsedSeconds: number): string | null {
@@ -262,6 +266,8 @@ export interface SkillChatWorkbenchProps {
 }
 
 const MAX_AGENT_PROJECT_MEMORY_IDS = 32;
+const EMPTY_REFERENCE_IMAGES: readonly SkillChatReferenceImage[] = [];
+const EMPTY_REFERENCE_VIDEOS: readonly SkillChatReferenceVideo[] = [];
 
 function clampProjectMemoryIds(
   selectedIds: readonly string[],
@@ -273,15 +279,15 @@ function clampProjectMemoryIds(
     .slice(0, MAX_AGENT_PROJECT_MEMORY_IDS);
 }
 
-export function SkillChatWorkbench({
+export const SkillChatWorkbench = memo(function SkillChatWorkbench({
   projectId,
   profiles,
   codexProfiles: localCodexProfiles = [],
   knowledgeBases,
   projectMemoryIds,
   reverseTimeline,
-  referenceImages = [],
-  referenceVideos = [],
+  referenceImages = EMPTY_REFERENCE_IMAGES,
+  referenceVideos = EMPTY_REFERENCE_VIDEOS,
   onImportReferenceImage,
   canvasActionTargets = [],
   canvasHasSelection,
@@ -292,6 +298,7 @@ export function SkillChatWorkbench({
   chat,
   cancelChat,
 }: SkillChatWorkbenchProps) {
+  const agentWindowControls = useContext(AgentWindowControlsContext);
   const chatProfiles = useMemo(
     () => listAgentChatProfiles(profiles),
     [profiles],
@@ -304,7 +311,7 @@ export function SkillChatWorkbench({
     () => [...new Set(projectMemoryIds)].slice(0, MAX_AGENT_PROJECT_MEMORY_IDS),
     [projectMemoryIds],
   );
-  const initialCollection = useRef(readAgentConversationCollection(projectId)).current;
+  const [initialCollection] = useState(() => readAgentConversationCollection(projectId));
   const initialConversation = initialCollection.conversations.find((conversation) => conversation.id === initialCollection.activeConversationId)
     ?? initialCollection.conversations[0]!;
   const [conversationCollection, setConversationCollection] = useState(initialCollection);
@@ -317,13 +324,15 @@ export function SkillChatWorkbench({
     ? clampProjectMemoryIds(initialConversation.projectMemoryIds, availableProjectMemoryIds)
     : [...availableProjectMemoryIds]);
   const [messages, setMessages] = useState<SkillMessage[]>(() => [...initialConversation.messages]);
+  const [showAllQuickTasks, setShowAllQuickTasks] = useState(false);
   const [composer, setComposer] = useState<ImageMentionValue>({ text: '', citations: [] });
   const composerSelectionRef = useRef<MediaMentionSelection | null>(null);
   const pendingComposerCaretRef = useRef<number | null>(null);
   const [importedReferenceImages, setImportedReferenceImages] = useState<SkillChatReferenceImage[]>([]);
-  const referenceCatalog = useRef<ConversationReferenceCatalogEntry[]>(
-    createConversationReferenceCatalog(initialConversation.messages, referenceImages),
+  const [initialReferenceCatalog] = useState(
+    () => createConversationReferenceCatalog(initialConversation.messages, referenceImages),
   );
+  const referenceCatalog = useRef<ConversationReferenceCatalogEntry[]>(initialReferenceCatalog);
   const referenceFileInput = useRef<HTMLInputElement>(null);
   const [, setReferenceImportRevision] = useState(0);
   const draft = composer.text;
@@ -331,11 +340,34 @@ export function SkillChatWorkbench({
   const [activePopover, dispatchPopover] = useReducer(reduceTransientPopover, null);
   const mentionOpen = activePopover === 'reference';
   const [browseProjectImages, setBrowseProjectImages] = useState(false);
+  const [referenceQuery, setReferenceQuery] = useState('');
+  const [modelQuery, setModelQuery] = useState('');
+  const referenceMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (!mentionOpen) setBrowseProjectImages(false); }, [mentionOpen]);
-  const routeSheetOpen = activePopover === 'model';
   const skillLibraryOpen = activePopover === 'knowledge';
+  const librarySheetRef = useRef<HTMLElement>(null);
+  const composerFormRef = useRef<HTMLFormElement>(null);
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryCategory, setLibraryCategory] = useState<'common' | 'favorite' | 'mine'>('common');
+  useLayoutEffect(() => {
+    if (!skillLibraryOpen) return;
+    const sheet = librarySheetRef.current;
+    const composerForm = composerFormRef.current;
+    const host = sheet?.offsetParent;
+    if (!sheet || !composerForm || !(host instanceof HTMLElement)) return;
+    const positionSheet = () => {
+      const hostBounds = host.getBoundingClientRect();
+      const composerBounds = composerForm.getBoundingClientRect();
+      sheet.style.setProperty('--library-anchor-bottom', `${Math.max(0, hostBounds.bottom - composerBounds.top + 10)}px`);
+      sheet.style.setProperty('--library-available-height', `${Math.max(0, composerBounds.top - hostBounds.top - 64)}px`);
+    };
+    positionSheet();
+    const observer = new ResizeObserver(positionSheet);
+    observer.observe(host);
+    observer.observe(composerForm);
+    globalThis.addEventListener('resize', positionSheet);
+    return () => { observer.disconnect(); globalThis.removeEventListener('resize', positionSheet); };
+  }, [skillLibraryOpen]);
   const [status, setStatus] = useState<'idle' | 'sending'>('idle');
   const [analysisElapsedSeconds, setAnalysisElapsedSeconds] = useState(0);
   const [agentMode, setAgentMode] = useState<'chat' | 'original' | 'codex'>(initialConversation.mode);
@@ -377,6 +409,7 @@ export function SkillChatWorkbench({
   const resultImageCloseRef = useRef<HTMLButtonElement>(null);
   const resultImageOpenerRef = useRef<HTMLButtonElement | null>(null);
   const requestId = useRef(0);
+  const activeSendRequestId = useRef<number | null>(null);
   const activeLocalCodexRequestId = useRef<string | null>(null);
   const cancelChatRef = useRef(cancelChat);
   cancelChatRef.current = cancelChat;
@@ -388,6 +421,15 @@ export function SkillChatWorkbench({
   const pendingPasteMarkers = useRef(new Set<string>());
   const codexProfiles = useMemo<AgentChatProfile[]>(() => [...localCodexProfiles], [localCodexProfiles]);
   const visibleChatProfiles = agentMode === 'codex' ? codexProfiles : chatProfiles;
+  const filteredVisibleChatProfiles = useMemo(() => {
+    const query = modelQuery.trim().toLocaleLowerCase();
+    if (!query) return visibleChatProfiles;
+    return visibleChatProfiles.filter((profile) => (
+      `${profile.displayName} ${profile.modelId ?? ''} ${profile.modelRoute} ${profile.provider}`
+        .toLocaleLowerCase()
+        .includes(query)
+    ));
+  }, [modelQuery, visibleChatProfiles]);
   const selectedProfile = visibleChatProfiles.find((profile) => profile.modelRoute === modelRoute);
   const isLocalCodexProfile = selectedProfile?.provider === 'codex';
   const supportsImageMentions = isLocalCodexProfile || supportsAgentMediaReferences(selectedProfile, agentMode);
@@ -430,6 +472,8 @@ export function SkillChatWorkbench({
       if (target instanceof Element && target.closest([
         '.skill-chat-workbench__sheet',
         '.skill-chat-workbench__mention-menu',
+        '.agent-history-popover',
+        '[data-agent-history-trigger]',
         '.codex-reasoning',
         '[data-testid="knowledge-base-trigger"]',
         '[data-testid="agent-model-trigger"]',
@@ -448,6 +492,9 @@ export function SkillChatWorkbench({
       document.removeEventListener('pointerdown', closeOnPointerDown);
       window.removeEventListener('keydown', closeOnEscape);
     };
+  }, [activePopover]);
+  useEffect(() => {
+    if (activePopover !== 'model' && activePopover !== 'reasoning-model') setModelQuery('');
   }, [activePopover]);
   useEffect(() => {
     if (activeResultImage === null) return undefined;
@@ -514,19 +561,20 @@ export function SkillChatWorkbench({
   ], [allReferenceImages, allReferenceVideos]);
   const canonicalReferences = useRef({ images: allReferenceImages, videos: allReferenceVideos });
   canonicalReferences.current = { images: allReferenceImages, videos: allReferenceVideos };
-  const mentionReferences: SkillChatMentionReference[] = canonicalMentionReferences(
-    canonicalReferences.current,
-    referenceCatalog.current,
+  const currentReferenceCatalog = referenceCatalog.current;
+  const mentionReferences = useMemo(
+    () => canonicalMentionReferences({ images: allReferenceImages, videos: allReferenceVideos }, currentReferenceCatalog),
+    [allReferenceImages, allReferenceVideos, currentReferenceCatalog],
   );
   const mentionMenuReferences = useMemo(() => {
-    if (browseProjectImages) return mentionReferences;
+    if (browseProjectImages) return canonicalMentionReferences({ images: allReferenceImages, videos: allReferenceVideos }, appendConversationReferenceCatalog(currentReferenceCatalog, allReferenceImages.map((image) => image.assetId)));
     const activeIds = new Set([
       ...importedReferenceImages.map((image) => image.assetId),
       ...composer.citations.map((citation) => citation.assetId),
       ...messages.flatMap((message) => message.request?.references.map((reference) => reference.assetId) ?? []),
     ]);
     return mentionReferences.filter((reference) => activeIds.has(reference.assetId));
-  }, [browseProjectImages, mentionReferences, importedReferenceImages, composer.citations, messages]);
+  }, [browseProjectImages, mentionReferences, importedReferenceImages, composer.citations, messages, allReferenceImages, allReferenceVideos, currentReferenceCatalog]);
   const mentionPreviews = useMemo(() => mentionReferences.map((reference) => ({
     token: skillChatMentionToken(reference.kind, reference.mentionPosition),
     label: reference.label,
@@ -607,6 +655,15 @@ export function SkillChatWorkbench({
       if (activeLocalCodexRequestId.current === activeRequestId) activeLocalCodexRequestId.current = null;
     }
   };
+  const finishCodexCancellation = (cancellation: Promise<boolean>, updateCancelledMessages?: () => void) => {
+    const epoch = conversationEpoch.current;
+    const generation = requestId.current;
+    void cancellation.catch(() => false).finally(() => {
+      if (!mounted.current || conversationEpoch.current !== epoch || requestId.current !== generation) return;
+      updateCancelledMessages?.();
+      setStatus('idle');
+    });
+  };
   const toggleImageMention = (reference: SkillChatMentionReference) => {
     if (!supportsImageMentions) {
       setError(imageMentionCapabilityError);
@@ -641,6 +698,8 @@ export function SkillChatWorkbench({
     }
     if (allReferenceImages.length > 0) {
       setError(null);
+      setBrowseProjectImages(true);
+      setReferenceQuery('');
       dispatchPopover({ type: 'open', id: 'reference' });
     }
   };
@@ -990,7 +1049,7 @@ export function SkillChatWorkbench({
     const conversation = conversationCollection.conversations.find((candidate) => candidate.id === conversationId);
     if (conversation === undefined || conversation.id === activeConversationId) return;
     const cancellingCodex = activeLocalCodexRequestId.current !== null;
-    if (cancellingCodex) void cancelActiveCodexRequest().finally(() => { if (mounted.current) setStatus('idle'); });
+    const cancellation = cancellingCodex ? cancelActiveCodexRequest() : null;
     invalidatePastedReferences();
     requestId.current += 1;
     conversationEpoch.current += 1;
@@ -1014,11 +1073,12 @@ export function SkillChatWorkbench({
     setCanvasActionRunning(false);
     setError(null);
     dispatchPopover({ type: 'close-external' });
+    if (cancellation !== null) finishCodexCancellation(cancellation);
   };
 
   const createConversation = () => {
     const cancellingCodex = activeLocalCodexRequestId.current !== null;
-    if (cancellingCodex) void cancelActiveCodexRequest().finally(() => { if (mounted.current) setStatus('idle'); });
+    const cancellation = cancellingCodex ? cancelActiveCodexRequest() : null;
     invalidatePastedReferences();
     requestId.current += 1;
     conversationEpoch.current += 1;
@@ -1052,6 +1112,7 @@ export function SkillChatWorkbench({
     setCanvasActionRunning(false);
     setError(null);
     dispatchPopover({ type: 'close-external' });
+    if (cancellation !== null) finishCodexCancellation(cancellation);
   };
 
   const send = async () => {
@@ -1066,7 +1127,8 @@ export function SkillChatWorkbench({
       invalidatePastedReferences();
       return;
     }
-    if (!modelRoute || selectedProfile === undefined || !hasSupportedReasoningEffort || status === 'sending') return;
+    if (!modelRoute || selectedProfile === undefined || !hasSupportedReasoningEffort || status === 'sending'
+      || activeSendRequestId.current === requestId.current) return;
     invalidatePastedReferences();
     const selectedReferences = resolveSelectedPasteReferences(cleanComposer.citations, mentionReferences);
     if (selectedReferences.length > 0 && !supportsImageMentions) {
@@ -1104,6 +1166,7 @@ export function SkillChatWorkbench({
       references: selectedReferences.map(({ assetId, label }) => ({ assetId, label })),
       status: 'sending',
       visualAnalysis,
+      ...(visualAnalysis ? { reverseAnalysisDepth } : {}),
       ...(planning ? { generationKind: generationPreferences.kind } : {}),
     };
     const previousMessage = messages[messages.length - 1];
@@ -1122,6 +1185,7 @@ export function SkillChatWorkbench({
     const activeKnowledgeBaseIds = new Set(availableKnowledge.map((knowledgeBase) => knowledgeBase.knowledgeBaseId));
     const activeRequestId = requestId.current + 1;
     requestId.current = activeRequestId;
+    activeSendRequestId.current = activeRequestId;
     const localCodexRequestId = selectedProfile.provider === 'codex' ? createMessageId() : undefined;
     if (localCodexRequestId !== undefined) activeLocalCodexRequestId.current = localCodexRequestId;
     dispatchPopover({ type: 'close-external' });
@@ -1150,6 +1214,7 @@ export function SkillChatWorkbench({
         selectedProfile.provider,
         reasoningEffort,
         selectedReferences.length > 0 || visualAnalysis,
+        visualAnalysis ? reverseAnalysisDepth : undefined,
       ));
       if (requestId.current !== activeRequestId) return;
       setMessages((current) => [...current.map((message) => message.id === userMessage.id && message.request !== undefined
@@ -1169,7 +1234,7 @@ export function SkillChatWorkbench({
         } catch {
           // The UI still ends the timed-out request even if the process already exited.
         } finally {
-          if (activeLocalCodexRequestId.current === localCodexRequestId) activeLocalCodexRequestId.current = null;
+          if (requestId.current === activeRequestId && activeLocalCodexRequestId.current === localCodexRequestId) activeLocalCodexRequestId.current = null;
         }
       }
       if (requestId.current !== activeRequestId) return;
@@ -1180,7 +1245,8 @@ export function SkillChatWorkbench({
         : message));
       setError(skillChatErrorMessage(caught));
     } finally {
-      if (localCodexRequestId !== undefined && activeLocalCodexRequestId.current === localCodexRequestId) {
+      if (activeSendRequestId.current === activeRequestId) activeSendRequestId.current = null;
+      if (requestId.current === activeRequestId && localCodexRequestId !== undefined && activeLocalCodexRequestId.current === localCodexRequestId) {
         activeLocalCodexRequestId.current = null;
       }
     }
@@ -1211,9 +1277,10 @@ export function SkillChatWorkbench({
     } catch (error) { setError(error instanceof Error ? error.message : '请检查生成偏好。'); }
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (pendingCanvasAction === null) return;
-    confirmationCardRef.current?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    const stream = messagesStreamRef.current;
+    if (stream !== null) stream.scrollTop = stream.scrollHeight;
   }, [pendingCanvasAction]);
 
   useEffect(() => {
@@ -1299,7 +1366,11 @@ export function SkillChatWorkbench({
       const parameters: GenerationParameters = { ...resolved.parameters };
       if (pendingCanvasResolution.length > 0) parameters.resolution = pendingCanvasResolution;
       else delete parameters.resolution;
-      const execution = await executeCanvasAction({ ...action, modelRoute: resolved.profile.modelRoute, parameters });
+      const routedProfile = kind === 'image' && parameters.resolution
+        ? resolveImageResolutionRoute(generationProfiles(profiles, 'image', action.referenceAssetIds?.length ?? 0), resolved.profile, parameters.resolution as ImageResolutionTier)
+        : resolved.profile;
+      if (!routedProfile) throw new Error('所选清晰度没有可用的模型路由，请重新选择。');
+      const execution = await executeCanvasAction({ ...action, modelRoute: routedProfile.modelRoute, parameters });
       if (!mounted.current || epoch !== conversationEpoch.current) return;
       const started = typeof execution === 'boolean' ? execution : execution.started;
       const generationNodeId = typeof execution === 'boolean' ? action.nodeId : execution.generationNodeId;
@@ -1368,6 +1439,9 @@ export function SkillChatWorkbench({
     : pendingCanvasAction.kind === 'reverse_agent'
       ? profiles.filter((profile) => profile.capabilityStatus !== 'incomplete' && profile.capabilities.includes('reverse_prompt'))
       : generationProfiles(profiles, pendingCanvasActionKind, pendingCanvasAction?.referenceAssetIds?.length ?? 0);
+  const pendingCanvasVisibleProfiles = pendingCanvasAction?.kind === 'image_generation'
+    ? uniqueImageFamilyProfiles(pendingCanvasActionProfiles)
+    : pendingCanvasActionProfiles;
   const pendingCanvasPreference = pendingCanvasAction === null || pendingCanvasAction.kind === 'reverse_agent'
     ? undefined
     : generationPreferences[pendingCanvasActionKind];
@@ -1375,11 +1449,65 @@ export function SkillChatWorkbench({
     || pendingCanvasActionProfiles.some((profile) => profile.modelRoute === pendingCanvasPreference.modelRoute);
   const pendingCanvasModelLocked = pendingCanvasPreference?.mode === 'fixed' && pendingCanvasFixedRouteIsCompatible;
   const pendingCanvasSelectedProfile = pendingCanvasActionProfiles.find((profile) => profile.modelRoute === pendingCanvasModelRoute);
+  const pendingCanvasVisibleSelection = pendingCanvasAction?.kind === 'image_generation' && pendingCanvasSelectedProfile
+    ? pendingCanvasVisibleProfiles.find((profile) => profile.provider === pendingCanvasSelectedProfile.provider && imageResolutionFamilyKey(profile) === imageResolutionFamilyKey(pendingCanvasSelectedProfile))
+    : pendingCanvasSelectedProfile;
   const pendingCanvasResolutionOptions = pendingCanvasAction?.kind === 'video_generation'
     ? pendingCanvasSelectedProfile?.constraints?.video?.resolutions ?? []
     : pendingCanvasAction?.kind === 'image_generation'
-      ? pendingCanvasSelectedProfile?.constraints?.image?.resolutions ?? []
+      ? listImageResolutionTiers(pendingCanvasActionProfiles, pendingCanvasSelectedProfile)
       : [];
+
+  const messageDetails = useMemo(() => messages.map((message, messageIndex) => {
+    const precedingMessage = messageIndex > 0 ? messages[messageIndex - 1] : undefined;
+    const messageMode = message.mode ?? agentMode;
+    const parsedCreativePlan = message.role === 'assistant' && messageMode === 'original'
+      ? parseCreativePlan(message.content)
+      : null;
+    const requestedGenerationKind = precedingMessage?.role === 'user'
+      ? precedingMessage.request?.generationKind
+      : undefined;
+    const constrainedCreativePlan = parsedCreativePlan !== null && requestedGenerationKind !== undefined
+      ? constrainCreativePlanKind(parsedCreativePlan, requestedGenerationKind)
+      : null;
+    const creativePlan = message.role === 'assistant' && messageMode === 'original'
+      ? constrainedCreativePlan?.plan ?? parsedCreativePlan ?? (precedingMessage?.role === 'user'
+        ? recoverEmptyCreativePlan(
+          message.content,
+          precedingMessage.content,
+          requestedGenerationKind === undefined ? generationPreferences : { ...generationPreferences, kind: requestedGenerationKind },
+          profiles,
+          precedingMessage.request?.references.length ?? 0,
+        )
+        : null)
+      : null;
+    const reverseWorkflowOffer = precedingMessage?.role === 'user'
+      && precedingMessage.request?.visualAnalysis === true
+      && isReverseAnalysisIntent(precedingMessage.content);
+    const requestedWorkflowOffer = precedingMessage?.role === 'user'
+      && messageMode === 'codex'
+      && isWorkflowCreationIntent(precedingMessage.content, precedingMessage.request?.references.length ?? 0);
+    const workflowReferences = precedingMessage?.request?.references.map((reference, index) => ({
+      ...reference,
+      mention: `@图片${index + 1}`,
+    })) ?? [];
+    const reverseAnalysis = reverseWorkflowOffer && message.role === 'assistant'
+      ? parseReverseAnalysisResponse(message.content, workflowReferences.map((reference) => ({
+        ...reference,
+        responsibility: '待模型确认',
+        inherit: [],
+        replace: [],
+        doNotCopy: [],
+      })))
+      : null;
+    const workflowSummary = message.role === 'assistant' && messageMode === 'codex'
+      ? parseWorkflowPlanningSummary(message.content)
+      : null;
+    return {
+      message, precedingMessage, messageMode, requestedGenerationKind, creativePlan,
+      reverseWorkflowOffer, requestedWorkflowOffer, workflowReferences, reverseAnalysis, workflowSummary,
+    };
+  }), [messages, agentMode, generationPreferences, profiles]);
 
   const renderSubmittedResult = (nodeId: string) => {
             const result = canvasActionResults.find((item) => item.nodeId === nodeId);
@@ -1402,6 +1530,63 @@ export function SkillChatWorkbench({
             </section>;
           };
 
+  const prepareQuickTask = (text: string) => {
+    // Keep explicitly selected images attached when choosing a task template.
+    const tokens = composer.citations.flatMap((citation) => {
+      const reference = mentionReferences.find((item) => item.assetId === citation.assetId);
+      return reference ? [skillChatMentionToken(reference.kind, reference.mentionPosition)] : [];
+    });
+    setComposer((current) => ({ ...current, text: `${text}${tokens.length ? ` ${tokens.join(' ')}` : ''}` }));
+  };
+  const filteredMentionReferences = useMemo(() => mentionMenuReferences.filter((reference) => `${reference.label} ${skillChatMentionToken(reference.kind, reference.mentionPosition)}`.toLocaleLowerCase().includes(referenceQuery.trim().toLocaleLowerCase())), [mentionMenuReferences, referenceQuery]);
+  const changeAgentMode = (mode: typeof agentMode) => {
+    const cancellation = mode !== agentMode && activeLocalCodexRequestId.current !== null
+      ? cancelActiveCodexRequest()
+      : null;
+    if (mode !== agentMode) invalidateActivePlan();
+    invalidatePastedReferences();
+    if (mode !== agentMode) setError(null);
+    setAgentMode(mode);
+    dispatchPopover({ type: 'close-external' });
+    if (cancellation !== null) finishCodexCancellation(cancellation);
+    const profilesForMode = mode === 'codex' ? codexProfiles : chatProfiles;
+    if (profilesForMode.length > 0 && !profilesForMode.some((profile) => profile.modelRoute === modelRoute)) {
+      setModelRoute(profilesForMode.find((profile) => profile.modelRoute === 'chat-default')?.modelRoute ?? profilesForMode[0]?.modelRoute);
+    }
+  };
+
+  const showReverseDepth = supportsImageMentions && selectedProfile?.provider !== 'codex' && (composer.citations.length > 0 || status === 'sending');
+  const modelPickerPanel = (activePopover === 'model' || activePopover === 'reasoning-model') && (
+    <section className="skill-chat-workbench__sheet" data-anchor="reasoning" role="dialog" aria-label="选择聊天模型">
+      <header>
+        <div><strong>选择聊天模型</strong><p>仅显示已配置的聊天路线。</p></div>
+        <button type="button" aria-label="关闭模型选择" onClick={() => dispatchPopover({ type: 'close-external' })}>关闭</button>
+      </header>
+      <label className="skill-chat-workbench__model-search">
+        <span aria-hidden="true">⌕</span>
+        <input type="search" aria-label="搜索聊天模型" value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} placeholder="搜索名称或模型 ID" />
+      </label>
+      <div className="skill-chat-workbench__route-list" role="list">
+        {filteredVisibleChatProfiles.map((profile) => {
+          const selected = profile.modelRoute === modelRoute;
+          return <div key={profile.modelRoute} role="listitem"><button type="button" aria-label={`使用 ${providerModelLabel(profile, chatProfiles)}`} aria-pressed={selected} className={selected ? 'is-selected' : undefined} onClick={() => {
+            const cancellation = profile.modelRoute !== modelRoute && activeLocalCodexRequestId.current !== null ? cancelActiveCodexRequest() : null;
+            if (profile.modelRoute !== modelRoute) invalidateActivePlan();
+            invalidatePastedReferences();
+            setModelRoute(profile.modelRoute);
+            dispatchPopover({ type: 'close-external' });
+            if (cancellation !== null) finishCodexCancellation(cancellation);
+          }}><strong>{providerModelLabel(profile, chatProfiles)}</strong><span>{profile.provider === 'codex'
+            ? selected ? '当前选择 · 本机 Codex 模型目录' : '本机 Codex · 来自已安装模型目录'
+            : selected ? '当前选择' : '选择此模型'}</span></button></div>;
+        })}
+        {filteredVisibleChatProfiles.length === 0 && <p role="status">{visibleChatProfiles.length === 0
+          ? agentMode === 'codex' ? '未发现已配置的 Codex 模型。' : '尚未配置聊天模型。'
+          : '没有匹配的模型。'}</p>}
+      </div>
+    </section>
+  );
+
   return (
     <section
       className="skill-chat-workbench"
@@ -1419,11 +1604,24 @@ export function SkillChatWorkbench({
             : visibleChatProfiles.length > 0 ? '对话就绪' : '等待模型配置'}</p>
         </div>
         <div className="skill-chat-workbench__header-actions">
+          {agentWindowControls && <button
+            type="button"
+            className="skill-chat-workbench__window-drag"
+            aria-label="拖动 Agent 窗口"
+            title="拖动移动 · 方向键微调位置"
+            onPointerDown={agentWindowControls.dragPointerDown}
+            onPointerMove={agentWindowControls.dragPointerMove}
+            onPointerUp={agentWindowControls.dragPointerEnd}
+            onPointerCancel={agentWindowControls.dragPointerEnd}
+            onLostPointerCapture={agentWindowControls.dragPointerEnd}
+            onKeyDown={agentWindowControls.dragKeyDown}
+          ><GripHorizontal size={15} /></button>}
           <select aria-label="Codex 任务" value={activeConversationId} onChange={(event) => activateConversation(event.target.value)}>
             {[...conversationCollection.conversations]
               .sort((left, right) => right.updatedAt - left.updatedAt)
               .map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
           </select>
+          <button type="button" aria-label="历史对话" title="历史对话" data-agent-history-trigger aria-expanded={activePopover === 'conversation-history'} onClick={() => dispatchPopover({ type: 'toggle', id: 'conversation-history' })}><History size={15} /></button>
           <button
             className="skill-chat-workbench__new-chat"
             data-testid="agent-new-chat"
@@ -1431,57 +1629,27 @@ export function SkillChatWorkbench({
             aria-label="新建任务"
             onClick={createConversation}
           ><span aria-hidden="true">+</span><span className="sr-only">新对话</span></button>
-          {onClose && <button className="skill-chat-workbench__close" type="button" aria-label="关闭 Codex Agent" onClick={onClose}><X size={15} /></button>}
+          {agentWindowControls && <>
+            <button type="button" data-testid="agent-presentation-toggle" aria-label={agentWindowControls.mode === 'docked' ? '切换为浮窗' : '停靠到侧边'} title={agentWindowControls.mode === 'docked' ? '切换为浮窗' : '停靠到侧边'} onClick={agentWindowControls.toggleMode}>{agentWindowControls.mode === 'docked' ? <Maximize2 size={15} /> : <PanelRight size={15} />}</button>
+            <button type="button" aria-label={agentWindowControls.minimized ? '展开 Agent' : '最小化 Agent'} title={agentWindowControls.minimized ? '展开' : '最小化'} onClick={agentWindowControls.toggleMinimized}>{agentWindowControls.minimized ? <Maximize2 size={15} /> : <Minus size={15} />}</button>
+            <button className="skill-chat-workbench__close" type="button" data-testid="agent-panel-close" aria-label="关闭 Novus Agent" title="关闭" onClick={agentWindowControls.close}><X size={15} /></button>
+          </>}
+          {!agentWindowControls && onClose && <button className="skill-chat-workbench__close" type="button" aria-label="关闭 Codex Agent" onClick={onClose}><X size={15} /></button>}
         </div>
       </header>
 
-      {routeSheetOpen && (
-        <section className="skill-chat-workbench__sheet" data-anchor="composer-footer" role="dialog" aria-label="选择聊天模型">
-          <header>
-            <div>
-              <strong>选择聊天模型</strong>
-              <p>仅显示已配置的聊天路线。</p>
-            </div>
-            <button type="button" aria-label="关闭模型选择" onClick={() => dispatchPopover({ type: 'close-external' })}>关闭</button>
-          </header>
-          <div className="skill-chat-workbench__route-list" role="list">
-            {visibleChatProfiles.map((profile) => {
-              const selected = profile.modelRoute === modelRoute;
-              return (
-                <div key={profile.modelRoute} role="listitem">
-                  <button
-                    type="button"
-                    aria-label={`使用 ${providerModelLabel(profile, chatProfiles)}`}
-                    aria-pressed={selected}
-                    className={selected ? 'is-selected' : undefined}
-                    onClick={() => {
-                      if (profile.modelRoute !== modelRoute && activeLocalCodexRequestId.current !== null) {
-                        void cancelActiveCodexRequest().finally(() => { if (mounted.current) setStatus('idle'); });
-                      }
-                      if (profile.modelRoute !== modelRoute) invalidateActivePlan();
-                      invalidatePastedReferences();
-                      setModelRoute(profile.modelRoute);
-                      dispatchPopover({ type: 'close-external' });
-                    }}
-                  >
-                    <strong>{providerModelLabel(profile, chatProfiles)}</strong>
-                    <span>{profile.provider === 'codex'
-                      ? selected ? '当前选择 · ChatGPT / API Key 调用时验证' : '支持 ChatGPT / API Key'
-                      : selected ? '当前选择' : '选择此模型'}</span>
-                  </button>
-                </div>
-              );
-            })}
-            {visibleChatProfiles.length === 0 && <p>未发现已配置的 Codex 模型。</p>}
-          </div>
-        </section>
-      )}
+      {activePopover === 'conversation-history' && <section className="agent-history-popover" role="dialog" aria-label="历史对话">
+        <header><div className="agent-history-popover__heading"><History size={14} aria-hidden="true" /><strong>历史对话</strong></div><button type="button" aria-label="关闭历史对话" onClick={() => dispatchPopover({ type: 'close-external' })}><X size={14} /></button></header>
+        <div className="agent-history-popover__list">
+          {[...conversationCollection.conversations].sort((left, right) => right.updatedAt - left.updatedAt).map((conversation) => <button key={conversation.id} type="button" aria-current={conversation.id === activeConversationId ? 'true' : undefined} onClick={() => { activateConversation(conversation.id); dispatchPopover({ type: 'close-external' }); }}><span className="agent-history-popover__item-icon" aria-hidden="true"><History size={13} /></span><span className="agent-history-popover__item-copy"><strong>{conversation.title}</strong><small>{new Date(conversation.updatedAt).toLocaleString()} · {conversation.messages.length} 条消息</small></span><span className="agent-history-popover__item-arrow" aria-hidden="true">↗</span></button>)}
+        </div>
+      </section>}
 
-      {activePopover === 'generation' && <GenerationPreferencesSheet value={generationPreferences} profiles={profiles} onChange={changeGenerationPreferences} onClose={() => dispatchPopover({ type: 'close-external' })} />}
+
       {skillLibraryOpen && (
-        <section className="skill-chat-workbench__sheet skill-chat-workbench__sheet--library" data-anchor="composer-footer" role="dialog" aria-label="选择知识库">
+        <section ref={librarySheetRef} className="skill-chat-workbench__sheet skill-chat-workbench__sheet--library" data-anchor="composer-footer" role="dialog" aria-label="选择知识库">
           <header>
-            <div><strong>选择知识库</strong><p>Knowledge library · 可多选</p></div>
+            <div><strong>选择知识库</strong><p>可多选，用于当前任务上下文</p></div>
             <button type="button" aria-label="关闭知识库" onClick={() => dispatchPopover({ type: 'close-external' })}>关闭</button>
           </header>
           <label className="skill-chat-workbench__library-search">
@@ -1495,6 +1663,7 @@ export function SkillChatWorkbench({
           </div>
           <span className="skill-chat-workbench__library-count">选择 {selectedKnowledgeBaseIds.length} 个知识库</span>
           <div className="skill-chat-workbench__knowledge-choice-list" data-testid="knowledge-library-toolbar">
+            {filteredKnowledge.length === 0 && availableProjectMemoryIds.length === 0 && <p role="status">没有匹配的知识库</p>}
             {filteredKnowledge.map((item) => {
               const available = item.knowledgeBase !== undefined;
               const selected = selectedKnowledgeBaseIds.includes(item.knowledgeBaseId);
@@ -1595,82 +1764,51 @@ export function SkillChatWorkbench({
               ) : (
                 <>
                   <div className="skill-chat-workbench__intro skill-chat-workbench__intro--codex">
-                    <i aria-hidden="true"><Bot size={22} strokeWidth={1.6} /></i>
+                    <span className="canvas-ai-orb skill-chat-workbench__intro-orb" aria-hidden="true"><i /></span>
                     <strong>{agentMode === 'codex' ? 'Codex 画布助手' : agentMode === 'original' ? '创作 Agent' : '开始对话'}</strong>
                   </div>
               {chatProfiles.length > 0 && (
-                <div className="skill-chat-workbench__suggestions" aria-label="推荐 Skill">
-                  <button type="button" aria-label="梳理创作目标" onClick={() => setComposer({ text: '请帮我梳理创作目标、约束条件和下一步方案。', citations: [] })}>
+                <div className="skill-chat-workbench__suggestions" aria-label="推荐 Skill" data-expanded={showAllQuickTasks}>
+                  <button type="button" aria-label="梳理创作目标" onClick={() => prepareQuickTask('请帮我梳理创作目标、约束条件和下一步方案。')}>
                     <span className="skill-chat-workbench__suggestion-icon">⌁</span>
                     <span><strong>产品分析</strong><small>点击填入任务</small></span>
                   </button>
-                  <button type="button" aria-label="生成视觉方向" onClick={() => setComposer({ text: '为当前画布生成一套清晰的视觉方向与构图建议。', citations: [] })}>
+                  <button type="button" aria-label="生成视觉方向" onClick={() => prepareQuickTask('为当前画布生成一套清晰的视觉方向与构图建议。')}>
                     <span className="skill-chat-workbench__suggestion-icon">✦</span>
                     <span><strong>提示词优化</strong><small>点击填入任务</small></span>
                   </button>
-                  <button type="button" aria-label="调用知识库" onClick={() => setComposer({ text: '检查当前项目的知识库上下文，并给出可复用的创作建议。', citations: [] })}>
+                  <button type="button" aria-label="调用知识库" onClick={() => prepareQuickTask('检查当前项目的知识库上下文，并给出可复用的创作建议。')}>
                     <span className="skill-chat-workbench__suggestion-icon">◌</span>
                     <span><strong>生成方案</strong><small>点击填入任务</small></span>
                   </button>
-                  <button type="button" aria-label="反推参考图" onClick={() => setComposer({ text: '根据当前参考图反推一版可编辑的提示词。', citations: [] })}>
+                  <button type="button" aria-label="反推参考图" onClick={() => prepareQuickTask('根据当前参考图反推一版可编辑的提示词。')}>
                     <span className="skill-chat-workbench__suggestion-icon">◈</span>
                     <span><strong>知识库检索</strong><small>点击填入任务</small></span>
                   </button>
+                  <button type="button" aria-label="原创剧本与故事改编" onClick={() => prepareQuickTask('请根据我提供的故事或主题设计原创剧本。先确认受众、时长与人物，再给出可选择的叙事方案；保留我指定的角色与情节。')}><span className="skill-chat-workbench__suggestion-icon">✎</span><span><strong>原创剧本与故事改编</strong></span></button>
+                  <button type="button" aria-label="批量优化提示词" onClick={() => prepareQuickTask('请逐条优化我提供的提示词，按原编号返回优化前后对照，统一角色、场景与风格，保留产品结构和明确约束。先给方案，不直接生成。')}><span className="skill-chat-workbench__suggestion-icon">≡</span><span><strong>批量优化提示词</strong></span></button>
+                  <button type="button" aria-label="一句话生成分镜" onClick={() => prepareQuickTask('把我的一句话创意扩展为可执行分镜，逐镜列出时长、景别、机位、运镜、主体动作、衔接及生成提示词。先确认总时长和风格，再提供方案供我选择。')}><span className="skill-chat-workbench__suggestion-icon">▤</span><span><strong>一句话生成分镜</strong></span></button>
+                  <button
+                    type="button"
+                    className="skill-chat-workbench__suggestions-more"
+                    data-testid="agent-more-suggestions"
+                    aria-expanded={showAllQuickTasks}
+                    onClick={() => setShowAllQuickTasks((current) => !current)}
+                  >{showAllQuickTasks ? '收起模板' : '更多创作模板'}</button>
                 </div>
               )}
                 </>
               )}
             </section>
           )}
-          {messages.map((message, messageIndex) => {
-            const precedingMessage = messageIndex > 0 ? messages[messageIndex - 1] : undefined;
-            const messageMode = message.mode ?? agentMode;
-            const parsedCreativePlan = message.role === 'assistant' && messageMode === 'original'
-              ? parseCreativePlan(message.content)
-              : null;
-            const requestedGenerationKind = precedingMessage?.role === 'user'
-              ? precedingMessage.request?.generationKind
-              : undefined;
-            const constrainedCreativePlan = parsedCreativePlan !== null && requestedGenerationKind !== undefined
-              ? constrainCreativePlanKind(parsedCreativePlan, requestedGenerationKind)
-              : null;
-            const creativePlan = message.role === 'assistant' && messageMode === 'original'
-              ? constrainedCreativePlan?.plan ?? parsedCreativePlan ?? (precedingMessage?.role === 'user'
-                ? recoverEmptyCreativePlan(
-                  message.content,
-                  precedingMessage.content,
-                  requestedGenerationKind === undefined ? generationPreferences : { ...generationPreferences, kind: requestedGenerationKind },
-                  profiles,
-                  precedingMessage.request?.references.length ?? 0,
-                )
-                : null)
-              : null;
-            const reverseWorkflowOffer = precedingMessage?.role === 'user'
-              && precedingMessage.request?.visualAnalysis === true
-              && isReverseAnalysisIntent(precedingMessage.content);
-            const requestedWorkflowOffer = precedingMessage?.role === 'user'
-              && messageMode === 'codex'
-              && isWorkflowCreationIntent(precedingMessage.content, precedingMessage.request?.references.length ?? 0);
+          {messageDetails.map(({
+            message, precedingMessage, messageMode, requestedGenerationKind, creativePlan,
+            reverseWorkflowOffer, requestedWorkflowOffer, workflowReferences, reverseAnalysis, workflowSummary,
+          }) => {
             const workflowOffer = message.role === 'assistant'
               && precedingMessage?.role === 'user'
               && (reverseWorkflowOffer || requestedWorkflowOffer)
               && !dismissedWorkflowOfferIds.includes(message.id);
-            const workflowReferences = precedingMessage?.request?.references.map((reference, index) => ({
-              ...reference,
-              mention: `@图片${index + 1}`,
-            })) ?? [];
-            const reverseAnalysis = reverseWorkflowOffer && message.role === 'assistant'
-              ? parseReverseAnalysisResponse(message.content, workflowReferences.map((reference) => ({
-                ...reference,
-                responsibility: '待模型确认',
-                inherit: [],
-                replace: [],
-                doNotCopy: [],
-              })))
-              : null;
-            const workflowSummary = message.role === 'assistant' && messageMode === 'codex'
-              ? parseWorkflowPlanningSummary(message.content)
-              : null;
             const canvasResultNodeId = message.id.startsWith('canvas-result:')
               ? message.id.slice('canvas-result:'.length)
               : null;
@@ -1680,6 +1818,7 @@ export function SkillChatWorkbench({
             return (
             <article key={message.id} className={`skill-chat-workbench__message skill-chat-workbench__message--${message.role}${creativePlan ? ' skill-chat-workbench__message--creative-plan' : ''}`}>
               <span>{message.role === 'user' ? '你的请求' : 'Agent 建议'}</span>
+              {message.request?.reverseAnalysisDepth && <small aria-label="本次反推强度">{message.request.reverseAnalysisDepth === 'fast' ? '快速反推' : message.request.reverseAnalysisDepth === 'deep' ? '深度反推' : '标准反推'}</small>}
               <p>{canvasResultOrphaned ? '关联节点或结果已不存在。' : creativePlan?.summary ?? workflowSummary ?? message.content}</p>
               {submittedNodeIds.filter((nodeId) => message.id === `canvas-result:${nodeId}`).map(renderSubmittedResult)}
               {creativePlan && <section className="creative-plan" aria-label="创作方案">
@@ -1830,16 +1969,16 @@ export function SkillChatWorkbench({
               {pendingCanvasActionProfiles.length > 0 && (
                 <div className="skill-chat-workbench__action-controls">
                   <label className="skill-chat-workbench__action-model">使用模型
-                    <select aria-label={`选择${canvasActionLabel(pendingCanvasAction.kind)}模型`} disabled={pendingCanvasModelLocked} value={pendingCanvasModelRoute ?? ''} onChange={(event) => {
+                    <select aria-label={`选择${canvasActionLabel(pendingCanvasAction.kind)}模型`} disabled={pendingCanvasModelLocked} value={pendingCanvasVisibleSelection?.modelRoute ?? pendingCanvasModelRoute ?? ''} onChange={(event) => {
                       const modelRoute = event.target.value;
                       setPendingCanvasModelRoute(modelRoute);
                       const profile = pendingCanvasActionProfiles.find((candidate) => candidate.modelRoute === modelRoute);
                       const resolutions = pendingCanvasAction.kind === 'video_generation'
                         ? profile?.constraints?.video?.resolutions
-                        : profile?.constraints?.image?.resolutions;
+                        : listImageResolutionTiers(pendingCanvasActionProfiles, profile);
                       setPendingCanvasResolution((current) => resolutions?.includes(current as never) ? current : '');
                     }}>
-                      {pendingCanvasActionProfiles.map((profile) => <option key={profile.modelRoute} value={profile.modelRoute}>{profile.displayName}</option>)}
+                      {pendingCanvasVisibleProfiles.map((profile) => <option key={profile.modelRoute} value={profile.modelRoute}>{pendingCanvasAction.kind === 'image_generation' ? imageModelFamilyDisplayName(profile) : profile.displayName}</option>)}
                     </select>
                   </label>
                   {pendingCanvasAction.kind !== 'reverse_agent' && pendingCanvasResolutionOptions.length > 0 && (
@@ -1880,12 +2019,11 @@ export function SkillChatWorkbench({
                 )}
                 {agentMode === 'codex' && selectedProfile?.provider === 'codex' && activeLocalCodexRequestId.current !== null && (
                   <button type="button" className="skill-chat-workbench__thinking-stop" aria-label="停止 Codex 分析" onClick={() => {
-                    void cancelActiveCodexRequest().finally(() => {
-                      if (!mounted.current) return;
-                      setMessages((current) => current.map((message) => message.mode === 'codex' && message.request?.status === 'sending'
+                    const cancelledMessageIds = new Set(messages.filter((message) => message.mode === 'codex' && message.request?.status === 'sending').map((message) => message.id));
+                    finishCodexCancellation(cancelActiveCodexRequest(), () => {
+                      setMessages((current) => current.map((message) => cancelledMessageIds.has(message.id) && message.request?.status === 'sending'
                         ? { ...message, request: { ...message.request, status: 'error' as const } }
                         : message));
-                      setStatus('idle');
                     });
                   }}>停止</button>
                 )}
@@ -1931,7 +2069,7 @@ export function SkillChatWorkbench({
         {error && <p className="skill-chat-workbench__error" role="alert">{error}</p>}
       </div>
 
-      <form className="skill-chat-workbench__composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+      <form ref={composerFormRef} className="skill-chat-workbench__composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
         <label>
           <span className="sr-only">向 Agent 发送消息</span>
           <MediaMentionTextarea
@@ -1946,6 +2084,12 @@ export function SkillChatWorkbench({
             onChange={(event) => updateComposerText(event.target.value)}
             onPaste={handleComposerPaste}
             onKeyDown={(event) => {
+              if (mentionOpen && event.key === 'ArrowDown' && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                referenceMenuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+                return;
+              }
+              if (mentionOpen && event.key === 'Enter') { event.preventDefault(); return; }
               if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
               event.preventDefault();
               void send();
@@ -1953,12 +2097,12 @@ export function SkillChatWorkbench({
           />
         </label>
         {composer.citations.length > 0 && (
-          <div className="skill-chat-workbench__image-tags" aria-label="Selected image references">
+          <div className="skill-chat-workbench__image-tags" aria-label="Selected image references" data-visual-hidden="true">
             {composer.citations.map((citation, citationIndex) => {
               const media = allReferenceMedia.find((reference) => reference.assetId === citation.assetId);
               const reference = mentionReferences.find((candidate) => candidate.assetId === citation.assetId);
               if (reference === undefined) return null;
-              return <button key={citation.assetId} type="button" aria-label={`Remove ${citation.label} media reference`} onClick={() => toggleImageMention(reference)}>
+              return <button key={citation.assetId} type="button" tabIndex={-1} aria-label={`Remove ${citation.label} media reference`} onClick={() => toggleImageMention(reference)}>
                 <small className="skill-chat-workbench__media-slot-index" aria-label={`Media reference slot ${citationIndex + 1}`}>{citationIndex + 1}</small>
                 {media?.kind === 'video'
                   ? <video src={media.displayUrl} aria-label={`${citation.label} video thumbnail`} muted playsInline preload="metadata" />
@@ -1970,21 +2114,31 @@ export function SkillChatWorkbench({
         )}
         <div className="skill-chat-workbench__composer-footer" data-agent-mode={agentMode}>
           {mentionOpen && (
-            <div role="menu" aria-label="Reference images" className="skill-chat-workbench__mention-menu">
-              <header><strong>@ 图片引用</strong><span>{mentionMenuReferences.length}</span></header>
+            <div ref={referenceMenuRef} role="menu" aria-label="Reference images" className="skill-chat-workbench__mention-menu" onKeyDown={(event) => {
+              if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+              event.preventDefault();
+              const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+              if (!items.length) return;
+              const index = items.indexOf(document.activeElement as HTMLButtonElement);
+              items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+            }}>
+              <header><strong>@ 图片引用</strong><span>{filteredMentionReferences.length}</span></header>
+              <input className="agent-reference-search" aria-label="搜索引用图片" placeholder="搜索图片名称或编号" value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} />
               {!browseProjectImages && <button type="button" onClick={() => {
                 extendReferenceCatalog(allReferenceImages.map((image) => image.assetId));
                 setBrowseProjectImages(true);
               }}>浏览项目图片</button>}
               {mentionMenuReferences.length === 0 && <p>粘贴图片或点击 + 添加本次素材。</p>}
-              {mentionMenuReferences.map((reference) => (
+              {referenceQuery && filteredMentionReferences.length === 0 && <p>没有找到匹配的图片。</p>}
+              {filteredMentionReferences.map((reference) => (
                 <button key={reference.assetId} type="button" role="menuitem" aria-label={`Mention ${reference.label}`} onClick={() => {
+                  if (browseProjectImages) extendReferenceCatalog(allReferenceImages.map((image) => image.assetId));
                   toggleImageMention(reference);
                   dispatchPopover({ type: 'close-external' });
                 }}>
                   {allReferenceMedia.find((media) => media.assetId === reference.assetId)?.kind === 'video'
                     ? <video src={reference.displayUrl} aria-label={`${reference.label} video thumbnail`} muted playsInline preload="metadata" />
-                    : <img src={reference.displayUrl} alt={reference.label} />}
+                    : <img src={reference.displayUrl} alt={reference.label} loading="lazy" />}
                   <span><b>{reference.label}</b><small>项目受管素材 · {skillChatMentionToken(reference.kind, reference.mentionPosition)}</small></span>
                 </button>
               ))}
@@ -1992,51 +2146,44 @@ export function SkillChatWorkbench({
           )}
           <input ref={referenceFileInput} className="sr-only" data-testid="agent-reference-file-input" type="file" accept="image/*" tabIndex={-1} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importReferenceFile(file); }} />
           <button type="button" className="skill-chat-workbench__tool" aria-label="添加素材" title="导入项目图片" disabled={onImportReferenceImage === undefined || referenceImporting} onClick={requestReferenceImport}><Plus size={14} strokeWidth={1.6} /></button>
-          <div className="skill-chat-workbench__mode-tabs" role="tablist" aria-label="Agent 模式">
-            {([['chat', '对话'], ['original', '创作 Agent'], ['codex', 'Codex']] as const).map(([mode, label]) => <button key={mode} type="button" role="tab" aria-selected={agentMode === mode} className={agentMode === mode ? 'is-active' : undefined} onClick={() => {
-              if (mode !== agentMode && activeLocalCodexRequestId.current !== null) {
-                void cancelActiveCodexRequest().finally(() => { if (mounted.current) setStatus('idle'); });
-              }
-              if (mode !== agentMode) invalidateActivePlan();
-              invalidatePastedReferences();
-              if (mode !== agentMode) setError(null);
-              setAgentMode(mode);
-              dispatchPopover({ type: 'close-external' });
-              const profilesForMode = mode === 'codex' ? codexProfiles : chatProfiles;
-              if (profilesForMode.length > 0 && !profilesForMode.some((profile) => profile.modelRoute === modelRoute)) {
-                setModelRoute(profilesForMode.find((profile) => profile.modelRoute === 'chat-default')?.modelRoute ?? profilesForMode[0]?.modelRoute);
-              }
-            }}>{label}</button>)}
+          <label className="skill-chat-workbench__mode-picker">
+            <select aria-label="Agent 模式" value={agentMode} onChange={(event) => changeAgentMode(event.currentTarget.value as typeof agentMode)}>
+              <option value="chat">对话</option>
+              <option value="original">创作</option>
+              <option value="codex">Codex</option>
+            </select>
+          </label>
+          <div className="skill-chat-workbench__model-reasoning" role="group" aria-label="模型与思考强度">
+            <button type="button" className="skill-chat-workbench__model-pill" data-testid="agent-model-trigger" aria-label="打开聊天模型菜单" data-selected-model={selectedProfile?.displayName ?? '未配置'} onClick={() => dispatchPopover({
+              type: 'open',
+              id: 'reasoning-model',
+            })}>{selectedProfile ? providerModelLabel(selectedProfile, chatProfiles) : agentMode === 'codex' ? '未发现 Codex 模型' : '选择模型'}</button>
+            <CodexReasoningPopover
+              hideTrigger={!(selectedProfile?.provider === 'codex' || selectedProfile?.reasoning !== undefined || showReverseDepth)}
+              modelLabel={selectedProfile?.displayName ?? '未选择模型'} efforts={supportedEfforts} value={reasoningEffort}
+              defaultValue={selectedProfile?.provider === 'codex' ? selectedProfile.defaultReasoningEffort : selectedProfile?.reasoning?.defaultEffort}
+              disabled={!selectedProfile} open={activePopover === 'reasoning' || activePopover === 'reasoning-model'} onChange={setReasoningEffort}
+              onToggle={() => dispatchPopover({ type: 'toggle', id: 'reasoning-model' })}
+              onClose={() => dispatchPopover({ type: 'close-external' })}
+              onSelectModel={() => dispatchPopover({ type: 'open', id: 'reasoning-model' })}
+              modelPicker={activePopover === 'reasoning-model' ? modelPickerPanel : undefined}
+              generationKind={generationPreferences.kind}
+              onOpenGeneration={() => dispatchPopover({ type: 'open', id: 'generation' })}
+              reverseDepth={showReverseDepth ? { value: reverseAnalysisDepth, disabled: status === 'sending', onChange: setReverseAnalysisDepth } : undefined}
+            />
           </div>
-          <button type="button" className="skill-chat-workbench__model-pill" data-testid="agent-model-trigger" aria-label="打开聊天模型菜单" data-selected-model={selectedProfile?.displayName ?? '未配置'} onClick={() => dispatchPopover({ type: 'open', id: 'model' })}>{selectedProfile ? providerModelLabel(selectedProfile, chatProfiles) : agentMode === 'codex' ? '未发现 Codex 模型' : '选择模型'}</button>
-          {(selectedProfile?.provider === 'codex' || selectedProfile?.reasoning !== undefined) && <CodexReasoningPopover
-            modelLabel={selectedProfile?.displayName ?? '未选择模型'} efforts={supportedEfforts} value={reasoningEffort}
-            defaultValue={selectedProfile?.provider === 'codex' ? selectedProfile.defaultReasoningEffort : selectedProfile?.reasoning?.defaultEffort}
-            disabled={!selectedProfile} open={activePopover === 'reasoning'} onChange={setReasoningEffort}
-            onToggle={() => dispatchPopover({ type: 'toggle', id: 'reasoning' })}
-            onClose={() => dispatchPopover({ type: 'close-external' })}
-            onSelectModel={() => dispatchPopover({ type: 'open', id: 'model' })}
-          />}
-          {supportsImageMentions && selectedProfile?.provider !== 'codex' && <div className="skill-chat-workbench__reverse-depth" role="group" aria-label="反推强度">
-            {([['fast', '快速反推'], ['standard', '标准反推'], ['deep', '深度反推']] as const).map(([depth, label]) => <button
-              key={depth}
-              type="button"
-              aria-pressed={reverseAnalysisDepth === depth}
-              className={reverseAnalysisDepth === depth ? 'is-active' : undefined}
-              onClick={() => setReverseAnalysisDepth(depth)}
-            >{label}</button>)}
-          </div>}
           <div className="skill-chat-workbench__composer-actions">
-            <button type="button" className="skill-chat-workbench__generation-trigger" data-testid="agent-generation-preferences" aria-label="生成偏好" title={`当前：${generationPreferences.kind === 'image' ? '图片' : '视频'}工作流；点击选择输出类型和生成模型`} onClick={() => dispatchPopover({ type: 'open', id: 'generation' })}><SlidersHorizontal size={15} /><span>{generationPreferences.kind === 'image' ? '图片工作流' : '视频工作流'}</span></button>
+            {selectedProfile?.provider !== 'codex' && <button type="button" className="skill-chat-workbench__generation-trigger" data-testid="agent-generation-preferences" aria-label="生成偏好" title={`当前：${generationPreferences.kind === 'image' ? '图片' : '视频'}工作流；点击选择输出类型和生成模型`} onClick={() => dispatchPopover({ type: 'open', id: 'generation' })}><SlidersHorizontal size={15} /><span>{generationPreferences.kind === 'image' ? '图片工作流' : '视频工作流'}</span></button>}
             <button type="button" className="skill-chat-workbench__tool skill-chat-workbench__knowledge-compact" data-testid="knowledge-base-trigger" aria-label="打开知识库" onClick={() => dispatchPopover({ type: 'open', id: 'knowledge' })}><Grid3X3 size={14} strokeWidth={1.6} /></button>
             <button type="button" className="skill-chat-workbench__tool" aria-label="新建对话" onClick={createConversation}><RotateCcw size={14} strokeWidth={1.6} /></button>
             <button type="submit" className="skill-chat-workbench__send" aria-label="发送" title="发送" disabled={!hasSendablePasteText(draft, pendingPasteMarkers.current) || selectedProfile === undefined || !hasSupportedReasoningEffort || status === 'sending'}><ArrowUp size={17} /></button>
           </div>
+          {activePopover === 'generation' && <GenerationPreferencesSheet value={generationPreferences} profiles={profiles} onChange={changeGenerationPreferences} onClose={() => dispatchPopover({ type: 'close-external' })} />}
         </div>
       </form>
     </section>
   );
-}
+});
 
 export type ClipboardPasteAction = 'native-text' | 'controlled-text' | 'reject-media' | 'import-media' | 'ignore';
 
@@ -2440,6 +2587,16 @@ function providerModelLabel(profile: AgentChatProfile, _profiles: readonly Provi
   const variant = identity.match(/(?:^|[-_/])(low|medium|high|minimal|max)(?:$|[-_/])/u)?.[1];
   if (!variant || profile.displayName.toLocaleLowerCase().includes(variant)) return profile.displayName;
   return `${profile.displayName} · ${variant}`;
+}
+
+function uniqueImageFamilyProfiles(profiles: readonly ProviderBridgeProfile[]): ProviderBridgeProfile[] {
+  const seen = new Set<string>();
+  return profiles.filter((profile) => {
+    const key = `${profile.provider}:${imageResolutionFamilyKey(profile)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function sameStringList(left: readonly string[], right: readonly string[]): boolean {

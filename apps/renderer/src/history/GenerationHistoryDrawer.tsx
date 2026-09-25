@@ -516,17 +516,14 @@ function HistoryMedia({
 }) {
   const usePreview = preview && output.mediaType !== 'video/mp4';
   const src = usePreview ? historyPreviewUrl(output.historyAssetId) : historyAssetUrl(output.historyAssetId);
-  const [failed, setFailed] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    setFailed(false);
-    setLoaded(false);
-  }, [src]);
+  const [mediaState, setMediaState] = useState({ src, failed: false, loaded: false });
+  const failed = mediaState.src === src && mediaState.failed;
+  const loaded = mediaState.src === src && mediaState.loaded;
   if (failed) {
     return <span className="history-media__unavailable" role="status"><ImageOff size={22} /><b>缩略图加载失败</b></span>;
   }
   if (output.mediaType === 'video/mp4') {
-    return <video className="history-video-preview" aria-label={alt} muted playsInline preload="metadata" src={src} onError={() => setFailed(true)} />;
+    return <video className="history-video-preview" aria-label={alt} muted playsInline preload="metadata" src={src} onError={() => setMediaState({ src, failed: true, loaded: false })} />;
   }
   return (
     <>
@@ -543,8 +540,8 @@ function HistoryMedia({
         alt={alt}
         loading={usePreview ? 'lazy' : undefined}
         decoding={usePreview ? 'async' : undefined}
-        onLoad={() => setLoaded(true)}
-        onError={() => setFailed(true)}
+        onLoad={() => setMediaState({ src, failed: false, loaded: true })}
+        onError={() => setMediaState({ src, failed: true, loaded: false })}
       />
     </>
   );

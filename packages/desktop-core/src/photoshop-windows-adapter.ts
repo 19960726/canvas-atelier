@@ -1,14 +1,39 @@
 import { execFile } from 'node:child_process';
-import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import type { PhotoshopImportResult } from './photoshop-contract.js';
-import type { PhotoshopSmartObjectAdapter } from './photoshop-smart-object-service.js';
+import type { PhotoshopColorCorrection, PhotoshopImportResult } from './photoshop-contract.js';
+import type {
+  PhotoshopSmartObjectAdapter,
+  PhotoshopSmartObjectPlacementInput,
+} from './photoshop-smart-object-service.js';
 import { createPhotoshopPlacementPayload } from './photoshop-script.js';
 
 const execFileAsync = promisify(execFile);
 const MINIMUM_PHOTOSHOP_MAJOR_VERSION = 13;
+const MAX_CORRECTED_IMAGE_SIDE = 8_192;
+const MAX_CORRECTED_IMAGE_PIXELS = 10_000_000;
+const MAX_CORRECTED_PNG_BYTES = 48 * 1024 * 1024;
+const MAX_CORRECTED_PNG_DATA_URL_CHARS = Math.ceil(MAX_CORRECTED_PNG_BYTES * 4 / 3) + 64;
+const DECODE_WEBP_TO_PNG_SCRIPT = `(() => {
+  const image = document.images.item(0);
+  if (image === null || !image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+    throw new Error('Managed WebP did not decode');
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext('2d');
+  if (context === null) throw new Error('Managed WebP canvas is unavailable');
+  context.drawImage(image, 0, 0);
+  const dataUrl = canvas.toDataURL('image/png');
+  const result = { dataUrl, width: canvas.width, height: canvas.height };
+  canvas.width = 1;
+  canvas.height = 1;
+  return result;
+})()`;
 
 export interface PhotoshopInstallation {
   readonly majorVersion: number;
@@ -43,15 +68,267 @@ export interface WindowsPhotoshopAdapterDependencies {
     readonly installedMajorVersions: readonly number[];
   }) => Promise<PhotoshopWindowsExecutionResult>;
   readonly temporaryFiles: {
-    create(input: { readonly absolutePath: string; readonly layerName: string }): Promise<PhotoshopTemporaryFiles>;
+    create(input: PhotoshopSmartObjectPlacementInput): Promise<PhotoshopTemporaryFiles>;
     remove(directory: string): Promise<void>;
   };
 }
 
 export interface NodeWindowsPhotoshopAdapterOptions {
+  readonly decodeWebpFromPath?: PhotoshopManagedWebpDecoder;
   readonly platform?: string;
   readonly jsxResourcePath: string;
+  readonly nativeImage: PhotoshopNativeImageFactory;
   readonly runnerResourcePath: string;
+  readonly temporaryDirectoryRoot?: string;
+}
+
+export interface PhotoshopNativeImageFactory {
+  createFromPath(path: string): PhotoshopDecodedImage;
+  createFromBitmap(
+    buffer: Buffer,
+    options: { readonly width: number; readonly height: number; readonly scaleFactor: number },
+  ): {
+    isEmpty(): boolean;
+    toPNG(): Buffer;
+  };
+}
+
+export interface PhotoshopDecodedImage {
+  getSize(): { readonly width: number; readonly height: number };
+  isEmpty(): boolean;
+  toBitmap(): Buffer;
+}
+
+export type PhotoshopManagedWebpDecoder = (
+  absolutePath: string,
+  expectedSize: { readonly width: number; readonly height: number },
+) => Promise<PhotoshopDecodedImage>;
+
+export interface PhotoshopWebpDecodeWindow {
+  readonly webContents: {
+    executeJavaScript<T>(script: string): Promise<T>;
+  };
+  destroy(): void;
+  isDestroyed(): boolean;
+  loadURL(url: string): Promise<void>;
+}
+
+export function createElectronPhotoshopWebpDecoder(options: {
+  readonly createWindow: () => PhotoshopWebpDecodeWindow;
+  readonly nativeImage: {
+    createFromDataURL(dataUrl: string): PhotoshopDecodedImage;
+  };
+}): PhotoshopManagedWebpDecoder {
+  return async (absolutePath, expectedSize) => {
+    const window = options.createWindow();
+    try {
+      await window.loadURL(pathToFileURL(absolutePath).href);
+      const result = await window.webContents.executeJavaScript<unknown>(DECODE_WEBP_TO_PNG_SCRIPT);
+      if (!isRecord(result)
+        || result.width !== expectedSize.width
+        || result.height !== expectedSize.height) {
+        throw new Error('Managed Photoshop WebP dimensions did not match its verified header');
+      }
+      if (typeof result.dataUrl !== 'string'
+        || result.dataUrl.length > MAX_CORRECTED_PNG_DATA_URL_CHARS
+        || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/u.test(result.dataUrl)) {
+        throw new Error('Managed Photoshop WebP decoder returned invalid PNG data');
+      }
+      const decoded = options.nativeImage.createFromDataURL(result.dataUrl);
+      const decodedSize = decoded.getSize();
+      if (decoded.isEmpty()
+        || decodedSize.width !== expectedSize.width
+        || decodedSize.height !== expectedSize.height) {
+        throw new Error('Managed Photoshop WebP PNG could not be decoded at full size');
+      }
+      return decoded;
+    } finally {
+      if (!window.isDestroyed()) window.destroy();
+    }
+  };
+}
+
+export function applyPhotoshopColorCorrectionToBgraPixels(
+  pixels: Uint8Array,
+  correction: PhotoshopColorCorrection,
+): Uint8Array {
+  if (pixels.byteLength % 4 !== 0) throw new Error('Photoshop bitmap has an invalid BGRA byte length');
+  const output = new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength);
+  const temperature = correction.temperature * 0.004;
+  const tint = correction.tint * 0.002;
+  const redGain = clamp(1 + temperature + tint, 0.82, 1.18);
+  const greenGain = clamp(1 - (correction.tint * 0.004), 0.82, 1.18);
+  const blueGain = clamp(1 - temperature + tint, 0.82, 1.18);
+  const saturation = correction.saturation / 100;
+  const contrast = correction.contrast / 100;
+  const brightness = correction.brightness / 100;
+  for (let index = 0; index < output.length; index += 4) {
+    // Electron exposes NativeImage bitmap pixels as premultiplied BGRA. Work
+    // in straight color to match the renderer, then restore premultiplication.
+    const alpha = output[index + 3]!;
+    if (alpha === 0) {
+      output[index] = 0;
+      output[index + 1] = 0;
+      output[index + 2] = 0;
+      continue;
+    }
+    const straightScale = alpha === 255 ? 1 : 255 / alpha;
+    const premultipliedScale = alpha === 255 ? 1 : alpha / 255;
+    let blue = output[index]! * straightScale * blueGain;
+    let green = output[index + 1]! * straightScale * greenGain;
+    let red = output[index + 2]! * straightScale * redGain;
+    const luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+    red = luminance + ((red - luminance) * saturation);
+    green = luminance + ((green - luminance) * saturation);
+    blue = luminance + ((blue - luminance) * saturation);
+    output[index] = clamp(((blue - 128) * contrast + 128) * brightness, 0, 255) * premultipliedScale;
+    output[index + 1] = clamp(((green - 128) * contrast + 128) * brightness, 0, 255) * premultipliedScale;
+    output[index + 2] = clamp(((red - 128) * contrast + 128) * brightness, 0, 255) * premultipliedScale;
+  }
+  return new Uint8Array(output.buffer, output.byteOffset, output.byteLength);
+}
+
+export async function createNodePhotoshopTemporaryFiles(
+  input: PhotoshopSmartObjectPlacementInput,
+  options: Pick<NodeWindowsPhotoshopAdapterOptions, 'decodeWebpFromPath' | 'jsxResourcePath' | 'nativeImage' | 'runnerResourcePath' | 'temporaryDirectoryRoot'>,
+): Promise<PhotoshopTemporaryFiles> {
+  const directory = await mkdtemp(join(options.temporaryDirectoryRoot ?? tmpdir(), 'novus-photoshop-'));
+  try {
+    const jsxPath = join(directory, basename(options.jsxResourcePath));
+    const payloadPath = join(directory, 'payload.json');
+    const placementPath = input.colorCorrection === undefined
+      ? input.absolutePath
+      : join(directory, 'corrected.png');
+    await copyFile(options.jsxResourcePath, jsxPath);
+    if (input.colorCorrection !== undefined) {
+      const correctedPngBytes = await createCorrectedPngFromManagedImage(
+        input.absolutePath,
+        input.mediaType,
+        input.colorCorrection,
+        options.nativeImage,
+        options.decodeWebpFromPath,
+      );
+      await writeFile(placementPath, correctedPngBytes, { flag: 'wx' });
+    }
+    await writeFile(payloadPath, createPhotoshopPlacementPayload({
+      absolutePath: placementPath,
+      layerName: input.layerName,
+    }), { encoding: 'utf8', flag: 'wx' });
+    return { directory, jsxPath, payloadPath, runnerPath: options.runnerResourcePath };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function createCorrectedPngFromManagedImage(
+  absolutePath: string,
+  mediaType: string | undefined,
+  correction: PhotoshopColorCorrection,
+  nativeImage: PhotoshopNativeImageFactory,
+  decodeWebpFromPath: PhotoshopManagedWebpDecoder | undefined,
+): Promise<Buffer> {
+  const source = await decodeManagedPhotoshopImage(absolutePath, mediaType, nativeImage, decodeWebpFromPath);
+  const { width, height } = source.getSize();
+  if (!validCorrectedImageDimension(width) || !validCorrectedImageDimension(height)
+    || width * height > MAX_CORRECTED_IMAGE_PIXELS) {
+    throw new Error('Managed Photoshop image dimensions are invalid');
+  }
+  const bitmap = source.toBitmap();
+  const expectedBytes = width * height * 4;
+  if (bitmap.byteLength !== expectedBytes) throw new Error('Managed Photoshop bitmap size is invalid');
+  const correctedBitmap = applyPhotoshopColorCorrectionToBgraPixels(bitmap, correction);
+  const corrected = nativeImage.createFromBitmap(
+    Buffer.from(correctedBitmap.buffer, correctedBitmap.byteOffset, correctedBitmap.byteLength),
+    { width, height, scaleFactor: 1 },
+  );
+  if (corrected.isEmpty()) throw new Error('Corrected Photoshop image could not be encoded');
+  const png = corrected.toPNG();
+  if (png.byteLength === 0 || png.byteLength > MAX_CORRECTED_PNG_BYTES) {
+    throw new Error('Corrected Photoshop PNG size is invalid');
+  }
+  return png;
+}
+
+async function decodeManagedPhotoshopImage(
+  absolutePath: string,
+  mediaType: string | undefined,
+  nativeImage: PhotoshopNativeImageFactory,
+  decodeWebpFromPath: PhotoshopManagedWebpDecoder | undefined,
+): Promise<PhotoshopDecodedImage> {
+  const source = nativeImage.createFromPath(absolutePath);
+  if (!source.isEmpty()) return source;
+  if (mediaType !== 'image/webp') throw new Error('Managed Photoshop image could not be decoded');
+
+  const expectedSize = await readManagedWebpDimensions(absolutePath);
+  if (!validCorrectedImageDimension(expectedSize.width) || !validCorrectedImageDimension(expectedSize.height)
+    || expectedSize.width * expectedSize.height > MAX_CORRECTED_IMAGE_PIXELS) {
+    throw new Error('Managed Photoshop image dimensions are invalid');
+  }
+  if (decodeWebpFromPath === undefined) throw new Error('Managed Photoshop WebP decoder is unavailable');
+  const decoded = await decodeWebpFromPath(absolutePath, expectedSize);
+  const actualSize = decoded.getSize();
+  if (decoded.isEmpty() || actualSize.width !== expectedSize.width || actualSize.height !== expectedSize.height) {
+    throw new Error('Managed Photoshop WebP could not be decoded at full size');
+  }
+  return decoded;
+}
+
+async function readManagedWebpDimensions(absolutePath: string): Promise<{ readonly width: number; readonly height: number }> {
+  const handle = await open(absolutePath, 'r');
+  try {
+    const header = Buffer.alloc(30);
+    const { bytesRead } = await handle.read(header, 0, header.byteLength, 0);
+    const dimensions = parseWebpDimensions(header.subarray(0, bytesRead));
+    if (dimensions === null) throw new Error('Managed Photoshop WebP header is invalid');
+    return dimensions;
+  } finally {
+    await handle.close();
+  }
+}
+
+function parseWebpDimensions(header: Buffer): { readonly width: number; readonly height: number } | null {
+  if (header.byteLength < 21
+    || header.toString('ascii', 0, 4) !== 'RIFF'
+    || header.toString('ascii', 8, 12) !== 'WEBP') return null;
+  const kind = header.toString('ascii', 12, 16);
+  const chunkLength = header.readUInt32LE(16);
+  if (kind === 'VP8X') {
+    if (chunkLength !== 10 || header.byteLength < 30) return null;
+    return {
+      width: readUInt24LE(header, 24) + 1,
+      height: readUInt24LE(header, 27) + 1,
+    };
+  }
+  if (kind === 'VP8 ') {
+    if (chunkLength < 10 || header.byteLength < 30
+      || !header.subarray(23, 26).equals(Buffer.from([0x9d, 0x01, 0x2a]))) return null;
+    return {
+      width: header.readUInt16LE(26) & 0x3fff,
+      height: header.readUInt16LE(28) & 0x3fff,
+    };
+  }
+  if (kind === 'VP8L') {
+    if (chunkLength < 5 || header.byteLength < 25 || header[20] !== 0x2f) return null;
+    const packed = header.readUInt32LE(21);
+    return {
+      width: (packed & 0x3fff) + 1,
+      height: ((packed >>> 14) & 0x3fff) + 1,
+    };
+  }
+  return null;
+}
+
+function readUInt24LE(bytes: Buffer, offset: number): number {
+  return bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16);
+}
+
+function validCorrectedImageDimension(value: number): boolean {
+  return Number.isInteger(value) && value > 0 && value <= MAX_CORRECTED_IMAGE_SIDE;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
 }
 
 export function createWindowsPhotoshopSmartObjectAdapter(
@@ -158,14 +435,7 @@ export function createNodeWindowsPhotoshopSmartObjectAdapter(
       }
     },
     temporaryFiles: {
-      async create(input) {
-        const directory = await mkdtemp(join(tmpdir(), 'novus-photoshop-'));
-        const jsxPath = join(directory, basename(options.jsxResourcePath));
-        const payloadPath = join(directory, 'payload.json');
-        await copyFile(options.jsxResourcePath, jsxPath);
-        await writeFile(payloadPath, createPhotoshopPlacementPayload(input), { encoding: 'utf8', flag: 'wx' });
-        return { directory, jsxPath, payloadPath, runnerPath: options.runnerResourcePath };
-      },
+      create: (input) => createNodePhotoshopTemporaryFiles(input, options),
       remove(directory) {
         return rm(directory, { recursive: true, force: true });
       },
@@ -173,7 +443,7 @@ export function createNodeWindowsPhotoshopSmartObjectAdapter(
   });
 }
 
-async function discoverPhotoshopInstallations(platform: string): Promise<PhotoshopInstallation[]> {
+export async function discoverPhotoshopInstallations(platform: string): Promise<PhotoshopInstallation[]> {
   if (platform !== 'win32') return [];
   const registryPaths = [
     'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',

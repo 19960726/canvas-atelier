@@ -96,6 +96,17 @@ describe('recent project preload API', () => {
     expect(JSON.stringify(calls)).not.toMatch(/path|script|[A-Za-z]:\\/u);
   });
 
+  it('passes only generated PSD bytes to the dedicated Photoshop document channel', async () => {
+    const calls: Array<{ channel: string; payload: unknown }> = [];
+    const api = createPreloadApi(async <TResponse>(channel: string, payload?: unknown): Promise<TResponse> => {
+      calls.push({ channel, payload });
+      return { ok: true } as TResponse;
+    });
+    const bytes = new Uint8Array([0x38, 0x42, 0x50, 0x53]);
+    await expect(api.projectImages.openLayeredPsdInPhotoshop(bytes)).resolves.toEqual({ ok: true });
+    expect(calls).toEqual([{ channel: BRIDGE_CHANNELS.openLayeredPsdInPhotoshop, payload: bytes }]);
+  });
+
   it('sends PNG bytes through the narrow native clipboard channel', async () => {
     const calls: Array<{ channel: string; payload: unknown }> = [];
     const api = createPreloadApi(async <TResponse>(channel: string, payload?: unknown): Promise<TResponse> => {

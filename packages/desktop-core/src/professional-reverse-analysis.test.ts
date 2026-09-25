@@ -47,6 +47,16 @@ const video = {
 };
 
 describe('professional reverse request', () => {
+  it.each([{ media: [image(0)] }, { media: [image(0), image(1)] }, { media: [video] }])('keeps fast analysis concise without overriding its depth in mode instructions', ({ media }) => {
+    const run = runWithMedia(media);
+    run.agentConfig = { ...run.agentConfig!, analysisDepth: 'fast' };
+    const request = buildProfessionalReverseRequest(run, []);
+    expect(request.modeInstructions.join('\n')).not.toMatch(/深度取证|逐层说明用途、实现|逐镜头分析景别/u);
+    expect(request.modeInstructions.join('\n')).toContain('每项最多一句');
+    expect(request.requiredOutput).toHaveProperty('positivePromptZh');
+    expect(request.requiredOutput).toHaveProperty('evidence');
+    expect(request.mediaManifest).toHaveLength(media.length);
+  });
   it.each([
     ['fast', /快速取证|简洁/u],
     ['standard', /标准反推|关键取舍/u],

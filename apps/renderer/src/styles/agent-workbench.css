@@ -226,6 +226,29 @@
 .generation-preferences [role='tablist'] { display: flex; gap: 5px; margin-block: 12px; }
 .generation-preferences [role='tab'] { flex: 1; min-height: 32px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); background: var(--surface-muted); }
 .generation-preferences [aria-selected='true'] { color: var(--text); border-color: var(--accent); }
+.generation-preferences__auto-note { margin: 10px 0 8px; color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
+.generation-preferences__candidate-picker { display: grid; gap: 7px; min-width: 0; margin-top: 8px; }
+.generation-preferences__search { width: 100%; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 9px; outline: 0; background: var(--surface-muted); color: var(--text); font: inherit; font-size: 11px; }
+.generation-preferences__search:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+.generation-preferences__candidates { display: grid; align-content: start; gap: 6px; min-width: 0; max-height: 248px; overflow-y: auto; scrollbar-width: thin; }
+.generation-preferences__candidates-heading { display: flex; align-items: center; justify-content: space-between; min-height: 22px; color: var(--text); font-size: 11px; }
+.generation-preferences__candidates-heading span { color: var(--muted); font-size: 10px; }
+.generation-preferences__candidate { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 44px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-muted); }
+.generation-preferences__candidate-copy { display: grid; min-width: 0; gap: 2px; }
+.generation-preferences__candidate-copy strong { overflow: hidden; color: var(--text); font-size: 11px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.generation-preferences__candidate-copy small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.generation-preferences__candidate > button { min-width: 42px; min-height: 26px; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 7px; color: var(--accent-strong, var(--accent)); background: var(--surface); font-size: 10px; cursor: pointer; }
+.generation-preferences__candidate > button:hover,
+.generation-preferences__candidate > button:focus-visible { color: var(--text); background: var(--accent-soft); border-color: var(--accent); }
+.generation-preferences__parameters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }
+.generation-preferences__parameters > label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 11px; }
+.generation-preferences__selection { grid-column: 1 / -1; display: grid; gap: 3px; padding: 10px; border-radius: 9px; background: var(--accent-soft); color: var(--text); }
+.generation-preferences__selection small { color: var(--text-secondary); font-size: 10px; }
+.generation-preferences__selection strong { font-size: 12px; overflow-wrap: anywhere; }
+html body .agent-panel--skill-chat .generation-preferences .generation-preferences__candidate { width: 100%; box-sizing: border-box; cursor: pointer; text-align: left; color: var(--text); }
+html body .agent-panel--skill-chat .generation-preferences .generation-preferences__candidate[aria-pressed='true'] { background: var(--accent-soft); border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.generation-preferences__candidate-state { color: var(--accent); font-size: 11px; white-space: nowrap; }
+html body .agent-panel--skill-chat .generation-preferences .generation-preferences__candidate:hover { border-color: var(--accent); }
 
 /* Reasoning is a discrete per-model control, anchored within the composer so it
    also fits narrow Agent panels. The range input retains native keyboard/touch behavior. */
@@ -244,46 +267,45 @@
 .codex-reasoning .codex-reasoning__trigger:disabled { opacity: .45; cursor: default; }
 .codex-reasoning__popover {
   position: absolute; z-index: 60; right: 0; bottom: calc(100% + 10px);
-  box-sizing: border-box; width: 352px; max-width: 100%; padding: 16px;
-  border: 1px solid var(--border); border-radius: 22px;
+  box-sizing: border-box; width: 286px; max-width: min(100%, 286px); padding: 12px;
+  border: 1px solid var(--border); border-radius: 16px;
   background: var(--surface-raised, var(--surface)); color: var(--text);
-  box-shadow: 0 8px 26px rgb(0 0 0 / 12%);
+  box-shadow: 0 14px 34px rgb(15 23 42 / 14%), 0 2px 7px rgb(15 23 42 / 7%);
 }
-.codex-reasoning__heading { display: grid; grid-template-columns: 28px minmax(0, 1fr) 28px; align-items: start; gap: 8px; margin-bottom: 18px; }
-.codex-reasoning__bolt { color: var(--reasoning-accent); margin: 5px auto; }
+.codex-reasoning__heading { display: grid; grid-template-columns: 22px minmax(0, 1fr) 26px; align-items: center; gap: 7px; margin-bottom: 11px; }
+.codex-reasoning__bolt { color: var(--reasoning-accent); margin: 3px auto; }
 .codex-reasoning .codex-reasoning__model {
   display: flex; flex-direction: column; align-items: center; gap: 3px; width: 100%; min-width: 0;
   padding: 0; margin: 0; border: 0; background: transparent; font: inherit; cursor: pointer;
 }
-.codex-reasoning__level { display: inline-flex; align-items: center; gap: 3px; font-size: 18px; line-height: 26px; font-weight: 600; color: var(--reasoning-accent); }
+.codex-reasoning__level { display: inline-flex; align-items: center; gap: 3px; font-size: 16px; line-height: 22px; font-weight: 650; color: var(--reasoning-accent); }
 .codex-reasoning__level svg { color: var(--text-secondary); }
-.codex-reasoning__model-name { max-width: 100%; font-size: 13px; line-height: 20px; font-weight: 400; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.codex-reasoning__model-name { max-width: 100%; font-size: 11px; line-height: 16px; font-weight: 400; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .codex-reasoning .codex-reasoning__reset {
   display: grid; place-items: center; width: 28px; height: 28px; min-height: 28px; padding: 0;
   border: 0; border-radius: 50%; color: var(--text-secondary); background: transparent; cursor: pointer;
 }
 .codex-reasoning .codex-reasoning__reset:hover { background: var(--surface-muted); color: var(--text); }
-.codex-reasoning__track { position: relative; height: 36px; border-radius: 22px; background: color-mix(in srgb, var(--text-secondary) 17%, var(--surface)); }
+.codex-reasoning__track { position: relative; height: 28px; border-radius: 16px; background: color-mix(in srgb, var(--text-secondary) 15%, var(--surface)); }
 .codex-reasoning__fill { position: absolute; inset: 0 auto 0 0; width: calc(20px + (100% - 40px) * var(--reasoning-progress)); border-radius: inherit; background: var(--reasoning-accent); pointer-events: none; }
 .codex-reasoning__fill[data-empty] { visibility: hidden; }
 .codex-reasoning[data-ultra] .codex-reasoning__fill { width: 100%; background: linear-gradient(100deg, #3936d9 0%, #a858ff 68%, #8150ef 100%); }
 .codex-reasoning__fill::after {
-  content: ''; position: absolute; inset: 0; border-radius: inherit; opacity: .6;
-  background-image: radial-gradient(circle at 12% 27%, #fff 0 1px, transparent 2px), radial-gradient(circle at 42% 73%, #fff 0 1.5px, transparent 2.5px), radial-gradient(circle at 73% 35%, #fff 0 1px, transparent 2px);
-  background-size: 84px 36px;
+  content: ''; position: absolute; inset: 0; border-radius: inherit; opacity: .16;
+  background: linear-gradient(110deg, transparent 22%, #fff 50%, transparent 78%);
 }
-.codex-reasoning__stops { position: absolute; inset: 0 20px; display: flex; align-items: center; justify-content: space-between; pointer-events: none; }
-.codex-reasoning__stops > span { width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: var(--text-secondary); opacity: .45; }
+.codex-reasoning__stops { position: absolute; inset: 0 14px; display: flex; align-items: center; justify-content: space-between; pointer-events: none; }
+.codex-reasoning__stops > span { width: 4px; height: 4px; flex: 0 0 4px; border-radius: 50%; background: var(--text-secondary); opacity: .45; }
 .codex-reasoning__stops > span[data-filled] { background: #fff; }
 .codex-reasoning__track input[type='range'] {
   appearance: none; -webkit-appearance: none; position: absolute; inset: -4px 0; display: block;
-  width: 100%; height: 44px; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 24px;
+  width: 100%; height: 36px; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 20px;
   background: transparent; cursor: pointer; box-shadow: none; touch-action: pan-y;
 }
-.codex-reasoning__track input::-webkit-slider-runnable-track { height: 36px; background: transparent; border: 0; }
-.codex-reasoning__track input::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 40px; height: 40px; margin-top: -2px; border: 1px solid #dedee2; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 8%); }
-.codex-reasoning__track input::-moz-range-track { height: 36px; background: transparent; border: 0; }
-.codex-reasoning__track input::-moz-range-thumb { width: 38px; height: 38px; border: 1px solid #dedee2; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 8%); }
+.codex-reasoning__track input::-webkit-slider-runnable-track { height: 28px; background: transparent; border: 0; }
+.codex-reasoning__track input::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 28px; height: 28px; margin-top: 0; border: 1px solid color-mix(in srgb, var(--border-strong) 70%, #fff); border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 12%); }
+.codex-reasoning__track input::-moz-range-track { height: 28px; background: transparent; border: 0; }
+.codex-reasoning__track input::-moz-range-thumb { width: 28px; height: 28px; border: 1px solid color-mix(in srgb, var(--border-strong) 70%, #fff); border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 12%); }
 .codex-reasoning :is(button, input):focus-visible { outline: 2px solid var(--reasoning-accent); outline-offset: 3px; }
 @media (forced-colors: active) {
   .codex-reasoning__track { border: 1px solid CanvasText; }

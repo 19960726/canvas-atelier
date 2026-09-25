@@ -60,6 +60,8 @@ describe('desktop application icon contract', () => {
       expect(mainSource).toContain('icon: appIconPath');
       expect(builderConfig).toMatch(/buildResources:\s+build/u);
       expect(builderConfig).toMatch(/win:\s*\r?\n\s+icon:\s+icon\.ico/u);
+      if (shell === 'desktop-modern') expect(builderConfig).toMatch(/signAndEditExecutable:\s+true/u);
+      else expect(builderConfig).not.toMatch(/signAndEditExecutable:\s+false/u);
       expect(builderConfig).toMatch(/from:\s+build\/icon\.ico\s*\r?\n\s+to:\s+icon\.ico/u);
     });
   }

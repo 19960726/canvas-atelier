@@ -137,6 +137,8 @@ function configureStressModule(
   }
   return {
     ...node.data.config,
+    modelRoute: 'comfly-doubao-seedance-2-5',
+    durationSeconds: 4,
     resultState: index % 2 === 0 ? 'stale' : 'fresh',
   };
 }
@@ -208,24 +210,17 @@ function createStressEdges(): CanvasEdge[] {
       order,
     });
   }
-  for (let index = 0; index < 50; index += 1) {
+  for (let index = 0; index < 79; index += 1) {
+    const target = `stress-reverse_agent-${index % 50}`;
+    const order = reverseReferenceOrder.get(target) ?? 0;
+    reverseReferenceOrder.set(target, order + 1);
     edges.push({
-      id: `stress-edge-generation-prompt-${index}`,
-      source: `stress-text_prompt-${index}`,
-      sourcePortId: 'prompt',
-      target: `stress-image_generation-${index}`,
-      targetPortId: 'prompt',
-      order: 0,
-    });
-  }
-  for (let index = 0; index < 29; index += 1) {
-    edges.push({
-      id: `stress-edge-video-prompt-${index}`,
-      source: `stress-text_prompt-${index}`,
-      sourcePortId: 'prompt',
-      target: `stress-video_generation-${index}`,
-      targetPortId: 'prompt',
-      order: 0,
+      id: `stress-edge-extra-reverse-reference-${index}`,
+      source: `stress-image_input-${index % 80}`,
+      sourcePortId: 'image',
+      target,
+      targetPortId: 'references',
+      order,
     });
   }
   for (let index = 0; index < 21; index += 1) {

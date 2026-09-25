@@ -115,6 +115,19 @@ describe('canConnectCanvasPorts', () => {
     expect(canConnectCanvasPorts(generation, 'result', result, 'video')).toEqual({ ok: true });
   });
 
+  it('keeps generated result and optional image asset outputs as separate typed connections', () => {
+    const generation = createCanvasModuleNode('generation', 'image_generation', { x: 0, y: 0 });
+    const result = createCanvasModuleNode('result', 'result_output', { x: 320, y: 0 });
+    const layering = createCanvasModuleNode('layering', 'image_layering', { x: 640, y: 0 });
+
+    expect(canConnectCanvasPorts(generation, 'result', result, 'result')).toEqual({ ok: true });
+    expect(canConnectCanvasPorts(generation, 'image', layering, 'image')).toEqual({ ok: true });
+    expect(canConnectCanvasPorts(generation, 'image', result, 'result')).toMatchObject({
+      ok: false,
+      code: 'TYPE_MISMATCH',
+    });
+  });
+
   it('accepts reverse analysis in the dedicated reverse result node', () => {
     const reverse = createCanvasModuleNode('reverse', 'reverse_agent', { x: 0, y: 0 });
     const result = createCanvasModuleNode('result', 'reverse_result', { x: 320, y: 0 });
