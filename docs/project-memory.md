@@ -1676,3 +1676,11 @@ Before producing an installer, verify at minimum:
 - 大型项目初次 45 秒保存失败是验收脚本误用默认可见等待：Canvas 折叠布局让 save-state 节点 display:none，但 data-save-state 已是 saved；修正为 attached/属性、manifest revision、recent index、退出码和 cleanClose 联合判断。不要把可见性误报成写盘失败。
 - 正式安装仍未验证：D:\CanvasAtelier 当前 1.6.167；NSIS 需要可提权会话，之前返回操作被用户取消。最终 1.6.170 包在 work/qa-release-1.6.170-final-20260925/deliverables，105286594 字节，SHA-256 7c6e25cfd52b5fb6de3942a7989335d51f4c7b5f15bc3ec9ee944c783c2323e2，86/86 解包匹配，图标/版本通过，未签名。
 - 自我纠错：扩展矩阵发现重复模型后没有沿用旧包，先修路由与测试类型，再完整 build 和重打包。曾误判外部 Codex 持有的 MCP helper 为画布泄漏，已纠正判断。仍未做真实供应商成品、透明 alpha/4K、当前 Photoshop、正式安装态和 GitHub/在线更新；下一步先管理员安装 1.6.170，核对 exe/app.asar 哈希后重跑安装矩阵，再决定发布。
+
+### 2026-09-25 1.6.170 GitHub 发布复盘
+
+- 成果：提交 `261fa8b` 已推送到 `feature/canvas-agent-mvp`；GitHub Release `v1.6.170` 已正式发布，EXE、`latest.yml`、`.blockmap` 均上传成功。
+- 验证：tag 指向 `261fa8b65a7ba4a49a44eb0bb854ace597f4fb0a`；远端 `latest.yml` 为 1.6.170、105286594 bytes，SHA-512 与本地构建一致；EXE 远端 SHA-256 为 `7c6e25cfd52b5fb6de3942a7989335d51f4c7b5f15bc3ec9ee944c783c2323e2`。
+- 边界：正式安装态、真实供应商成品、Photoshop 当前安装态、本地存储失败完整恢复仍未通过；发布不等于这些门禁已通过。
+- 复盘：发布前筛除了 `work/` 历史 QA 目录和无关脏文件，只提交源码、测试、资源与项目记忆；远端资产下载第一次遇到 TLS 超时，重试后完成 `latest.yml` 内容核对。
+- 下一步：新线程先读取 `work/qa-release-1.6.170-final-20260925/CONTINUATION_CHECKPOINT.md`，继续正式安装态验收；确认安装后再验证在线更新和未完成供应商门禁。
