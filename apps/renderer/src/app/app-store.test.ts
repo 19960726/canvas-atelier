@@ -10524,7 +10524,8 @@ describe('GPT layering analysis app-store boundary', () => {
     source.data.config = { ...source.data.config, assetId };
     const layer = createCanvasModuleNode('image-layer-retry-group-subject', 'image_layer', { x: 400, y: 0 });
     layer.data.config = { ...layer.data.config, groupId: 'retry-group', layerId: 'subject', sourceAssetId: assetId,
-      jobId, status: 'failed', qualityStatus: 'failed', modelRoute: 'comfly-gpt-image-2', provider: 'comfly', resolution: '1K' };
+      jobId, status: 'failed', qualityStatus: 'failed', modelRoute: 'comfly-gpt-image-2', provider: 'comfly', resolution: '1K',
+      qualityReason: 'dimensions', resultAssetId: 'old-layer-result', resultJobId: jobId, resultWidth: 256, resultHeight: 256 };
     const group = createCanvasModuleNode('image-layering-retry-group', 'image_layering', { x: 800, y: 0 });
     group.data.config = { ...group.data.config, groupId: 'retry-group', sourceAssetId: assetId, status: 'failed' };
     const project = { ...createStarterProject(), id: projectId, nodes: [source, layer, group], edges: [], assets: [{
@@ -10542,8 +10543,11 @@ describe('GPT layering analysis app-store boundary', () => {
     const submit = vi.fn(async (job: ModelJob) => { submitted.resolve(); await release.promise; return { providerTaskId: `fixture-${job.id}` }; });
     replaceModelJobStorageForTests(storage);
     replaceModelJobExecutorForTests({ submit, poll: vi.fn(async () => ({ status: 'running' as const })) });
-    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({ commit: vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> =>
-      ({ ok: true, project: request.nextProject, revision: 2 })) }), {
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({ commit: vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      canonicalJson(request.transaction);
+      canonicalJson(request.nextProject);
+      return { ok: true, project: request.nextProject, revision: 2 };
+    }) }), {
       ensureModelExecutionSession: vi.fn(async () => 'layer-retry-session'), getSessionId: () => 'layer-retry-session',
     }));
     window.novusDesktop = { provider: {
@@ -10565,6 +10569,10 @@ describe('GPT layering analysis app-store boundary', () => {
     const rebound = useAppStore.getState().project.nodes.find((node) => node.id === layer.id);
     expect(retry).toMatchObject({ layeringGroupId: 'retry-group', layeringLayerId: 'subject' });
     expect(rebound).toMatchObject({ data: { config: { jobId: retry.id, status: 'queued', qualityStatus: 'pending' } } });
+    for (const key of ['qualityReason', 'resultAssetId', 'resultJobId', 'resultWidth', 'resultHeight']) {
+      expect((rebound as CanvasModuleNode).data.config).not.toHaveProperty(key);
+      expect(layer.data.config).toHaveProperty(key);
+    }
     await submitted.promise;
     expect(submit).toHaveBeenCalledWith(expect.objectContaining({ id: retry.id, layeringGroupId: 'retry-group' }));
     release.resolve();
@@ -10778,3 +10786,5 @@ describe('agent generation model selection', () => {
     expect(submitImageJob).not.toHaveBeenCalled();
   });
 });
+
+import { canonicalJson } from '../../../../packages/desktop-core/src/canonical-json';

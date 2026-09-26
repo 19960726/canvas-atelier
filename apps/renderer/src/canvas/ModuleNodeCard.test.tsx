@@ -5,7 +5,8 @@ import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReactFlowProvider, useStoreApi } from '@xyflow/react';
 import { createCanvasModuleNode } from '@agent-canvas/domain';
-import { ModuleNodeCard, promptContainsImageMention, resolveAutomaticVideoAspectRatio } from './ModuleNodeCard';
+import { ModuleNodeCard, persistImageLayerQuality, promptContainsImageMention, resolveAutomaticVideoAspectRatio } from './ModuleNodeCard';
+import { canonicalJson } from '../../../../packages/desktop-core/src/canonical-json';
 import { replaceProjectPersistenceClientForTests, resetAppStoreForTests, useAppStore } from '../app/app-store';
 import { createProjectPersistenceClient } from '../app/desktop-persistence';
 import { PROVIDER_MODEL_DEFAULTS_STORAGE_KEY, writeProviderModelDefaults } from '../settings/provider-model-defaults';
@@ -7087,4 +7088,37 @@ describe('ModuleNodeCard', () => {
     expect(card.querySelector('.react-flow__handle[data-port-id="layerImages"][data-visual-alias="true"]')).not.toBeNull();
     expect(card.querySelectorAll('.module-node__ports-column--outputs .module-node__port-row')).toHaveLength(1);
   });
+});
+
+it('writes a successful layer verdict as JSON-safe data accepted by the real journal serializer', async () => {
+  const node = createCanvasModuleNode('layer-json-safe', 'image_layer', { x: 0, y: 0 });
+  node.data.config = { ...node.data.config, resultAssetId: projectImage.assetId, qualityStatus: 'failed', qualityReason: 'dimensions' };
+  useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [node], edges: [] } });
+  const commit = vi.spyOn(useAppStore.getState(), 'commitProjectTransaction').mockImplementation(async transaction => {
+    canonicalJson(transaction);
+    return true;
+  });
+  try {
+    await expect(persistImageLayerQuality(node.id, projectImage.assetId, { ok: true })).resolves.toBeUndefined();
+    const transaction = commit.mock.calls[0]![0];
+    expect(canonicalJson(transaction)).not.toContain('qualityReason');
+  } finally { commit.mockRestore(); }
+});
+
+it('uses a new transaction identity when a layer is checked again after a decode failure', async () => {
+  const node = createCanvasModuleNode('layer-recheck', 'image_layer', { x: 0, y: 0 });
+  node.data.config = { ...node.data.config, resultAssetId: projectImage.assetId, qualityStatus: 'pending' };
+  useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [node], edges: [] } });
+  const payloads = new Map<string, string>();
+  const commit = vi.spyOn(useAppStore.getState(), 'commitProjectTransaction').mockImplementation(async transaction => {
+    const payload = canonicalJson(transaction);
+    if (payloads.has(transaction.id) && payloads.get(transaction.id) !== payload) throw new Error('INVALID_REQUEST: conflicting duplicate transaction');
+    payloads.set(transaction.id, payload);
+    return true;
+  });
+  try {
+    await persistImageLayerQuality(node.id, projectImage.assetId, { ok: false, reason: 'decode' });
+    await expect(persistImageLayerQuality(node.id, projectImage.assetId, { ok: true })).resolves.toBeUndefined();
+    expect(payloads.size).toBe(2);
+  } finally { commit.mockRestore(); }
 });

@@ -1007,12 +1007,13 @@ export async function persistImageLayerQuality(nodeId: string, assetId: string, 
     && item.data.moduleType === 'image_layer' && item.data.config.groupId === groupId);
   const group = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module'
     && item.data.moduleType === 'image_layering' && item.data.config.groupId === groupId);
-  const nextConfig = {
+  const nextConfig: Record<string, unknown> = {
     ...current.data.config,
     qualityStatus: verdict.ok ? 'passed' : 'failed',
     qualityValidationVersion: 2,
-    ...(verdict.ok ? { qualityReason: undefined, status: 'completed' } : { qualityReason: verdict.reason, status: 'failed' }),
+    ...(verdict.ok ? { status: 'completed' } : { qualityReason: verdict.reason, status: 'failed' }),
   };
+  if (verdict.ok) delete nextConfig.qualityReason;
   const updatedNode: CanvasModuleNode = { ...current, data: { ...current.data, config: nextConfig } };
   const passedCount = siblings.filter((sibling) => sibling.id === current.id
     ? verdict.ok : sibling.data.config.qualityStatus === 'passed').length;
@@ -1027,7 +1028,7 @@ export async function persistImageLayerQuality(nodeId: string, assetId: string, 
   const operations: ProjectTransaction['operations'][number][] = [{ kind: 'canvas', operation: { kind: 'update_node', node: updatedNode } }];
   if (group && groupConfig) operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: { ...group, data: { ...group.data, config: groupConfig } } } });
   const saved = await state.commitProjectTransaction({
-    id: `image-layer-quality-${nodeId}-${assetId}`,
+    id: `image-layer-quality-${nodeId}-${assetId}-${globalThis.crypto.randomUUID()}`,
     label: 'Validate generated image layer',
     operations,
   });

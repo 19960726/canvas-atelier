@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const css = readFileSync(resolve('apps/renderer/src/styles/release-layout-contract.css'), 'utf8');
+const css = readFileSync(resolve('apps/renderer/src/styles/release-layout-contract.css'), 'utf8').replace(/\r\n/gu, '\n');
 const hybridCss = readFileSync(resolve('apps/renderer/src/styles/canvas-layout.css'), 'utf8');
 
 describe('release layout contract', () => {

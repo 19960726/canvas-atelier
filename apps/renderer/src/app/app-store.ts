@@ -2813,10 +2813,12 @@ export const useAppStore = create<AppState>((set, get) => ({
             const group = state.project.nodes.find((node): node is CanvasModuleNode => node.type === 'module'
               && node.data.moduleType === 'image_layering' && node.data.config.groupId === job.layeringGroupId);
             if (group === undefined) return false;
-            const nextLayer: CanvasModuleNode = { ...source, data: { ...source.data, config: {
-              ...source.data.config, jobId: retry.id, status: 'queued', qualityStatus: 'pending', qualityReason: undefined,
-              resultAssetId: undefined, resultJobId: undefined, resultWidth: undefined, resultHeight: undefined,
-            }, execution: { ...source.data.execution, state: 'queued' } } };
+            const retryConfig: Record<string, unknown> = {
+              ...source.data.config, jobId: retry.id, status: 'queued', qualityStatus: 'pending',
+            };
+            for (const key of ['qualityReason', 'resultAssetId', 'resultJobId', 'resultWidth', 'resultHeight']) delete retryConfig[key];
+            const nextLayer: CanvasModuleNode = { ...source, data: { ...source.data, config: retryConfig,
+              execution: { ...source.data.execution, state: 'queued' } } };
             const nextGroup: CanvasModuleNode = { ...group, data: { ...group.data, config: {
               ...group.data.config, status: 'queued', resultState: 'validating',
             } } };
