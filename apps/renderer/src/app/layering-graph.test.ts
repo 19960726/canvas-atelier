@@ -30,6 +30,17 @@ function sourceProject(): CanvasProject {
 }
 
 describe('durable AI layering graph', () => {
+  it('persists the selected scope on every layer and composite through project serialization', async () => {
+    const selection = { mode: 'objects' as const, box: { x: .2, y: .3, width: .4, height: .5 }, target: '料理机' };
+    const plan = { ...parseLayeringAnalysis(reply, assetId, 1024, 768), selection };
+    const confirmation = await confirmLayeringPlan(plan, 'comfly', 'comfly-gpt-image-2', '2K', '2026-09-23T06:00:00.000Z');
+    const project = sourceProject();
+    const restored = parseCanvasProject(JSON.parse(JSON.stringify(applyProjectTransaction(project,
+      buildLayeringGraphTransaction(project, plan, confirmation, 'scope')))));
+    const group = restored.nodes.filter(node => node.type === 'module' && node.data.config.groupId === 'scope');
+    expect(group).toHaveLength(4);
+    for (const node of group) if (node.type === 'module') expect(node.data.config.layerSelection).toEqual(selection);
+  });
   it('repairs a previously saved distant seven-layer group without moving unrelated nodes', () => {
     const source = createCanvasModuleNode('source-generated', 'image_generation', { x: 2074, y: 96 });
     source.data.config = { ...source.data.config, resultAssetIds: [assetId] };

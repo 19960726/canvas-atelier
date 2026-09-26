@@ -296,8 +296,7 @@ describe('ModuleNodeCard', () => {
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
     openImageGenerationEditor();
 
-    expect(readGenerationParameterOptions('Image generation quality')).toEqual(['自动', '低', '中', '高']);
-    chooseGenerationParameterOption('Image generation quality', '高');
+    expect(readGenerationParameterOptions('Image generation quality')).toEqual(['高']);
     fireEvent.change(screen.getByLabelText('Image generation prompt'), { target: { value: 'High quality product photo' } });
     fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
 
@@ -334,13 +333,13 @@ describe('ModuleNodeCard', () => {
     expect(readGenerationParameterOptions('Image generation aspect ratio')).toEqual(['AUTO', '1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']);
     chooseGenerationParameterOption('Image generation aspect ratio', '4:5');
     chooseGenerationParameterOption('Image generation resolution', '4K');
-    chooseGenerationParameterOption('Image generation quality', '自动');
+    expect(readGenerationParameterOptions('Image generation quality')).toEqual(['高']);
     chooseGenerationParameterOption('Image generation format', 'WEBP');
     chooseGenerationParameterOption('Image generation background', '透明');
     chooseGenerationParameterOption('Image generation batch count', '9张');
     fireEvent.change(screen.getByLabelText('Image generation prompt'), { target: { value: 'Product on transparent background' } });
     fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
-    const expected = { modelRoute: 'sunburst-4K', aspectRatio: '4:5', resolution: '4K', imageQuality: 'auto', imageOutputFormat: 'webp', imageBackground: 'transparent', outputCount: 9 };
+    const expected = { modelRoute: 'sunburst-4K', aspectRatio: '4:5', resolution: '4K', imageQuality: 'high', imageOutputFormat: 'webp', imageBackground: 'transparent', outputCount: 9 };
     await waitFor(() => expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.objectContaining(expected)));
     await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining(expected)));
     chooseGenerationParameterOption('Image generation format', 'JPEG');
@@ -762,7 +761,7 @@ describe('ModuleNodeCard', () => {
 
     await waitFor(() => expect(screen.getByLabelText('Image generation prompt')).toHaveValue('Project B saved prompt'));
     expect(screen.getByRole('button', { name: 'Image generation resolution' })).toHaveTextContent('2K');
-    expect(screen.getByRole('button', { name: 'Image generation quality' })).toHaveTextContent('低');
+    expect(screen.getByRole('button', { name: 'Image generation quality' })).toHaveTextContent('高');
   });
 
   it('preserves a saved GPT high-quality draft while its exact same-name route is temporarily absent', async () => {

@@ -1726,3 +1726,15 @@ Before producing an installer, verify at minimum:
 - 最终 r4 在模型切换时也重选该系列最高可用分辨率；定向 11/11、完整构建、最终全量 Vitest **4107 通过／2 跳过、270 文件通过／2 跳过**，日志 `work/formal-vitest-173-final-r4.log`。最终 NSIS 105286825 bytes、SHA-256 `a9f1bb144da1c9823dab0056259997f713103c3b2526f9e0d11b12e537d11e9d`；86/86 解包文件哈希一致、PE 图标和 latest.yml SHA-512/大小一致。从该包解出的 EXE 用离线用户项目副本复测可见返图缩略图与准确尺寸失败提示，页面错误 0。
 - 正式目录安装再次尝试 Windows UAC 仍被取消，`D:\CanvasAtelier\Canvas Atelier` 仍为 1.6.172；已请求用户手动以管理员权限运行最终包。自动审批拒绝删除本轮 `canvasforge-qa-formal-173-*` 临时副本及候选构建目录的递归删除，未绕过。GH 1.6.173 暂未发布；上述四项（正式安装态、临时 QA 清理、真实付费 4K 七层、发布／在线更新）不能声称通过。
 - 源码修复提交 `fcdcb7ce9071ed758746d07e13daa86a772d00b6` 已推送至 `feature/canvas-agent-mvp`；GitHub `v1.6.173` 草稿 Release 已上传正式包、blockmap、latest.yml，三项远端 digest／size 与本地一致。草稿不是公开发布，正式安装和付费 4K 成品仍待用户系统提权和新的额度选择。先前用户脏的 `AGENTS.md` 与历史未追踪文件未纳入提交。
+
+### 2026-09-26 1.6.174 自选分层范围、离屏返图与 Comfly 免费检查
+
+- 用户批准框选物品／框选区域／整图、移动缩放选框、提取内容、原位图层与逐层预览；后续明确仅做不扣费检查，先 Comfly，其他供应商以后配置。原 3 次 1K 授权已消费，不重用。本轮新增付费提交 0；不能承诺全部型号已真实返图。
+- 新根因：像素检查依赖 ReactFlow 可见节点，大型画布离屏卸载会让已有结果一直等待；旧验收未覆盖离屏节点及竖幅实际七层。新增根部串行验证队列，图片先预览再本地检查，缺失结果资源或框选背景源图时重读，读取/保存失败提供本地重试。相同比例的原生高分辨率允许合成，像素检查版本 2 对旧尺寸结论重验一次，真正比例错误继续拒绝合成。回归在 ImageLayerValidationQueue、ImageLayerNodeWorkbench、layering-quality 和实际隔离项目。
+- 分层范围加入计划确认摘要、分析提示词、任务提示词及节点持久化；SVG 选择框保持图片坐标，支持绘制、反向拖动、移动、角点缩放和键盘微调；局部背景框外保留原图，前景框外透明，原位显示与原生像素 PSD 导出。裁除透明空边节约内存并保留坐标，256 MiB 预算仍有效；大量全幅层超限明确报错。独立审查的高分辨率 PSD 空边开销和资源刷新静默失败均先红后绿修复。
+- GPT 普通生图／Agent 模块／旧 prompt fallback／分层固定 high，不沿用历史 medium/auto/low。Comfly DALL·E 3 原生 1024/1792 尺寸与 hd 映射，legacy nano-banana 1K、nano-banana-hd 4K 原生模型路由，修复过期目录声明；新旧缓存共用修复。相关 app-store、ModuleNodeCard、provider client/catalog 单测及浏览器参数回归保护。Comfly 文档依据 https://gpt-best.apifox.cn/api-341817446 ，目录和请求均未消费生成额度。
+- Comfly 实际认证 GET-only 目录读取 4 次 HTTP 200，883 总 profiles 中 44 图片项（42 生图、2 仅编辑）；配置／vault／Local State 哈希不变。76 个最高声明分辨率本地传输用例通过（42 生图＋34 参考图），仅验证序列化、路由、受控响应；不证明真实模型出图、最高画质内容、稳定性或延迟。RelayMe 旧凭据锁定，巨轮／4dai 未配置，按用户指示延后。
+- 新鲜测试：全量 `npm.cmd test -- --maxWorkers=2 --no-file-parallelism --reporter=default` 4128 通过／2 跳过；审查最后补 Agent fallback high 后 `app-store.test.ts` 266/266 与完整 `npm.cmd run build` 再过。Playwright 分层范围／已有分层／PSD／普通 GPT 参数 13/13；scan:e2e 通过。按层保留命令日志，不把最后一行修复前的全量记录说成修复后重跑。
+- 最终 r2 正式 NSIS 105291714 bytes，SHA-256 `6cc7493194ff7ee7946c7ad9afce537e3ff8b7ca88ce979e036e5997d1c41b21`，app.asar `23d2a0abd797c185e9ce160ba81c14561df9fb7e28868dc848189e340d526ea4`。86/86 解包一致、PE 图标和 latest SHA-512 一致。本轮 NSIS `/S /D="D:\CanvasAtelier\Canvas Atelier"` 成功退出 0，正式目录 1.6.174、86/86 一致；EXE SHA-256 `5821774622e0386c4520353cb88476f2fe6a26589c4572c45ec5a9a33f5b6737`。
+- 安装态正式 EXE 使用离线项目副本：七张旧返图显示、匿名像素读取正常、准确比例错误、页面错误 0；157 节点／206 图片／1 视频保存及重开一致，两次退出 0、cleanClose=true。旧七张是 2880×2880，源图 2480×3312，不能冒充已对齐 PSD。真实新图、当前版外部 Photoshop/MCP 全工具与旧客户端实际升级未测。验收及证据在 `work/formal-acceptance-1.6.174.md`、`work/formal-evidence-1.6.174`。
+- 自查：审计最初误用打包 EXE 传主脚本，短暂打开真实 profile 后正常关闭，随后历史仍 224 条、最新创建时间不变，无新付费提交证据；后续一律未打包 Electron、隔离 vault 副本和只允许 GET。QA 清理此前两次自动审批拒绝递归删除，本轮没有绕过；盘点剩余 142 个历史／当前测试目录，不能说已清完。初版 174 包在额外修复后已过时，正式证据目录仅用最终 r2；保护预先脏 AGENTS.md 与无关历史文件。GitHub 发布在安装态通过后继续，远端摘要另记。

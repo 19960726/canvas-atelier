@@ -103,6 +103,10 @@ export function repairComflyGptImage25AsyncCapability(profile: ProviderBridgePro
 /** Repair stale UI resolution tiers using exact documented GPT model families. */
 export function repairComflyGptImageConstraints(profile: ProviderBridgeProfile): ProviderBridgeProfile {
   if (profile.provider !== 'comfly' || !profile.capabilities.includes('image_generation') || !profile.modelId) return profile;
+  if (profile.modelId === 'nano-banana' || profile.modelId === 'nano-banana-hd') {
+    const resolutions: ('1K' | '4K')[] = [profile.modelId === 'nano-banana-hd' ? '4K' : '1K'];
+    return { ...profile, constraints: { ...profile.constraints, image: { ...profile.constraints?.image, resolutions } } };
+  }
   const legacy = /^gpt-image-1(?:\.5|-mini)?(?:-\d{4}-\d{2}-\d{2})?$/u.test(profile.modelId);
   if (!legacy && profile.modelId !== 'gpt-image-2-all') return profile;
   const image = { ...profile.constraints?.image, resolutions: legacy ? ['1K', '2K'] as const : ['1K'] as const,

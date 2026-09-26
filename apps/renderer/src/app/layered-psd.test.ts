@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { initializeCanvas, readPsd } from 'ag-psd';
-import { encodeLayeredPsd, type LayeredPsdDocument } from './layered-psd';
+import { encodeLayeredPsd, trimTransparentLayer, validateLayeredDocument, type LayeredPsdDocument } from './layered-psd';
 
 const rgba = (...pixels: number[][]) => Uint8Array.from(pixels.flat());
 initializeCanvas(() => { throw new Error('Canvas decode is not used by this test'); },
@@ -18,6 +18,21 @@ const fourLayers: LayeredPsdDocument = {
 };
 
 describe('layered PSD export', () => {
+  it('preserves native pixels and placement while dropping empty transparent margins from 4K layer stacks', () => {
+    const width = 2880, height = 2880;
+    const pixels = new Uint8Array(width * height * 4);
+    pixels.set([255, 30, 10, 255], (100 * width + 200) * 4);
+    const transparent = { ...fourLayers.layers[1]!, x: 0, y: 0, width, height, rgba: pixels };
+    const trimmed = trimTransparentLayer(transparent);
+    expect([trimmed.x, trimmed.y, trimmed.width, trimmed.height]).toEqual([199, 99, 3, 3]);
+    expect(Array.from(trimmed.rgba.slice(16, 20))).toEqual([255, 30, 10, 255]);
+    const background = { ...fourLayers.layers[0]!, width, height, rgba: pixels };
+    expect(() => validateLayeredDocument({ width, height, layers: [background, ...Array.from({ length: 12 }, (_, i) => ({ ...trimmed, id: `subject-${i}` }))] })).not.toThrow();
+    const cornerPixels = new Uint8Array(16 * 4); cornerPixels.set([10, 20, 30, 255]);
+    const corner = trimTransparentLayer({ ...transparent, width: 4, height: 4, rgba: cornerPixels });
+    expect([corner.x, corner.y, corner.width, corner.height]).toEqual([0, 0, 2, 2]);
+    expect(corner.rgba[7]).toBe(0);
+  });
   it('writes Photoshop PSD v1 with four independent RGBA layers and a matching composite', () => {
     const bytes = encodeLayeredPsd(fourLayers);
     expect(Buffer.from(bytes.subarray(0, 4)).toString('ascii')).toBe('8BPS');

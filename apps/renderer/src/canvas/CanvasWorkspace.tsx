@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { ImageLayerValidationQueue } from './ImageLayerValidationQueue';
+import { persistImageLayerQuality } from './ModuleNodeCard';
 import { Background, BackgroundVariant, ConnectionLineType, ConnectionMode, Controls, MiniMap, ReactFlow, SelectionMode, useStore, useStoreApi, useUpdateNodeInternals } from '@xyflow/react';
 import type { Connection, Edge, Node, OnConnectEnd, OnConnectStart, Viewport } from '@xyflow/react';
 import type { CodexCliProfile, ProviderBridgeProfile, ProviderConfigurationStatus } from '@agent-canvas/desktop-core';
@@ -2023,6 +2025,8 @@ export function CanvasWorkspace() {
 
   return (
     <div data-testid="workspace" data-agent-collapsed={activeSurface !== 'agent'} data-secondary-surface={secondarySurface} data-connectors-suppressed={quickInsert !== null ? 'true' : undefined} className={`workspace workspace--canvas-layout${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
+      <ImageLayerValidationQueue projectId={project.id} nodes={project.nodes} assets={projectImages}
+        onQualityResult={persistImageLayerQuality} onRefreshAssets={useAppStore.getState().refreshProjectImages} />
       <header className="topbar" data-testid="topbar" data-surface="chrome">
         <div className="topbar__identity">
           <div className="product-mark" aria-label="Canvas Atelier">

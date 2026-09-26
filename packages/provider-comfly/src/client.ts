@@ -373,6 +373,25 @@ export function mapComflyGptImageExactSize(
 
 function mapComflyImageGenerationInput(input: ComflyImageGenerationInput): Record<string, unknown> {
   const { async: _async, ...request } = input;
+  if (input.model === 'nano-banana' || input.model === 'nano-banana-hd') {
+    // These legacy routes select resolution by model id; the HD route is the
+    // provider's native 4K variant, not a generic 1536px or image_size request.
+    const { size, ...rest } = request;
+    const nativeTier = input.model === 'nano-banana-hd' ? '4K' : '1K';
+    if ((size === '1K' || size === '2K' || size === '4K') && size !== nativeTier) {
+      throw Object.assign(new Error(`${input.model} uses its native ${nativeTier} route`), { code: 'CAPABILITY_UNSUPPORTED', retryable: false });
+    }
+    return rest;
+  }
+  if (input.model === 'dall-e-3') {
+    const { aspect_ratio: ratio = '1:1', quality, ...rest } = request;
+    if (input.size === '4K') throw Object.assign(new Error('DALL-E 3 supports native sizes up to 1792 pixels'), { code: 'CAPABILITY_UNSUPPORTED', retryable: false });
+    const [width, height] = String(ratio).split(':').map(Number);
+    const size = input.size === '1K' || input.size === '2K'
+      ? width === height ? '1024x1024' : width! > height! ? '1792x1024' : '1024x1792'
+      : input.size;
+    return { ...rest, ...(size === undefined ? {} : { size }), quality: quality === 'high' || quality === 'hd' || quality === undefined ? 'hd' : 'standard' };
+  }
   if (input.model === 'gpt-image-2-all' && (input.size === '2K' || input.size === '4K')) {
     throw Object.assign(new Error('GPT Image 2 All supports the 1K output tier only'), { code: 'CAPABILITY_UNSUPPORTED', retryable: false });
   }

@@ -3269,13 +3269,13 @@ describe('project optimization memory', () => {
     })).resolves.toBe(true);
     await waitForStore(() => submitImageJob.mock.calls.length > 0);
     expect(useAppStore.getState().modelJobs).toHaveLength(9);
-    expect(useAppStore.getState().project.nodes[0]?.data).toMatchObject({ config: { outputCount: 9, imageQuality: 'auto', imageOutputFormat: 'webp', imageBackground: 'transparent' } });
+    expect(useAppStore.getState().project.nodes[0]?.data).toMatchObject({ config: { outputCount: 9, imageQuality: 'high', imageOutputFormat: 'webp', imageBackground: 'transparent' } });
 
     expect(useAppStore.getState().modelJobs[0]).toMatchObject({
       provider: '4dai',
       aspectRatio: '16:9',
       resolution: '4K',
-      imageQuality: 'auto',
+      imageQuality: 'high',
       imageOutputFormat: 'webp',
       imageBackground: 'transparent',
       outputCount: 1,
@@ -3283,7 +3283,7 @@ describe('project optimization memory', () => {
     expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({
       aspectRatio: '16:9',
       resolution: '4K',
-      quality: 'auto',
+      quality: 'high',
       imageOutputFormat: 'webp',
       imageBackground: 'transparent',
     }));
@@ -4941,6 +4941,7 @@ describe('project optimization memory', () => {
       provider: 'comfly',
       modelRoute: 'gpt-image',
       prompt: 'Generate through the desktop provider bridge',
+      quality: 'high',
       conversationId: 'agent-conversation-shared',
       referenceAssetIds: ['starter-product'],
     });
@@ -5057,6 +5058,7 @@ describe('project optimization memory', () => {
       provider: 'comfly',
       modelRoute: 'image-generation',
       prompt: 'Generate through GPT Image profile',
+      quality: 'high',
       conversationId: 'agent-conversation-shared',
       referenceAssetIds: ['starter-product'],
     });

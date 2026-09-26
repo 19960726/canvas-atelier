@@ -52,6 +52,9 @@
 .image-layering__view-controls button[aria-pressed='true'] { color: var(--gate-accent); background: var(--gate-preview-surface); }
 .image-layering__view-controls button:disabled { opacity: .45; cursor: default; }
 .image-layering__source-preview { display: block; max-width: 100%; max-height: 180px; object-fit: contain; border-radius: 8px; }
+.image-layering__returned-thumbnail { width: 64px; height: 48px; object-fit: contain; grid-column: 1 / -1; }
+.image-layering__scope-preview { display: block; width: 100%; height: 100%; max-height: 172px; }
+.image-layering__validation-error { position: fixed; bottom: 24px; left: 90px; z-index: 90; display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 8px; background: var(--panel-bg, #242c29); color: var(--text, white); box-shadow: 0 4px 20px #0004; }
 
 .image-layering__preview,
 .image-layering__single {
@@ -210,6 +213,14 @@
 .image-layering-dialog__source-panel { display: grid; grid-template-rows: minmax(0, 1fr) auto auto; gap: 11px; min-width: 0; min-height: 0; padding: 18px; border-right: 1px solid var(--gate-border); background: color-mix(in srgb, var(--gate-preview-surface) 74%, var(--gate-card)); }
 .image-layering-dialog__source-stage { position: relative; display: grid; min-height: 210px; place-items: center; overflow: hidden; border: 1px solid var(--gate-border); border-radius: 12px; background-color: var(--gate-card); background-image: linear-gradient(45deg, color-mix(in srgb, var(--gate-border) 60%, transparent) 25%, transparent 25%), linear-gradient(-45deg, color-mix(in srgb, var(--gate-border) 60%, transparent) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--gate-border) 60%, transparent) 75%), linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--gate-border) 60%, transparent) 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; }
 .image-layering-dialog__source-stage > img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.image-layering-dialog__source-stage > .image-layering-selection__image { position: absolute; width: 100%; height: 100%; user-select: none; }
+.image-layering-selection__overlay { position: absolute; touch-action: none; cursor: crosshair; outline-offset: -2px; }
+.image-layering-dialog__selection-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--gate-muted); }
+.image-layering-dialog__selection-actions button { border: 1px solid var(--gate-border); border-radius: 7px; padding: 6px 9px; background: var(--gate-card); color: var(--gate-text); cursor: pointer; }
+.image-layering-dialog__selection-actions button:disabled { opacity: .5; cursor: default; }
+.image-layering-dialog__field textarea { width: 100%; box-sizing: border-box; padding: 9px; resize: vertical; border: 1px solid var(--gate-border); border-radius: 8px; background: var(--gate-card); color: var(--gate-text); font: inherit; }
+.image-layering-dialog__section h4 { margin: 12px 0 7px; font-size: 12px; }
+.image-layering-dialog__mode.image-layering-dialog__scope { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .image-layering-dialog__source-stage-meta { position: absolute; inset: 10px 10px auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; pointer-events: none; }
 .image-layering-dialog__source-stage-meta span,
 .image-layering-dialog__source-stage-meta small { padding: 4px 7px; border: 1px solid color-mix(in srgb, var(--gate-border-strong) 70%, transparent); border-radius: 999px; color: var(--gate-muted); background: color-mix(in srgb, var(--gate-card) 88%, transparent); font-size: 9px; backdrop-filter: blur(8px); }

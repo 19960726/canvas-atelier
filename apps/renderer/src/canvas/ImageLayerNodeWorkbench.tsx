@@ -3,13 +3,17 @@ import { Eye, EyeOff, Image as ImageIcon, LoaderCircle } from 'lucide-react';
 import type { ProjectImageAssetSummary } from '@agent-canvas/desktop-core';
 import type { ModelJob } from '@agent-canvas/domain';
 import { validateLayerPixels, type LayerQualityVerdict } from '../app/layering-quality';
+import { applyLayerSelection, readLayeringSelection } from '../app/layering-selection';
+import { LayerScopePreview } from './LayerScopePreview';
 
 type ManagedImage = Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'mediaType' | 'width' | 'height'>;
 
-export function ImageLayerNodeWorkbench({ nodeId, config, asset, job, onQualityResult, onVisibilityChange, onRefreshAsset }: {
+export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, job, onQualityResult, onVisibilityChange, onRefreshAsset, validatePixels = true }: {
   nodeId: string;
   config: Readonly<Record<string, unknown>>;
   asset?: ManagedImage;
+  sourceAsset?: ManagedImage;
+  validatePixels?: boolean;
   job?: ModelJob;
   onQualityResult: (assetId: string, verdict: LayerQualityVerdict) => void | Promise<void>;
   onVisibilityChange: (visible: boolean) => void | Promise<void>;
@@ -27,6 +31,7 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, job, onQualityR
   const resultAssetId = typeof config.resultAssetId === 'string' ? config.resultAssetId : null;
   const qualityStatus = typeof config.qualityStatus === 'string' ? config.qualityStatus : 'pending';
   const visible = config.visible !== false;
+  const scope = (() => { try { return readLayeringSelection(config.layerSelection); } catch { return null; } })();
 
   useEffect(() => {
     if (!resultAssetId || asset || !onRefreshAsset) return;
@@ -41,17 +46,13 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, job, onQualityR
   }, [asset, onRefreshAsset, resultAssetId]);
 
   useEffect(() => {
-    if (!asset || resultAssetId !== asset.assetId || qualityStatus !== 'pending' || validatingAsset.current === asset.assetId) return;
+    const oldResolutionFailure = qualityStatus === 'failed' && config.qualityReason === 'dimensions' && config.qualityValidationVersion !== 2;
+    if (!validatePixels || !asset || resultAssetId !== asset.assetId || (qualityStatus !== 'pending' && !oldResolutionFailure) || validatingAsset.current === asset.assetId) return;
     validatingAsset.current = asset.assetId;
     let cancelled = false;
     setValidationSaveFailed(false);
     setValidation('checking');
-    void readManagedPixels(asset).then(async ({ width, height, rgba }) => {
-      if (cancelled) return;
-      const expectedWidth = typeof config.canvasWidth === 'number' ? config.canvasWidth : width;
-      const expectedHeight = typeof config.canvasHeight === 'number' ? config.canvasHeight : height;
-      return validateLayerPixels(layerKind, asset.mediaType, width, height, rgba, expectedWidth, expectedHeight);
-    }).catch((): LayerQualityVerdict => ({ ok: false, reason: 'decode' })).then(async (verdict) => {
+    void validateManagedImageLayer(asset, config, !!sourceAsset).then(async (verdict) => {
       if (cancelled || verdict === undefined) return;
       setValidation('complete');
       try { await onQualityResultRef.current(asset.assetId, verdict); }
@@ -61,7 +62,7 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, job, onQualityR
       cancelled = true;
       if (validatingAsset.current === asset.assetId) validatingAsset.current = null;
     };
-  }, [asset, config.canvasHeight, config.canvasWidth, layerKind, qualityStatus, resultAssetId, retryValidation]);
+  }, [validatePixels, asset, sourceAsset, config.canvasHeight, config.canvasWidth, config.layerSelection, config.qualityReason, config.qualityValidationVersion, layerKind, qualityStatus, resultAssetId, retryValidation]);
 
   const status = job?.status === 'failed' || job?.status === 'cancelled' ? job.status
     : qualityStatus === 'failed' ? 'failed'
@@ -73,13 +74,16 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, job, onQualityR
     : status === 'validating' ? !asset && resultAssetId ? assetLoadFailed ? '图片读取失败' : '图片已返回，正在读取'
       : validationSaveFailed ? '验证结果保存失败' : validation === 'checking' ? '检查透明像素…' : '检查透明像素'
       : status === 'completed' ? '像素验证通过' : status === 'cancelled' ? '任务已取消' : '需要检查';
-  const qualityReason = typeof config.qualityReason === 'string' ? qualityReasonLabel(config.qualityReason) : undefined;
+  const qualityReason = config.qualityReason === 'dimensions' && asset
+    ? `图片已返回 ${asset.width ?? '?'} × ${asset.height ?? '?'}；原图为 ${config.canvasWidth} × ${config.canvasHeight}，画幅比例不符，不能直接对齐合成。请按原图比例重新生成此层。`
+    : typeof config.qualityReason === 'string' ? qualityReasonLabel(config.qualityReason) : undefined;
   const jobError = typeof job?.error === 'string' ? job.error : undefined;
 
   return <section className="image-layer-node nodrag" aria-label={`画布图层：${layerName}`} data-layer-status={status} data-layer-node-id={nodeId}>
     <div className="image-layer-node__preview">
-      {asset && resultAssetId === asset.assetId
-        ? <img src={asset.displayUrl} alt={`${layerName}图层预览`} loading="lazy" decoding="async" />
+      {asset && resultAssetId === asset.assetId && scope
+        ? <LayerScopePreview url={asset.displayUrl} sourceUrl={sourceAsset?.displayUrl} selection={scope} background={layerKind === 'background'}
+          width={asset.width ?? 1} height={asset.height ?? 1} label={`${layerName}图层预览`} />
         : <span className="image-layer-node__placeholder" aria-hidden="true">{status === 'running' || status === 'queued' ? <LoaderCircle className="is-spinning" size={19} /> : <ImageIcon size={19} />}</span>}
       <span className="image-layer-node__kind">{layerKind === 'background' ? '背景' : '透明层'}</span>
     </div>
@@ -87,11 +91,31 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, job, onQualityR
       <div className="image-layer-node__heading"><strong title={layerName}>{layerName}</strong><span aria-live="polite" data-status={status}>{statusText}</span></div>
       {status === 'running' && job?.progress !== undefined && <div className="image-layer-node__progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(job.progress * 100)}><span style={{ width: `${Math.round(job.progress * 100)}%` }} /></div>}
       {(jobError || qualityReason) && <p className="image-layer-node__error" role="status">{qualityReason ?? jobError}</p>}
+      {!scope && <p role="alert">保存的分层范围无效，请重新选择。</p>}
       {assetLoadFailed && !asset && resultAssetId && <button type="button" onClick={() => { setAssetLoadFailed(false); void onRefreshAsset?.(); }}>重新读取图片</button>}
       {validationSaveFailed && <button type="button" onClick={() => { validatingAsset.current = null; setRetryValidation((value) => value + 1); }}>重试本地验证</button>}
       <button className="image-layer-node__visibility" type="button" aria-pressed={visible} aria-label={`${visible ? '隐藏' : '显示'}图层 ${layerName}`} title={visible ? '隐藏图层' : '显示图层'} onClick={() => { void onVisibilityChange(!visible); }}><span>{visible ? <Eye size={14} /> : <EyeOff size={14} />}</span>{visible ? '可见' : '隐藏'}</button>
     </div>
   </section>;
+}
+
+export function needsLayerPixelValidation(config: Readonly<Record<string, unknown>>): boolean {
+  return typeof config.resultAssetId === 'string' && (config.qualityStatus === 'pending' || config.qualityStatus === undefined
+    || (config.qualityStatus === 'failed' && config.qualityReason === 'dimensions' && config.qualityValidationVersion !== 2));
+}
+
+export async function validateManagedImageLayer(asset: ManagedImage, config: Readonly<Record<string, unknown>>, hasSource: boolean): Promise<LayerQualityVerdict> {
+  try {
+    const { width, height, rgba } = await readManagedPixels(asset);
+    const expectedWidth = typeof config.canvasWidth === 'number' ? config.canvasWidth : width;
+    const expectedHeight = typeof config.canvasHeight === 'number' ? config.canvasHeight : height;
+    const kind = config.layerKind === 'background' ? 'background' : 'transparent';
+    const selection = readLayeringSelection(config.layerSelection);
+    const verdict = await validateLayerPixels(kind, asset.mediaType, width, height, rgba, expectedWidth, expectedHeight);
+    if (!verdict.ok || selection.mode === 'whole') return verdict;
+    if (kind === 'background') return hasSource ? verdict : { ok: false, reason: 'decode' };
+    return validateLayerPixels(kind, asset.mediaType, width, height, applyLayerSelection(rgba, width, height, selection), expectedWidth, expectedHeight);
+  } catch { return { ok: false, reason: 'decode' }; }
 }
 
 async function readManagedPixels(asset: ManagedImage): Promise<{ width: number; height: number; rgba: Uint8Array }> {

@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react';
 import type { ProjectImageAssetSummary } from '@agent-canvas/desktop-core';
 import type { CanvasModuleNode, ModelJob } from '@agent-canvas/domain';
-import { encodeLayeredPsd, type LayeredPsdDocument } from '../app/layered-psd';
+import { encodeLayeredPsd, trimTransparentLayer, type LayeredPsdDocument } from '../app/layered-psd';
 import { parseLayeredImageConfig, type LayeredImageRecord } from '../app/layered-image-config';
+import { applyLayerSelection, compatibleLayerDimensions, layerSelectionClip, readLayeringSelection } from '../app/layering-selection';
+import { LayerScopePreview } from './LayerScopePreview';
 
-type ManagedImage = Pick<ProjectImageAssetSummary, 'assetId' | 'mediaType' | 'displayUrl'>;
+type ManagedImage = Pick<ProjectImageAssetSummary, 'assetId' | 'mediaType' | 'displayUrl'> & Partial<Pick<ProjectImageAssetSummary, 'width' | 'height'>>;
 
 export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs = [], onLayersChange, onRefreshJobs, onRetryJob, canRetryJob }: {
   config: Readonly<Record<string, unknown>>;
@@ -49,6 +51,12 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
   const generatedPlan = Array.isArray(config.planLayers) ? config.planLayers.filter((layer): layer is Record<string, unknown> => typeof layer === 'object' && layer !== null && !Array.isArray(layer)) : [];
   const layerStatusById = new Map(layerNodes.map((node) => [node.data.config.layerId, node.data.config]));
   const sourceAsset = assets.find((asset) => asset.assetId === config.sourceAssetId);
+  const selectionResult = useMemo(() => {
+    try { return { selection: readLayeringSelection(config.layerSelection), error: null }; }
+    catch { return { selection: null, error: '保存的分层范围无效，请重新选择范围。' }; }
+  }, [config.layerSelection]);
+  const selection = selectionResult.selection;
+  const selectionClip = selection ? layerSelectionClip(selection) : undefined;
   const jobsById = new Map(jobs.map((job) => [job.id, job]));
   const passedCount = generatedPlan.filter((layer) => layerStatusById.get(layer.layerId)?.qualityStatus === 'passed').length;
   const failedCount = generatedPlan.filter((layer) => {
@@ -100,21 +108,38 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
   };
   const buildPsdBytes = async (): Promise<Uint8Array> => {
     if (!layered) throw new Error('尚无可导出的分层结果');
+    if (!selection) throw new Error(selectionResult.error!);
+    // Generated layers use source coordinates in durable records; export at the returned pixel resolution.
+    let exportWidth = layered.canvasWidth, exportHeight = layered.canvasHeight;
+    if (generatedPlan.length > 0) {
+      for (const { record, asset } of layered.layers) {
+        const node = layerNodes.find(candidate => candidate.data.config.resultAssetId === record.assetId);
+        const metadata = assets.find(candidate => candidate.assetId === asset.assetId);
+        const width = metadata?.width ?? node?.data.config.resultWidth;
+        const height = metadata?.height ?? node?.data.config.resultHeight;
+        if (typeof width === 'number' && typeof height === 'number' && width * height > exportWidth * exportHeight
+          && compatibleLayerDimensions(width, height, layered.canvasWidth, layered.canvasHeight)) {
+          exportWidth = width; exportHeight = height;
+        }
+      }
+    }
+    const scoped = selection.mode !== 'whole';
+    if (scoped && !sourceAsset) throw new Error('无法读取分层原图，不能保留选框外的像素。');
+    const sourcePixels = scoped ? await decodeManagedLayer(sourceAsset!, { name: '原图', width: exportWidth, height: exportHeight }) : undefined;
+    const outputLayers: LayeredPsdDocument['layers'][number][] = [];
+    for (const { record, asset } of layered.layers) {
+      const scaled = { ...record,
+        x: Math.round(record.x * exportWidth / layered.canvasWidth), y: Math.round(record.y * exportHeight / layered.canvasHeight),
+        width: Math.round(record.width * exportWidth / layered.canvasWidth), height: Math.round(record.height * exportHeight / layered.canvasHeight) };
+      if (scoped && (scaled.x !== 0 || scaled.y !== 0 || scaled.width !== exportWidth || scaled.height !== exportHeight)) throw new Error('选区图层需要保留完整画布位置。');
+      const rgba = await decodeManagedLayer(asset, scaled);
+      outputLayers.push(trimTransparentLayer({ ...scaled, id: record.layerId,
+        rgba: applyLayerSelection(rgba, scaled.width, scaled.height, selection, record.kind === 'background' ? sourcePixels : undefined) }));
+    }
     const decoded: LayeredPsdDocument = {
-        width: layered.canvasWidth,
-        height: layered.canvasHeight,
-        layers: await Promise.all(layered.layers.map(async ({ record, asset }) => ({
-          id: record.layerId,
-          kind: record.kind,
-          name: record.name,
-          x: record.x,
-          y: record.y,
-          width: record.width,
-          height: record.height,
-          visible: record.visible,
-          opacity: record.opacity,
-          rgba: await decodeManagedLayer(asset, record),
-        }))),
+        width: exportWidth,
+        height: exportHeight,
+        layers: outputLayers,
     };
     return encodeLayeredPsd(decoded);
   };
@@ -167,6 +192,7 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
   return <section className="image-layering nodrag nowheel" aria-label="图片自动分层工作台">
     <header><strong>图片自动分层</strong><span>透明图层与多图层 PSD</span></header>
     {parsed.error && <p role="alert">分层结果无效：{parsed.error}</p>}
+    {selectionResult.error && <p role="alert">{selectionResult.error}</p>}
     {generatedPlan.length > 0 && <div className="image-layering__progress-heading" role="status"><strong>已验证 {passedCount} / {generatedPlan.length} 层</strong><span>{overallStatus}</span></div>}
     {sourceAsset && <div className="image-layering__view-controls" role="group" aria-label="分层预览模式">
       <button type="button" aria-pressed={previewMode === 'original' || layered === null} onClick={() => setPreviewMode('original')}>原图</button>
@@ -174,7 +200,7 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     </div>}
     {layered === null ? <div className="image-layering__empty">
       {sourceAsset && <img className="image-layering__source-preview" src={sourceAsset.displayUrl} alt="原图预览" draggable={false} />}
-      <span>{generatedPlan.length > 0 ? '独立图层会在任务完成并通过像素验证后显示在合成预览中。' : '连接一张图片，或从图片工具栏使用 AI 分层。'}</span>
+      <span>{generatedPlan.length > 0 ? '每层返回后立即显示在对应图片节点。全部图层可用后即可合成和导出 PSD。' : '连接一张图片，或从图片工具栏使用 AI 分层。'}</span>
       {generatedPlan.length > 0 && <ol className="image-layering__progress-list" aria-label="分层任务进度">{generatedPlan.map((layer) => {
         const layerConfig = layerStatusById.get(layer.layerId);
         const job = typeof layerConfig?.jobId === 'string' ? jobsById.get(layerConfig.jobId) : undefined;
@@ -183,9 +209,11 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
             : job?.status === 'failed' ? '任务失败'
               : job?.status === 'cancelled' ? '已取消'
                 : job?.status === 'running' || job?.status === 'submitting' || layerConfig?.status === 'running' ? '生成中'
-                  : job?.status === 'completed' || layerConfig?.status === 'validating' ? '验证中'
+                  : job?.status === 'completed' || layerConfig?.status === 'validating' ? '图片已返回，正在检查'
                     : job?.status === 'queued' || layerConfig?.status === 'queued' ? '排队中' : '等待任务';
         return <li key={String(layer.layerId)}><span>{String(layer.name ?? '图层')}</span><b>{status}</b>
+          {assets.find(asset => asset.assetId === layerConfig?.resultAssetId) && <img className="image-layering__returned-thumbnail"
+            src={assets.find(asset => asset.assetId === layerConfig?.resultAssetId)!.displayUrl} alt={`已返回图层 ${String(layer.name ?? '图层')}`} />}
           {(job?.status === 'failed' || job?.status === 'cancelled') && onRetryJob && <button type="button"
             aria-label={`重试图层 ${String(layer.name ?? '图层')}`} disabled={!canRetryJob?.(job)}
             title={canRetryJob?.(job) ? '重新提交此图层任务' : '所选透明背景路由尚无验证证据，暂不能重试'}
@@ -203,19 +231,20 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     </div> : <>
       <div className="image-layering__preview" role="img" aria-label={previewMode === 'original' && sourceAsset ? '原图预览区域' : '合成预览'} style={{ aspectRatio: `${layered.canvasWidth} / ${layered.canvasHeight}` }}>
         {previewMode === 'original' && sourceAsset ? <img src={sourceAsset.displayUrl} alt="原图预览" draggable={false} style={{ inset: 0, width: '100%', height: '100%' }} />
-          : layered.layers.filter(layer => layer.record.visible).map(({ record, asset }) => <img
+          : <>{selectionClip && sourceAsset && layered.layers[0]?.record.visible && <img src={sourceAsset.displayUrl} alt="选区外保留的原图" style={{ inset: 0, width: '100%', height: '100%' }} />}
+          {layered.layers.filter(layer => layer.record.visible).map(({ record, asset }) => <img
           key={record.layerId}
           src={asset.displayUrl}
           alt={`合成预览图层 ${record.name}`}
           draggable={false}
           style={{ left: `${record.x / layered.canvasWidth * 100}%`, top: `${record.y / layered.canvasHeight * 100}%`,
-            width: `${record.width / layered.canvasWidth * 100}%`, height: `${record.height / layered.canvasHeight * 100}%`, opacity: record.opacity }}
-        />)}
+            width: `${record.width / layered.canvasWidth * 100}%`, height: `${record.height / layered.canvasHeight * 100}%`, opacity: record.opacity, clipPath: selectionClip }}
+        />)}</>}
       </div>
       <ol className="image-layering__list" aria-label="分层图层">
         {layered.layers.map(({ record, asset }, index) => <li key={record.layerId}>
           <button type="button" className="image-layering__thumbnail" aria-label={`预览图层 ${record.name}`} onClick={() => setSelectedLayerId(record.layerId)}>
-            <img src={asset.displayUrl} alt="" draggable={false} />
+            {selection && <LayerScopePreview url={asset.displayUrl} sourceUrl={sourceAsset?.displayUrl} selection={selection} background={record.kind === 'background'} width={record.width} height={record.height} label="" />}
           </button>
           <span className="image-layering__name">{index + 1}. {record.name}</span>
           <button type="button" aria-label={`${record.visible ? '隐藏' : '显示'}图层 ${record.name}`} onClick={() => changeLayers(layered.layers.map((layer, layerIndex) => layerIndex === index
@@ -225,30 +254,34 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
         </li>)}
       </ol>
       {selected && <div className="image-layering__single" aria-label={`透明层预览 ${selected.record.name}`}>
-        <img src={selected.asset.displayUrl} alt={`透明图层 ${selected.record.name}`} draggable={false} />
+        {selection && <LayerScopePreview url={selected.asset.displayUrl} sourceUrl={sourceAsset?.displayUrl} selection={selection} background={selected.record.kind === 'background'} width={selected.record.width} height={selected.record.height} label={`透明图层 ${selected.record.name}`} />}
       </div>}
     </>}
     <div className="image-layering__actions">
       {generatedPlan.length > 0 && onRefreshJobs && <button type="button" disabled={refreshing} onClick={() => { void refreshJobs(); }}>{refreshing ? '正在同步…' : '同步任务状态'}</button>}
-      <button type="button" disabled={!layered || exporting} onClick={() => { void exportPsd(); }}>{exporting ? '正在导出…' : '导出 PSD'}</button>
-      <button type="button" disabled={!layered || exporting} onClick={() => { void openPsdInPhotoshop(); }}>在 Photoshop 中打开</button>
+      <button type="button" disabled={!layered || !selection || exporting} onClick={() => { void exportPsd(); }}>{exporting ? '正在导出…' : '导出 PSD'}</button>
+      <button type="button" disabled={!layered || !selection || exporting} onClick={() => { void openPsdInPhotoshop(); }}>在 Photoshop 中打开</button>
     </div>
     {exportError && <p role="alert">{exportError}</p>}
   </section>;
 }
 
-async function decodeManagedLayer(asset: ManagedImage, record: LayeredImageRecord): Promise<Uint8Array> {
+async function decodeManagedLayer(asset: ManagedImage, record: Pick<LayeredImageRecord, 'name' | 'width' | 'height'>): Promise<Uint8Array> {
   if (!asset.mediaType.startsWith('image/')) throw new Error(`图层 ${record.name} 不是图片`);
   const image = new Image();
   image.crossOrigin = 'anonymous';
   image.src = asset.displayUrl;
   await image.decode();
-  if (image.naturalWidth !== record.width || image.naturalHeight !== record.height) throw new Error(`图层 ${record.name} 的像素尺寸不符`);
+  if (!compatibleLayerDimensions(image.naturalWidth, image.naturalHeight, record.width, record.height)) throw new Error(`图层 ${record.name} 的画幅比例与原图不符，不能拉伸合成`);
   const canvas = document.createElement('canvas');
   canvas.width = record.width;
   canvas.height = record.height;
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('当前环境无法解码图层像素');
-  context.drawImage(image, 0, 0);
-  return new Uint8Array(context.getImageData(0, 0, record.width, record.height).data);
+  try {
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(image, 0, 0, record.width, record.height);
+    return new Uint8Array(context.getImageData(0, 0, record.width, record.height).data);
+  } finally { canvas.width = 0; canvas.height = 0; }
 }

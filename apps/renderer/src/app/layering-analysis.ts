@@ -1,8 +1,10 @@
 import type { ChatSkillBridgeResult, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type { SkillChatRequest } from './desktop-persistence';
 import { parseLayeringAnalysis, type LayeringPlan } from './layering-plan';
+import { readLayeringSelection, selectionInstruction, type LayeringSelection } from './layering-selection';
 
 export interface LayeringAnalysisInput {
+  readonly selection?: LayeringSelection;
   readonly sourceAssetId: string;
   readonly width: number;
   readonly height: number;
@@ -32,7 +34,9 @@ export async function analyzeImageLayering(
   if (mode === 'custom' && (!Number.isInteger(input.targetLayerCount) || input.targetLayerCount! < 2 || input.targetLayerCount! > 12)) {
     throw new Error('Custom layering requires a target between 2 and 12 layers.');
   }
-  const content = buildLayeringAnalysisInstruction(input.width, input.height, mode, input.targetLayerCount);
+  const selection = readLayeringSelection(input.selection);
+  const content = buildLayeringAnalysisInstruction(input.width, input.height, mode, input.targetLayerCount)
+    + '\n' + selectionInstruction(selection, input.width, input.height);
   const result = await chatSkill({
     provider: profile.provider,
     modelRoute: profile.modelRoute,
@@ -50,7 +54,7 @@ export async function analyzeImageLayering(
     }
     throw new Error(`该场景只需要 ${plan.layers.length} 个可见语义图层，少于当前目标 ${input.targetLayerCount} 层。请降低目标层数后重新分析；不会编造空白或重复图层。`);
   }
-  return plan;
+  return input.selection ? { ...plan, selection } : plan;
 }
 
 export function buildLayeringAnalysisInstruction(width: number, height: number, mode: 'auto' | 'custom' = 'auto', targetLayerCount?: number): string {

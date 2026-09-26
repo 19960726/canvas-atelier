@@ -29,7 +29,7 @@ import { ConnectedAgentMediaSlots, type ConnectedAgentMediaSlotItem } from './Co
 import { useAppStore } from '../app/app-store';
 import { registerEditorDraft } from '../app/editor-draft-boundary';
 import { isRenderableManagedImageUrl } from '../app/managed-image-url';
-import { IMAGE_QUALITY_OPTIONS, imageQualityFromLabel, imageQualityLabel, isGptImageQualityIdentity, normalizeImageQuality, supportsGptImageQuality } from '../app/image-generation-quality';
+import { imageQualityLabel, isGptImageQualityIdentity, supportsGptImageQuality } from '../app/image-generation-quality';
 import { IMAGE_RESOLUTION_TIERS, imageModelFamilyDisplayName, imageResolutionFamilyKey, listImageResolutionTiers, resolveImageResolutionRoute } from '../app/image-resolution-routing';
 import { resolveMediaImportMode } from '../app/media-import-capability';
 import { getActiveProjectSessionId } from '../app/desktop-persistence';
@@ -839,9 +839,11 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
         <ReverseResultPreview result={upstreamReverseResult} />
       ) : data.moduleType === 'image_layer' ? (
         <ImageLayerNodeWorkbench
+          validatePixels={false}
           nodeId={id}
           config={data.config}
           asset={projectImages.find((asset) => asset.assetId === data.config.resultAssetId)}
+          sourceAsset={projectImages.find((asset) => asset.assetId === data.config.sourceAssetId)}
           job={modelJobs.find((job) => job.id === data.config.jobId)}
           onQualityResult={(assetId, verdict) => persistImageLayerQuality(id, assetId, verdict)}
           onRefreshAsset={refreshProjectImages}
@@ -996,7 +998,7 @@ async function persistImageLayeringRecords(nodeId: string, layers: LayeredImageR
   if (!saved) throw new Error('图层保存失败，请重试');
 }
 
-async function persistImageLayerQuality(nodeId: string, assetId: string, verdict: LayerQualityVerdict): Promise<void> {
+export async function persistImageLayerQuality(nodeId: string, assetId: string, verdict: LayerQualityVerdict): Promise<void> {
   const state = useAppStore.getState();
   const current = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module' && item.id === nodeId && item.data.moduleType === 'image_layer');
   if (!current || current.data.config.resultAssetId !== assetId) return;
@@ -1008,6 +1010,7 @@ async function persistImageLayerQuality(nodeId: string, assetId: string, verdict
   const nextConfig = {
     ...current.data.config,
     qualityStatus: verdict.ok ? 'passed' : 'failed',
+    qualityValidationVersion: 2,
     ...(verdict.ok ? { qualityReason: undefined, status: 'completed' } : { qualityReason: verdict.reason, status: 'failed' }),
   };
   const updatedNode: CanvasModuleNode = { ...current, data: { ...current.data, config: nextConfig } };
@@ -1699,7 +1702,7 @@ function ImageGenerationSummary({
   modelRouteRef.current = modelRoute;
   const [aspectRatio, setAspectRatio] = useExternallyHydratedDraftState(readSupportedImageString(config.aspectRatio, IMAGE_ASPECT_RATIO_OPTIONS, '1:1'));
   const [resolution, setResolution] = useExternallyHydratedDraftState(normalizeImageResolutionSelection(config.resolution));
-  const [imageQuality, setImageQuality] = useExternallyHydratedDraftState(normalizeImageQuality(config.imageQuality) ?? 'medium');
+  const imageQuality = 'high' as const;
   const [imageOutputFormat, setImageOutputFormat] = useExternallyHydratedDraftState<ImageOutputFormat>(config.imageOutputFormat === 'jpeg' || config.imageOutputFormat === 'webp' ? config.imageOutputFormat : 'png');
   const [imageBackground, setImageBackground] = useExternallyHydratedDraftState<ImageBackground>(config.imageBackground === 'opaque' || config.imageBackground === 'transparent' ? config.imageBackground : 'auto');
   const [outputCount, setOutputCount] = useExternallyHydratedDraftState(config.outputCount === 9 ? 9 : readSupportedImageCount(config.outputCount));
@@ -1747,9 +1750,6 @@ function ImageGenerationSummary({
     if (imageResolutionOptions.length > 0 && !imageResolutionOptions.includes(resolution)) setResolution(imageResolutionOptions[0]!);
     if (!imageOutputCountOptions.includes(outputCount)) setOutputCount(imageOutputCountOptions[0] ?? 1);
   }, [modelRoute, imageOptionsKey]);
-  useEffect(() => {
-    if (selectedImageRoute !== undefined && !hasGptImageQuality && imageQuality !== 'medium') setImageQuality('medium');
-  }, [hasGptImageQuality, imageQuality, selectedImageRoute, setImageQuality]);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [previewActionMenu, setPreviewActionMenu] = useState<{ index: number; x: number; y: number } | null>(null);
   useEffect(() => {
@@ -2193,8 +2193,8 @@ function ImageGenerationSummary({
                   label="画质"
                   ariaLabel="Image generation quality"
                   value={imageQualityLabel(imageQuality)}
-                  options={IMAGE_QUALITY_OPTIONS.map(imageQualityLabel)}
-                  onChange={(value) => setImageQuality(imageQualityFromLabel(value) ?? 'medium')}
+                  options={['高']}
+                  onChange={() => {}}
                 />
                 <ClarityPopover className="module-node__image-format" label="格式" ariaLabel="Image generation format" value={imageOutputFormat.toUpperCase()} options={['PNG', 'JPEG', 'WEBP']} onChange={(value) => setImageOutputFormat(value.toLowerCase() as ImageOutputFormat)} />
                 <ClarityPopover className="module-node__image-background" label="背景" ariaLabel="Image generation background" value={effectiveImageBackground === 'opaque' ? '不透明' : effectiveImageBackground === 'transparent' ? '透明' : '自动'} options={['自动', '不透明', '透明']} disabledOptions={imageOutputFormat === 'jpeg' ? ['透明'] : []} disabledReason="JPEG 不支持透明背景，请选择 PNG 或 WEBP" onChange={(value) => setImageBackground(value === '不透明' ? 'opaque' : value === '透明' ? 'transparent' : 'auto')} />

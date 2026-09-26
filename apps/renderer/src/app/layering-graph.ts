@@ -53,6 +53,7 @@ export function buildLayeringGraphTransaction(
       layerKind: layer.kind,
       canvasWidth: plan.canvasWidth,
       canvasHeight: plan.canvasHeight,
+      ...(plan.selection ? { layerSelection: plan.selection } : {}),
       name: layer.name,
       description: layer.description,
       order,
@@ -78,6 +79,7 @@ export function buildLayeringGraphTransaction(
     planVersion: 1,
     canvasWidth: plan.canvasWidth,
     canvasHeight: plan.canvasHeight,
+    ...(plan.selection ? { layerSelection: plan.selection } : {}),
     planLayers: includedLayers.map((layer, order) => ({
       layerId: layer.layerId,
       kind: layer.kind,

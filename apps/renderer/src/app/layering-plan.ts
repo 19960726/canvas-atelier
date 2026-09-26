@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ModelJobProvider } from '@agent-canvas/domain';
+import { layeringSelectionSchema, type LayeringSelection } from './layering-selection';
 
 const MAX_CANVAS_SIDE = 8_192;
 const MAX_CANVAS_BYTES = 256 * 1024 * 1024;
@@ -15,6 +16,7 @@ const planSchema = z.object({
   sourceAssetId: z.string().min(1).max(256),
   canvasWidth: z.number().int().positive().max(MAX_CANVAS_SIDE),
   canvasHeight: z.number().int().positive().max(MAX_CANVAS_SIDE),
+  selection: layeringSelectionSchema.optional(),
   layers: z.array(layerSchema).min(2).max(12),
 }).strict().superRefine((plan, context) => {
   if (plan.canvasWidth * plan.canvasHeight * 4 > MAX_CANVAS_BYTES) {
@@ -49,6 +51,7 @@ export interface LayeringPlanLayer {
 }
 
 export interface LayeringPlan {
+  readonly selection?: LayeringSelection;
   readonly sourceAssetId: string;
   readonly canvasWidth: number;
   readonly canvasHeight: number;
@@ -146,6 +149,7 @@ async function digestConfirmation(
     sourceAssetId: plan.sourceAssetId,
     canvasWidth: plan.canvasWidth,
     canvasHeight: plan.canvasHeight,
+    ...(plan.selection ? { selection: plan.selection } : {}),
     layers: plan.layers.map((layer) => ({
       layerId: layer.layerId,
       kind: layer.kind,

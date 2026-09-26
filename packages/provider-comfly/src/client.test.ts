@@ -17,6 +17,22 @@ describe('normalizeBaseUrl', () => {
 });
 
 describe('ComflyClient', () => {
+  it.each([['nano-banana', '1K'], ['nano-banana-hd', '4K']] as const)('uses the native %s route at %s without incompatible generic pixel sizes', async (model, size) => {
+    const fetch = vi.fn<ComflyFetch>(async () => jsonResponse({ data: [{ url: 'https://example.com/result.png' }] }));
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'fixture', fetch });
+    await client.generateImage({ model, size, prompt: 'Product', aspect_ratio: '3:4' });
+    const body = JSON.parse(fetch.mock.calls[0]![1]!.body as string);
+    expect(body).toMatchObject({ model, aspect_ratio: '3:4' });
+    expect(body).not.toHaveProperty('size');
+  });
+  it.each([['1:1', '1024x1024'], ['16:9', '1792x1024'], ['9:16', '1024x1792']] as const)('keeps DALL-E 3 %s within its native dimensions and maps high to hd', async (aspect_ratio, size) => {
+    const fetch = vi.fn<ComflyFetch>(async () => jsonResponse({ data: [{ url: 'https://example.com/result.png' }] }));
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'fixture', fetch });
+    await client.generateImage({ model: 'dall-e-3', prompt: 'Product', size: '2K', aspect_ratio, quality: 'high', n: 1 });
+    const body = JSON.parse(fetch.mock.calls[0]![1]!.body as string);
+    expect(body).toMatchObject({ model: 'dall-e-3', size, quality: 'hd', n: 1 });
+    expect(body).not.toHaveProperty('aspect_ratio');
+  });
   it('submits GPT reference edits as multipart image files with exact size and generation timeout', async () => {
     const fetch = vi.fn<ComflyFetch>(async () => jsonResponse({ task_id: 'edit-task' }));
     const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch, generationTimeoutMs: 180_000 });

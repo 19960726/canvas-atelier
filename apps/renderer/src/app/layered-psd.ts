@@ -23,6 +23,28 @@ export interface LayeredPsdDocument {
 const MAX_DOCUMENT_SIDE = 8_192;
 const MAX_PIXEL_BYTES = 256 * 1024 * 1024;
 
+/** Keep native pixels and canvas placement, retaining a transparent one-pixel edge. */
+export function trimTransparentLayer(layer: LayeredPsdLayer): LayeredPsdLayer {
+  if (layer.kind !== 'transparent' || layer.rgba.length !== layer.width * layer.height * 4) return layer;
+  let left = layer.width, top = layer.height, right = -1, bottom = -1;
+  for (let y = 0; y < layer.height; y++) for (let x = 0; x < layer.width; x++) {
+    if (layer.rgba[(y * layer.width + x) * 4 + 3] === 0) continue;
+    left = Math.min(left, x); right = Math.max(right, x);
+    top = Math.min(top, y); bottom = Math.max(bottom, y);
+  }
+  if (right < 0) return { ...layer, width: 1, height: 1, rgba: new Uint8Array(4) };
+  left = Math.max(0, left - 1); top = Math.max(0, top - 1);
+  right = Math.min(layer.width - 1, right + 1); bottom = Math.min(layer.height - 1, bottom + 1);
+  const width = right - left + 1, height = bottom - top + 1;
+  if (width === layer.width && height === layer.height) return layer;
+  const rgba = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    const offset = ((top + y) * layer.width + left) * 4;
+    rgba.set(layer.rgba.subarray(offset, offset + width * 4), y * width * 4);
+  }
+  return { ...layer, x: layer.x + left, y: layer.y + top, width, height, rgba };
+}
+
 export function encodeLayeredPsd(document: LayeredPsdDocument): Uint8Array {
   validateLayeredDocument(document);
   const composite = composeLayeredRgba(document);
@@ -94,7 +116,8 @@ export function validateLayeredDocument(document: LayeredPsdDocument): void {
     }
     const expectedBytes = layer.width * layer.height * 4;
     pixelBytes += expectedBytes;
-    if (layer.rgba.length !== expectedBytes || pixelBytes > MAX_PIXEL_BYTES) {
+    if (pixelBytes > MAX_PIXEL_BYTES) throw new Error('图层像素总量超过当前 PSD 导出内存上限（256 MiB）。请减少本次导出的图层数量；已返回原图保持原画质。');
+    if (layer.rgba.length !== expectedBytes) {
       throw new Error('Layered PSD RGBA pixel data is invalid');
     }
     if (!Number.isFinite(layer.opacity) || layer.opacity < 0 || layer.opacity > 1) {

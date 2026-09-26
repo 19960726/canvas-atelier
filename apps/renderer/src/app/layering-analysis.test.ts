@@ -16,6 +16,16 @@ const planReply = JSON.stringify({ layers: [
 ] });
 
 describe('analyzeImageLayering', () => {
+  it('carries a selected object and its bounds into analysis and the editable plan', async () => {
+    const selection = { mode: 'objects' as const, box: { x: .25, y: .5, width: .25, height: .25 }, target: '红色料理机' };
+    const chatSkill = vi.fn(async (_request: SkillChatRequest): Promise<ChatSkillBridgeResult> => ({ message: planReply, modelRoute: 'vision-route', sources: [] }));
+    const plan = await analyzeImageLayering({ sourceAssetId: 'source', width: 1200, height: 1600, profile, selection }, chatSkill);
+    expect(plan.selection).toEqual(selection);
+    const prompt = chatSkill.mock.calls[0]![0].messages[0]!.content;
+    expect(prompt).toContain('红色料理机');
+    expect(prompt).toContain('300,800');
+    expect(prompt).toContain('框外');
+  });
   it('makes one managed-image vision chat call and returns only a validated plan', async () => {
     const chatSkill = vi.fn(async (_request: SkillChatRequest): Promise<ChatSkillBridgeResult> => ({
       message: planReply, modelRoute: 'vision-route', sources: [],

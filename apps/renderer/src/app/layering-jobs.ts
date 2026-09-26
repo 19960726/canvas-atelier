@@ -3,6 +3,7 @@ import type { ImageAspectRatio } from '@agent-canvas/domain';
 import type { ModelJobRequest } from '../jobs/job-store';
 import { getLayeringRouteContract, type LayeringRouteEvidence } from './layering-route-evidence';
 import { matchesLayeringConfirmation, type LayeringConfirmation, type LayeringPlan } from './layering-plan';
+import { readLayeringSelection, selectionInstruction } from './layering-selection';
 
 export async function buildLayeringJobRequests(
   plan: LayeringPlan,
@@ -31,7 +32,8 @@ export async function buildLayeringJobRequests(
     id: createId(),
     kind: 'image' as const,
     promptNodeId: `image-layer-${groupId}-${layer.layerId}`,
-    prompt: buildLayerPrompt(layer.kind, layer.name, layer.description),
+    prompt: buildLayerPrompt(layer.kind, layer.name, layer.description) + '\n'
+      + selectionInstruction(readLayeringSelection(plan.selection), plan.canvasWidth, plan.canvasHeight),
     provider: profile.provider,
     modelRoute: profile.modelRoute,
     displayName: profile.displayName,

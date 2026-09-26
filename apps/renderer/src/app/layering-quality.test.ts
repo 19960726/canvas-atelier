@@ -6,6 +6,10 @@ function rgba(alpha: readonly number[]): Uint8Array {
 }
 
 describe('generated image layer quality gate', () => {
+  it('accepts higher resolution output with the original framing without downsampling', async () => {
+    await expect(validateLayerPixels('transparent', 'image/png', 6, 8,
+      rgba(Array.from({ length: 48 }, (_, index) => index === 0 ? 0 : 255)), 3, 4)).resolves.toEqual({ ok: true });
+  });
   it('accepts a fully opaque full-canvas background', async () => {
     await expect(validateLayerPixels('background', 'image/png', 2, 2, rgba([255, 255, 255, 255]), 2, 2)).resolves.toEqual({ ok: true });
   });

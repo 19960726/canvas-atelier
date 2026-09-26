@@ -6,6 +6,8 @@ import { confirmLayeringPlan, type LayeringPlan, type LayeringPlanLayer } from '
 import { eligibleForLayeringRoute, getLayeringRouteContract, PRODUCTION_LAYERING_ROUTE_EVIDENCE, type LayeringRouteEvidence } from '../app/layering-route-evidence';
 import { IMAGE_RESOLUTION_TIERS, imageModelFamilyDisplayName, imageResolutionFamilyKey, resolveImageResolutionRoute } from '../app/image-resolution-routing';
 import { listRunnableProviderProfiles } from '../app/provider-profiles';
+import { LayeringSelectionEditor } from './LayeringSelectionEditor';
+import type { LayeringBox, LayeringSelection } from '../app/layering-selection';
 
 type LayeringSourceImage = Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'label' | 'width' | 'height'>;
 type Resolution = '1K' | '2K' | '4K';
@@ -21,6 +23,7 @@ function isGenericLayerName(value: string): boolean {
 export interface LayeringDialogProps {
   readonly sourceAsset: LayeringSourceImage | null;
   readonly onAnalyze: (input: {
+    readonly selection?: LayeringSelection;
     readonly sourceAssetId: string;
     readonly provider: ProviderBridgeProfile['provider'];
     readonly modelRoute: string;
@@ -46,6 +49,9 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
   const [generationRoute, setGenerationRoute] = useState('');
   const [resolution, setResolution] = useState<Resolution>('4K');
   const [layerCountMode, setLayerCountMode] = useState<LayerCountMode>('auto');
+  const [scope, setScope] = useState<LayeringSelection['mode']>('whole');
+  const [selectionBox, setSelectionBox] = useState<LayeringBox | null>(null);
+  const [selectionTarget, setSelectionTarget] = useState('');
   const [targetLayerCount, setTargetLayerCount] = useState(5);
   const [plan, setPlan] = useState<LayeringPlan | null>(null);
   const [step, setStep] = useState<'analyze' | 'edit' | 'review'>('analyze');
@@ -150,6 +156,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
 
   const runAnalysis = async () => {
     if (!sourceAsset || selectedVisionProfile === undefined || busyRef.current) return;
+    if (scope !== 'whole' && !selectionBox) return;
     const width = sourceAsset.width;
     const height = sourceAsset.height;
     if (typeof width !== 'number' || typeof height !== 'number' || !Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
@@ -162,10 +169,14 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
     setPlan(null);
     setCreatedGroupId(null);
     try {
+      const selection: LayeringSelection | undefined = scope === 'whole'
+        ? selectionTarget.trim() ? { mode: 'whole', target: selectionTarget.trim() } : undefined
+        : { mode: scope, box: selectionBox!, ...(selectionTarget.trim() ? { target: selectionTarget.trim() } : {}) };
       const nextPlan = await onAnalyze({ sourceAssetId: sourceAsset.assetId, provider: selectedVisionProfile.provider, modelRoute: selectedVisionProfile.modelRoute, width, height,
+        ...(selection ? { selection } : {}),
         mode: layerCountMode, ...(layerCountMode === 'custom' ? { targetLayerCount } : {}) });
       if (controlsRef.current) controlsRef.current.scrollTop = 0;
-      setPlan(nextPlan);
+      setPlan(selection ? { ...nextPlan, selection } : nextPlan);
       setStep('edit');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '图片分析失败，请重试。');
@@ -175,6 +186,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
     }
   };
 
+  const resetScopePlan = () => { setPlan(null); setStep('analyze'); setCreatedGroupId(null); setError(null); };
   const updateLayer = (layerId: string, patch: Partial<LayeringPlanLayer>) => {
     if (!activePlan) return;
     setPlan({ ...activePlan, layers: activePlan.layers.map((layer) => layer.layerId === layerId ? { ...layer, ...patch } : layer) });
@@ -225,15 +237,31 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
       </header>
       <div className="image-layering-dialog__body">
         <div className="image-layering-dialog__source-panel">
-          <div className="image-layering-dialog__source-stage">
-            {sourceAsset ? <><img src={sourceAsset.displayUrl} alt={`分层源图：${sourceAsset.label}`} /><div className="image-layering-dialog__source-stage-meta"><span>源图预览</span><small>原图只读</small></div></> : <div className="image-layering-dialog__no-source"><Layers3 size={26} /><span>请先在画布中选择一个可用的项目图片。</span></div>}
-          </div>
+          {sourceAsset ? <LayeringSelectionEditor url={sourceAsset.displayUrl} label={sourceAsset.label} width={sourceAsset.width ?? 1} height={sourceAsset.height ?? 1}
+            selecting={scope !== 'whole'} disabled={busy} box={selectionBox} onChange={box => { setSelectionBox(box); resetScopePlan(); }} />
+            : <div className="image-layering-dialog__no-source"><Layers3 size={26} /><span>请先在画布中选择一个可用的项目图片。</span></div>}
           {sourceAsset && <div className="image-layering-dialog__source-meta"><strong>{sourceAsset.label || '项目图片'}</strong><span>{sourceAsset.width} × {sourceAsset.height} px</span></div>}
           <div className="image-layering-dialog__workflow" aria-label="分层流程"><span data-active={step === 'analyze'}>01 分析</span><i aria-hidden="true" /><span data-active={step === 'edit' || step === 'review'}>02 检查</span><i aria-hidden="true" /><span data-active={step === 'review'}>03 确认</span></div>
         </div>
         <div className="image-layering-dialog__controls" ref={controlsRef}>
           <section className="image-layering-dialog__section">
             <div className="image-layering-dialog__section-heading"><div><span className="image-layering-dialog__eyebrow">STEP 01 / 03</span><h3>分析图像内容</h3></div><span className="image-layering-dialog__badge">只分析</span></div>
+            <h4>分层范围</h4>
+            <div className="image-layering-dialog__mode image-layering-dialog__scope" role="group" aria-label="分层范围">
+              {([['objects', '框选物品'], ['region', '框选区域'], ['whole', '整图']] as const).map(([mode, label]) =>
+                <button type="button" key={mode} disabled={busy} aria-pressed={scope === mode} onClick={() => { setScope(mode); resetScopePlan(); }}>{label}</button>)}
+            </div>
+            <p className="image-layering-dialog__hint">{scope === 'objects' ? '提取框内指定物品，并补全被它遮挡的背景。请完整框入物品及阴影。'
+              : scope === 'region' ? '只拆选区内的内容，图层保持原图位置，框外保留原图。' : '分析整张图片，按画面内容拆分背景和独立图层。'}</p>
+            {scope !== 'whole' && <div className="image-layering-dialog__selection-actions">
+              <button type="button" disabled={busy || !sourceAsset} onClick={() => { setSelectionBox({ x: 0, y: 0, width: 1, height: 1 }); resetScopePlan(); }}>选择整张图片范围</button>
+              <button type="button" disabled={busy || !selectionBox} onClick={() => { setSelectionBox(null); resetScopePlan(); }}>清除选框</button>
+              <small role="status">{selectionBox && sourceAsset ? `选区 ${Math.round(selectionBox.width * (sourceAsset.width ?? 0))} × ${Math.round(selectionBox.height * (sourceAsset.height ?? 0))} px` : '请在左侧图片拖动框选'}</small>
+            </div>}
+            <label className="image-layering-dialog__field"><span>要提取的内容（可选）</span><textarea aria-label="要提取的内容" rows={2} maxLength={500} value={selectionTarget} disabled={busy}
+              placeholder="例如：只提取红色料理机和它的阴影，保留水果与甜点"
+              onChange={event => { setSelectionTarget(event.target.value); resetScopePlan(); }} /></label>
+            <h4>图层数量</h4>
             <div className="image-layering-dialog__mode" role="group" aria-label="图层数量模式">
               <button type="button" aria-pressed={layerCountMode === 'auto'} disabled={busy} onClick={() => { setLayerCountMode('auto'); setPlan(null); setStep('analyze'); setCreatedGroupId(null); }}>智能层数</button>
               <button type="button" aria-pressed={layerCountMode === 'custom'} disabled={busy} onClick={() => { setLayerCountMode('custom'); setPlan(null); setStep('analyze'); setCreatedGroupId(null); }}>自定义层数</button>
@@ -246,7 +274,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
             </select></label>
             <div className="image-layering-dialog__phase-note"><span>当前阶段</span><strong>读取源图，返回可编辑分层方案</strong><small>分析完成后进入检查；确认后才提交 GPT Image 图层任务。</small></div>
             <p className="image-layering-dialog__hint">分析模型会读取选中的源图并返回可编辑的分层建议。模型调用可能产生费用；此步骤不会创建 GPT 图片任务。</p>
-            <button className="image-layering-dialog__button image-layering-dialog__button--secondary" type="button" onClick={() => { void runAnalysis(); }} disabled={!sourceAsset || !selectedVisionProfile || busy || loadingProfiles}>
+            <button className="image-layering-dialog__button image-layering-dialog__button--secondary" type="button" onClick={() => { void runAnalysis(); }} disabled={!sourceAsset || !selectedVisionProfile || busy || loadingProfiles || (scope !== 'whole' && !selectionBox)}>
               {busy && step === 'analyze' ? <LoaderCircle className="is-spinning" size={15} /> : <Layers3 size={15} />}<span>{busy && step === 'analyze' ? '正在分析…' : plan ? '重新分析' : '分析图片'}</span>
             </button>
           </section>
@@ -275,7 +303,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
             </select></label>}
             <div className="image-layering-dialog__summary"><span>分层模式<strong>{layerCountMode === 'custom' ? `自定义目标 ${targetLayerCount} 层` : '智能层数'}</strong></span><span>生成模型<strong>{generationProfile ? imageModelFamilyDisplayName(generationProfile) : selectedGptProfile ? imageModelFamilyDisplayName(selectedGptProfile) : '待验证 GPT Image 路由'}</strong></span><span>分辨率<strong>{resolution}</strong></span><span>任务数量<strong>{includedCount} 层 · {includedCount} 个单图任务</strong></span></div>
             {!selectedGptProfile && <p className="image-layering-dialog__validation" role="status">没有可用的 GPT Image 透明编辑模型。请在设置中配置并启用支持图片编辑的 Comfly GPT Image 模型后重新打开。</p>}
-            {selectedGptProfile && <p className="image-layering-dialog__hint">前景逐层生成透明图片；返回后检查透明像素及画布尺寸，未通过的图层会标为需复核。</p>}
+            {selectedGptProfile && <p className="image-layering-dialog__hint">画质固定为最高（high）。{scope === 'whole' ? '范围：整图。' : scope === 'objects' ? '范围：框选物品。' : '范围：框选区域。'}前景逐层返回透明图片，保持原图位置；画幅比例不符会显示具体原因。</p>}
             <p className="image-layering-dialog__hint">点击“确认生成”后才会提交上方数量的图像任务。生成费用由所选服务商决定。</p>
             <button className="image-layering-dialog__button image-layering-dialog__button--primary" type="button" onClick={() => { void confirmAndStart(); }} disabled={!generationProfile || !planValid || busy}>
               {busy ? <LoaderCircle className="is-spinning" size={15} /> : <Check size={15} />}<span>{busy ? '正在保存并提交…' : `确认生成 ${includedCount} 层`}</span>

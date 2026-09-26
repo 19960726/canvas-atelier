@@ -1,3 +1,4 @@
+import { compatibleLayerDimensions } from './layering-selection';
 const MAX_SIDE = 8_192;
 const MAX_RGBA_BYTES = 256 * 1024 * 1024;
 
@@ -17,7 +18,7 @@ export async function validateLayerPixels(
   if (mediaType !== 'image/png' && mediaType !== 'image/webp') return { ok: false, reason: 'media_type' };
   if (!isValidDimension(width) || !isValidDimension(height)
     || !isValidDimension(expectedWidth) || !isValidDimension(expectedHeight)
-    || width !== expectedWidth || height !== expectedHeight) return { ok: false, reason: 'dimensions' };
+    || !compatibleLayerDimensions(width, height, expectedWidth, expectedHeight)) return { ok: false, reason: 'dimensions' };
   const expectedBytes = width * height * 4;
   if (!Number.isSafeInteger(expectedBytes) || expectedBytes > MAX_RGBA_BYTES || rgba.byteLength !== expectedBytes) {
     return { ok: false, reason: 'decode' };

@@ -30,7 +30,7 @@ describe('ImageLayerNodeWorkbench', () => {
     expect(screen.getByRole('img', { name: '料理机图层预览' })).toHaveAttribute('src', 'novus-asset://result');
   });
 
-  it('continues pixel validation after a catalog refresh replaces the asset object', async () => {
+  it.each(['pending', 'failed'])('continues %s pixel validation after refresh, including old resolution-only failures', async qualityStatus => {
     const resolveDecode: Array<() => void> = [];
     class TestImage {
       naturalWidth = 2;
@@ -50,7 +50,7 @@ describe('ImageLayerNodeWorkbench', () => {
       getImageData: () => ({ data: Uint8ClampedArray.from([0, 0, 0, 0, 40, 90, 130, 255, 0, 0, 0, 0, 0, 0, 0, 0]) }),
     } as never);
     try {
-      const config = { name: '产品', layerKind: 'transparent', resultAssetId: 'image-result', qualityStatus: 'pending', status: 'validating', canvasWidth: 2, canvasHeight: 2 };
+      const config = { name: '产品', layerKind: 'transparent', resultAssetId: 'image-result', qualityStatus, qualityReason: 'dimensions', status: 'validating', canvasWidth: 1, canvasHeight: 1 };
       const asset = { assetId: 'image-result', displayUrl: 'novus-asset://result', mediaType: 'image/png' as const, width: 2, height: 2 };
       const onQualityResult = vi.fn(async () => {});
       const props = { nodeId: 'layer-a', config, onQualityResult, onVisibilityChange: vi.fn() };

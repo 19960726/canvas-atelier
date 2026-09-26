@@ -54,6 +54,20 @@ function renderDialog(analysisPlan: LayeringPlan = plan) {
 }
 
 describe('LayeringDialog', () => {
+  it('requires a selection for object mode and sends its target with analysis', async () => {
+    const { onAnalyze } = renderDialog();
+    fireEvent.click(screen.getByRole('button', { name: '框选物品' }));
+    expect(screen.getByRole('button', { name: '分析图片' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '选择整张图片范围' }));
+    fireEvent.change(screen.getByRole('textbox', { name: '要提取的内容' }), { target: { value: '只要料理机，不要水果' } });
+    fireEvent.click(screen.getByRole('button', { name: '分析图片' }));
+    await waitFor(() => expect(onAnalyze).toHaveBeenCalledWith(expect.objectContaining({
+      selection: { mode: 'objects', box: { x: 0, y: 0, width: 1, height: 1 }, target: '只要料理机，不要水果' },
+    })));
+    await screen.findByRole('list', { name: '可编辑分层方案' });
+    fireEvent.click(screen.getByRole('button', { name: '框选区域' }));
+    expect(screen.queryByRole('list', { name: '可编辑分层方案' })).not.toBeInTheDocument();
+  });
   it('does not advertise Flare 4K when the 4K route is not configured', async () => {
     const flare = { ...gptImageProfile, modelRoute: 'comfly-gpt-image-2-5-flare', modelId: 'gpt-image-2.5-flare', displayName: 'GPT Image 2.5 Flare', constraints: { image: { resolutions: ['1K' as const] } } };
     render(<LayeringDialog sourceAsset={sourceAsset} profiles={[analysisProfile, flare]}

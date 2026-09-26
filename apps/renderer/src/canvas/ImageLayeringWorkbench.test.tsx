@@ -4,6 +4,7 @@ import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCanvasModuleNode, type ModelJob } from '@agent-canvas/domain';
 import { ImageLayeringWorkbench } from './ImageLayeringWorkbench';
+import { readPsd } from 'ag-psd';
 import type { LayeredImageRecord } from '../app/layered-image-config';
 
 const base = 'a'.repeat(16);
@@ -18,6 +19,45 @@ const layers: LayeredImageRecord[] = [
 afterEach(cleanup);
 
 describe('image layering workbench', () => {
+  it('exports scoped high resolution layers without shrinking them to the source size', async () => {
+    class TestImage {
+      naturalWidth = 4; naturalHeight = 4; crossOrigin = ''; src = '';
+      decode() { return Promise.resolve(); }
+    }
+    vi.stubGlobal('Image', TestImage);
+    const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function(this: HTMLCanvasElement) {
+      let src = '';
+      return { imageSmoothingEnabled: true, imageSmoothingQuality: 'high',
+        createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+        drawImage: (image: TestImage) => { src = image.src; },
+        getImageData: () => ({ data: Uint8ClampedArray.from(Array.from({ length: this.width * this.height }, (_, i) =>
+          src === 'source-url' ? [90, 80, 70, 255] : src.includes(subject) && i === 5 ? [0, 0, 0, 0] : [200, 50, 40, 255]).flat()) }),
+      } as never;
+    });
+    const open = vi.fn(async (_bytes: Uint8Array) => ({ ok: true as const }));
+    const previous = window.novusDesktop;
+    Object.defineProperty(window, 'novusDesktop', { configurable: true, value: { projectImages: { openLayeredPsdInPhotoshop: open } } });
+    try {
+      const planLayers = layers.slice(0, 2).map(record => ({ ...record }));
+      const nodes = planLayers.map(record => {
+        const node = createCanvasModuleNode(record.layerId, 'image_layer', { x: 0, y: 0 });
+        node.data.config = { ...node.data.config, layerId: record.layerId, resultAssetId: record.assetId, resultWidth: 4, resultHeight: 4, qualityStatus: 'passed' };
+        return node;
+      });
+      render(<ImageLayeringWorkbench config={{ canvasWidth: 2, canvasHeight: 2, sourceAssetId: 'source', planLayers,
+        layerSelection: { mode: 'region', box: { x: .25, y: .25, width: .5, height: .5 } } }}
+        assets={[...assets, { assetId: 'source', mediaType: 'image/png', displayUrl: 'source-url' }]} layerNodes={nodes} onLayersChange={() => {}} />);
+      fireEvent.click(screen.getByRole('button', { name: '在 Photoshop 中打开' }));
+      await waitFor(() => expect(open).toHaveBeenCalledOnce());
+      const psd = readPsd(open.mock.calls[0]![0], { useImageData: true });
+      expect([psd.width, psd.height]).toEqual([4, 4]);
+      const foreground = psd.children!.find(layer => layer.name === 'Subject')!;
+      const background = psd.children!.find(layer => layer.name === 'Background')!;
+      expect(foreground.imageData!.data[3]).toBe(0);
+      expect(foreground.imageData!.data[6 * 4 + 3]).toBe(255);
+      expect([...background.imageData!.data.slice(0, 4)]).toEqual([90, 80, 70, 255]);
+    } finally { context.mockRestore(); vi.unstubAllGlobals(); Object.defineProperty(window, 'novusDesktop', { configurable: true, value: previous }); }
+  });
   it('keeps the empty node honest about the unverified GPT transparency route', () => {
     render(<ImageLayeringWorkbench config={{ layers: [] }} assets={assets} onLayersChange={() => {}} />);
     expect(screen.queryByRole('button', { name: '自动分层' })).not.toBeInTheDocument();

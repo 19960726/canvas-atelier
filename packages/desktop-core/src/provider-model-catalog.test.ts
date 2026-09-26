@@ -25,6 +25,12 @@ const relayModels: RelayMeModel[] = [
 ];
 
 describe('provider model catalog', () => {
+  it.each([['nano-banana', '1K'], ['nano-banana-hd', '4K']] as const)('repairs the native resolution of %s in cached and fresh profiles', (modelId, tier) => {
+    const input: ProviderBridgeProfile = { provider: 'comfly', modelRoute: `comfly-${modelId}`, modelId, displayName: modelId, capabilities: ['image_generation'], constraints: { image: { resolutions: ['1K', '2K', '4K'] } } };
+    expect(mergeProviderModelProfiles([input])[0]?.constraints?.image?.resolutions).toEqual([tier]);
+    const [fresh] = buildComflyModelProfiles({ version: 'native-nano', models: [{ key: modelId, name: modelId, provider: 'Google', tags: ['绘图'], apis: ['/v1/images/generations'], capabilityStatus: 'complete' }] });
+    expect(fresh?.constraints?.image?.resolutions).toEqual([tier]);
+  });
   it.each(['gpt-image-1', 'gpt-image-1-mini', 'gpt-image-1.5', 'gpt-image-1.5-2025-12-16', 'gpt-image-2-all'])('repairs unsupported cached 4K tiers for %s', (modelId) => {
     const input: ProviderBridgeProfile = { provider: 'comfly', modelRoute: `comfly-${modelId}`, modelId, displayName: modelId, capabilities: ['image_generation'], constraints: { image: { resolutions: ['1K', '2K', '4K'] } } };
     const [cached] = mergeProviderModelProfiles([input]);

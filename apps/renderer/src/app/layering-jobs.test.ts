@@ -22,6 +22,15 @@ const routeEvidence: LayeringRouteEvidence = {
 };
 
 describe('confirmed GPT layering requests', () => {
+  it('binds scope to confirmation and every layer request, rejecting a moved selection', async () => {
+    const plan = { ...parseLayeringAnalysis(planReply, 'source-asset', 1200, 1600),
+      selection: { mode: 'objects' as const, box: { x: .25, y: .5, width: .25, height: .25 }, target: '红色料理机' } };
+    const confirmation = await confirmLayeringPlan(plan, 'comfly', imageProfile.modelRoute, '2K', '2026-09-23T06:05:00.000Z');
+    const requests = await buildLayeringJobRequests(plan, confirmation, imageProfile, 'scope', [routeEvidence], () => crypto.randomUUID());
+    expect(requests.every(request => request.prompt.includes('红色料理机') && request.prompt.includes('300,800'))).toBe(true);
+    await expect(buildLayeringJobRequests({ ...plan, selection: { ...plan.selection, box: { ...plan.selection.box, x: .5 } } },
+      confirmation, imageProfile, 'scope', [routeEvidence], () => crypto.randomUUID())).rejects.toThrow(/confirmation/u);
+  });
   it('creates one ordered edit request per included layer using the exact source and alpha settings', async () => {
     const plan = parseLayeringAnalysis(planReply, 'source-asset', 1024, 768);
     const confirmation = await confirmLayeringPlan(plan, 'comfly', imageProfile.modelRoute, '2K', '2026-09-23T06:05:00.000Z');

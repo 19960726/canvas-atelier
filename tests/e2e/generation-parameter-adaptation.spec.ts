@@ -9,7 +9,7 @@ const artifact = (name: string) => path.join(
   name,
 );
 
-test('GPT image mode persists its dedicated quality choice and submits high quality at 4K', async ({ page }) => {
+test('GPT image mode fixes the highest quality and persists 4K without changing output settings', async ({ page }) => {
   await page.setViewportSize({ width: 1680, height: 1050 });
   await page.addInitScript(() => localStorage.setItem('novus.theme.mode', 'dark'));
   await openEmptyApp(page);
@@ -28,8 +28,9 @@ test('GPT image mode persists its dedicated quality choice and submits high qual
   await expect(quality).toBeVisible();
   await expect(imageNode.locator('.module-node__generation-control-bar > :is(.module-node__video-model-picker, .generation-parameter-popover, .module-node__image-quantity, .module-node__run-generation):visible')).toHaveCount(5);
   await expect(imageNode.getByRole('region', { name: 'GPT 参数' }).locator('.generation-parameter-popover')).toHaveCount(3);
-  await expect(quality).toHaveAttribute('value', '中');
+  await expect(quality).toHaveAttribute('value', '高');
   await quality.click();
+  await expect(imageNode.getByRole('menu', { name: 'Image generation quality options' }).getByRole('menuitemradio')).toHaveCount(1);
   await imageNode
     .getByRole('menu', { name: 'Image generation quality options' })
     .getByRole('menuitemradio', { name: '高', exact: true })
@@ -159,7 +160,7 @@ test('GPT screenshot controls expose complete menus and persist format and backg
   await node.getByRole('combobox', { name: 'Image generation model route' }).selectOption({ label: 'GPT Image 2' });
   for (const [name, option] of [
     ['aspect ratio', '3:4'], ['resolution', '4K'], ['batch count', '2张'],
-    ['quality', '自动'], ['format', 'WEBP'], ['background', '透明'],
+    ['quality', '高'], ['format', 'WEBP'], ['background', '透明'],
   ]) {
     await node.getByRole('button', { name: `Image generation ${name}`, exact: true }).click();
     const menu = node.getByRole('menu', { name: `Image generation ${name} options` });
@@ -168,7 +169,7 @@ test('GPT screenshot controls expose complete menus and persist format and backg
     await menu.getByRole('menuitemradio', { name: option!, exact: true }).click();
   }
   await expect.poll(async () => (await e2eState(page)).durableImageGenerationConfigs[0]).toMatchObject({
-    aspectRatio: '3:4', resolution: '4K', outputCount: 2, imageQuality: 'auto', imageOutputFormat: 'webp', imageBackground: 'transparent',
+    aspectRatio: '3:4', resolution: '4K', outputCount: 2, imageQuality: 'high', imageOutputFormat: 'webp', imageBackground: 'transparent',
   });
   await page.screenshot({ path: artifact('gpt-controls-complete-light.png') });
   await page.evaluate(() => window.__NOVUS_E2E__!.reopenProject());

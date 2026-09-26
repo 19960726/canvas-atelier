@@ -112,7 +112,7 @@ import {
   selectProviderProfile,
   selectReverseProviderProfile,
 } from './provider-profiles';
-import { isGptImageQualityIdentity, normalizeImageQuality, supportsGptImageQuality } from './image-generation-quality';
+import { isGptImageQualityIdentity, supportsGptImageQuality } from './image-generation-quality';
 import { resolveImageResolutionRoute } from './image-resolution-routing';
 import { analyzeImageLayering as analyzeImageLayeringRequest } from './layering-analysis';
 import type { LayeringConfirmation, LayeringPlan } from './layering-plan';
@@ -359,6 +359,7 @@ interface AppState {
   }) => Promise<ReversePromptResult>;
   chatSkill: (input: SkillChatRequest) => Promise<ChatSkillBridgeResult>;
   analyzeImageLayering: (input: {
+    readonly selection?: import('./layering-selection').LayeringSelection;
     readonly sourceAssetId: string;
     readonly provider: ProviderBridgeProfile['provider'];
     readonly modelRoute: string;
@@ -541,7 +542,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const requestedImageAspectRatio = normalizeImageAspectRatio(input.aspectRatio);
     const supportsGptParameters = supportsGptImageQuality(profile);
     const imageQuality = supportsGptParameters
-      ? normalizeImageQuality(input.imageQuality) ?? 'medium'
+      ? 'high' as const
       : undefined;
     const imageOutputFormat = supportsGptParameters ? normalizeImageOutputFormat(input.imageOutputFormat) : undefined;
     const imageBackground = supportsGptParameters ? normalizeImageBackground(input.imageBackground) : undefined;
@@ -1660,7 +1661,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!node || (node.data.moduleType !== 'image_generation' && node.data.moduleType !== 'video_generation')) return false;
     const nextImageQuality = node.data.moduleType === 'image_generation'
       && isGptImageQualityIdentity(config.modelRoute)
-      ? normalizeImageQuality(config.imageQuality) ?? 'medium'
+      ? 'high' as const
       : undefined;
     const nextDraft = {
       prompt: config.prompt,
@@ -4983,7 +4984,7 @@ export function buildModelJobRequests(
     const kind = node.data.moduleType === 'video_generation' ? 'video' : 'image';
     const count = normalizeImageOutputCount(typeof config.outputCount === 'number' ? config.outputCount : undefined, kind === 'image') ?? 1;
     const imageQuality = kind === 'image' && isGptImageQualityIdentity(profile.modelId, profile.modelRoute, profile.displayName)
-      ? normalizeImageQuality(config.imageQuality) ?? 'medium'
+      ? 'high' as const
       : undefined;
     const references = Array.isArray(config.referenceAssetIds) ? config.referenceAssetIds.filter((id): id is string => typeof id === 'string') : [];
     return Array.from({ length: count }, () => ({
@@ -5011,6 +5012,7 @@ export function buildModelJobRequests(
     modelRoute: profile.modelRoute,
     displayName: profile.displayName,
     modelId: profile.modelId ?? profile.modelRoute,
+    ...(isGptImageQualityIdentity(profile.modelId, profile.modelRoute, profile.displayName) ? { imageQuality: 'high' as const } : {}),
     referenceAssetIds: referenceSnapshot.references.map((reference) => reference.assetId),
     referenceSnapshotRevision: referenceSnapshot.projectRevision,
     referenceSnapshotFingerprint: referenceSnapshot.fingerprint,
