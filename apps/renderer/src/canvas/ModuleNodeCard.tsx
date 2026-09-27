@@ -4321,11 +4321,15 @@ function ProjectImageControl({
         </DragSafeButton>
       )}
       {asset && (
+        <div className="module-node__layering-action nodrag nopan">
+          <MaterialLayeringAction key={asset.assetId} nodeId={nodeId} asset={asset} />
+        </div>
+      )}
+      {asset && (
         <div className="module-node__media-meta">
           <strong title={asset.label}>{asset.label}</strong>
           <span className="module-node__media-tools">
             <small>{formatAssetDimensions(asset)}</small>
-            <MaterialLayeringAction key={asset.assetId} nodeId={nodeId} asset={asset} />
             {moduleType === 'image_input' && assets.length > 0 && (
               <span className="module-node__media-picker nodrag nopan" title="选择项目图像 / Choose project image">
                 <Images size={13} aria-hidden="true" />

@@ -379,6 +379,31 @@ html body .workspace--canvas-layout .module-node.module-node[data-module-type='i
   cursor: pointer;
 }
 
+/* Imported and pasted image nodes hide their metadata strip on the canvas.
+   Keep the layering action in a dedicated row next to the visible preview. */
+.module-node__layering-action {
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.module-node__layering-action .image-layering__tool-icon {
+  display: inline-flex !important;
+  width: auto !important;
+  min-width: 88px !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  gap: 6px;
+  padding: 0 10px !important;
+  border: 1px solid var(--gate-border-strong) !important;
+  color: var(--gate-text) !important;
+  background: var(--gate-card-muted) !important;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
 html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-result-toolbar .module-node__color-correction-trigger > span,
 html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-result-toolbar .module-node__color-correction-trigger > small,
 html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-result-toolbar .module-node__color-correction-compare > span,
