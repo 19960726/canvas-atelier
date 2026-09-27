@@ -54,6 +54,20 @@ function renderDialog(analysisPlan: LayeringPlan = plan) {
 }
 
 describe('LayeringDialog', () => {
+  it('keeps source-position controls inside layer fields so plan rows retain their three-column layout', async () => {
+    const sourcePlan: LayeringPlan = { ...plan, pixelMode: 'source', layers: plan.layers.map((layer) => layer.layerId === 'product-main'
+      ? { ...layer, sourceBounds: { x: 0.25, y: 0.2, width: 0.4, height: 0.6 } }
+      : layer) };
+    renderDialog(sourcePlan);
+    fireEvent.click(screen.getByRole('button', { name: '分析图片' }));
+    const list = await screen.findByRole('list', { name: '可编辑分层方案' });
+    const row = within(list).getByRole('button', { name: '标注原图位置 产品本体' }).closest('li');
+    expect(row).not.toBeNull();
+    expect([...row!.children].map((child) => child.className)).toEqual([
+      'image-layering-dialog__order', 'image-layering-dialog__layer-fields', 'image-layering-dialog__layer-actions',
+    ]);
+    expect(within(row!).getByRole('button', { name: '标注原图位置 产品本体' }).closest('.image-layering-dialog__layer-fields')).not.toBeNull();
+  });
   it('restores an unfinished region choice without silently switching it to whole image', () => {
     let draft: unknown;
     const props = { sourceAsset, profiles: [analysisProfile, gptImageProfile], routeEvidence,

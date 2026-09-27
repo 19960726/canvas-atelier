@@ -1752,3 +1752,19 @@ Before producing an installer, verify at minimum:
 - 后续状态：保存修复源码提交 e31c4224ef9de633de0ef7324f1b351be6718fcf 已推送。观察到正式 GUI 自行退出且原项目 cleanClose=true 后启动正式 NSIS；安装当前停在 Windows UAC（consent PID66876），exec 会话38467等待中，正式目录版本仍1.6.174，未强制关闭用户窗口。已异步要求用户点击系统允许，不能把待系统确认当成安装成功。
 - GH 1.6.175 草稿 releaseId397045317，目标为 e31c422，三个资产的远端大小和 SHA256 与本地一致，验证 work/release-1.6.175-draft.json；尚未公开/非Latest。用户点允许后，先检查安装会话退出码和正式 asar/86文件哈希，再运行 work/verify-save-hotfix-175.mjs，使用已备好的 E:/画布项目/staging-canvas-build/canvasforge-qa-save175-installed 与正式 EXE，预期1.6.175；通过后才能公开发布并更新验收记录。原图像素抠取及分析草稿保留还在主目录未提交工作区，需要继续完成，不能丢弃。
 - 安装终态更新：会话38467返回 Start-Process“操作已被用户取消”，安装程序未启动成功，正式 EXE仍1.6.174；shell最后一条命令退出0不能视为安装成功。UAC已不再等待；后续需用户手动以管理员身份运行已核验安装包。此前异步“请点允许”的请求因此已过时，改以最终回复说明取消状态。没有重试同一被取消的系统提权，也没有通过替换正式文件绕过安装。
+
+### 2026-09-27 — 1.6.179 分层方案第 02 层错位修复
+
+- 用户截图：STEP 02 首层正常，透明层的“校正原图位置”竖排，序号和名称/说明被挤到右侧，操作按钮落入下一行。根因是 `LayeringDialog.tsx` 在透明层 `<li>` 中加入位置按钮作为第 4 个直接子元素，而 `image-layering.css` 的网格只有序号、字段、操作 3 列。浏览器红灯复现记录 `work/layer-plan-layout-179-red.log`；此前组件测试仅验证按钮存在，未验证最终 CSS 网格几何。
+- 修复将位置按钮移入 `.image-layering-dialog__layer-fields`，保留原有语义、点击事件、禁用态和原图坐标功能；按钮独立样式限制为横向单行。新增 `LayeringDialog.test.tsx` 的 3 列 DOM 回归和 `work/verify-layer-plan-row-layout-179.mjs` 的 Edge 实际几何回归。4 个视口宽度（1600/1280/1100/980）均通过，序号、字段、操作同列，位置按钮宽 78px、高 27px；源码 CSS、正式构建 CSS、候选包 CSS 都分别验证。
+- 源码：聚焦 15/15，主源码全量 4245 通过、2 跳过；隔离 1.6.179 源码全量 4245 通过、2 跳过。隔离构建/typecheck 和 `scan:e2e` 通过。隔离源码由已发布提交 `29b433df8c907c0a4dcfdf626e97806f89dd4a36` 加本次 3 个文件组成，不包含主工作区其他脏改动。
+- 候选包：`staging-canvas-build/formal-179-output` 的 win-unpacked 和 NSIS 353876859 bytes 已生成；installer SHA-256 `c77515f2562812a2af406e8822d83a682dac949c3fcf6c5e28d5e940783e0142`，app.asar SHA-256 `34741c9ca33d2536870e42ee892d727a6dffceaa2c02a7e87a4ab85ed3962618`。latest.yml 的 SHA-512/尺寸与 installer 匹配；构建 CSS 与候选包 CSS SHA-256 均为 `a23d2ea8ea7fdae30664369d2b6b61c3cf6f9bab3e9815eb660b6364b31423fe`。候选桌面程序在隔离 QA profile 中完成粘贴图片、顶部 AI 分层入口、三种分层范围、亮暗对比度和无页面异常，0 付费调用；第一次空 QA profile 在画布未就绪时粘贴超时，等待画布可见并聚焦后同 profile 通过，不能据此宣称首次启动保存问题已解决。
+- 验收边界：源代码 PASS；隔离构建 PASS；候选包 PASS；正式已安装版仍为 1.6.178 且有运行窗口，安装与安装后核对 PENDING，已请求用户保存并正常关闭；外部供应商真实生图/透明质量 UNVERIFIED，本轮 0 付费调用；GitHub 1.6.179 发布与更新通道 PENDING，当前 `gh auth status` 报 keyring token invalid，git HTTPS 代理 127.0.0.1:443 连接失败，需在正式安装验收后重试。
+- 自查：修复仅改变分层方案卡片结构/CSS，未改 provider 请求、保存或像素生成逻辑。先前漏检原因是 DOM 文本可见性测试无法发现 CSS 隐式网格行；今后发布前须核对 source pixel mode 的最终打包 CSS 排版。正式安装、GH 和既有 QA 目录清理尚未完成，不应标记为交付通过。
+
+#### 1.6.179 正式安装补充验收
+
+- 用户确认“已保存并关闭”。安装前核查旧版 5 个残留进程均无窗口且路径精确为 `D:\CanvasAtelier\Canvas Atelier\Canvas Atelier.exe`；仅结束这些无窗口进程，确认数量归零。NSIS 使用带引号的 `/D="D:\CanvasAtelier\Canvas Atelier"`，退出码 0。
+- 安装版 EXE、app.asar、最终界面 CSS、本地抠图 runtime manifest 与已验收候选逐字节相同；installed EXE SHA-256 `4ba6c6a612988eae439bbd046acd11d904f586c46b1bcf7260c7261d9309c4ec`，app.asar `34741c9ca33d2536870e42ee892d727a6dffceaa2c02a7e87a4ab85ed3962618`，CSS `a23d2ea8ea7fdae30664369d2b6b61c3cf6f9bab3e9815eb660b6364b31423fe`。
+- 直接启动已安装 EXE，`app.getVersion()`=1.6.179；在隔离 QA profile 完成图片粘贴、顶部 AI 分层入口位置、打开分层弹窗和三种范围选项检查，亮色对比度 12.64:1、深色 11.76:1，renderer pageErrors=[]，付费调用 0。记录 `work/layer-plan-layout-packaged-179/installed-receipt.json`。原正式项目没有用于此测试；已安装程序的真实供应商生成和六层交互布局仍未靠付费任务复测。
+- 验收状态更新：source PASS、build PASS、package PASS、installed app PASS；external provider 真实生图/像素质量 UNVERIFIED（本轮 0 付费调用）；GitHub release/update feed PENDING。先前 CLI 报认证失败是沙箱环境代理 `127.0.0.1:9` 无服务；经已授权的系统代理 `127.0.0.1:7890` 只读复查，GitHub 认证和远端查询恢复，等待本地提交、tag、资产发布与远端核验。

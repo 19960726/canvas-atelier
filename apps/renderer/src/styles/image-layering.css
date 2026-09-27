@@ -276,6 +276,8 @@
 .image-layering-dialog__layer-fields { display: grid; min-width: 0; gap: 3px; }
 .image-layering-dialog__layer-fields input { height: 27px; padding-inline: 7px; }
 .image-layering-dialog__layer-fields small { color: var(--gate-muted); font-size: 9px; }
+.image-layering-dialog__position-action { justify-self: start; max-width: 100%; min-height: 27px; padding: 0 8px; border: 1px solid var(--gate-border); border-radius: 6px; color: var(--gate-text); background: var(--gate-card); font: inherit; font-size: 10px; white-space: nowrap; cursor: pointer; }
+.image-layering-dialog__position-action:disabled { opacity: .5; cursor: default; }
 .image-layering-dialog__layer-actions { display: flex; width: 84px; justify-content: flex-end; gap: 3px; align-self: start; }
 .image-layering-dialog__layer-actions button { display: grid; width: 26px; height: 26px; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 6px; color: var(--gate-muted); background: transparent; cursor: pointer; }
 .image-layering-dialog__layer-actions button:hover:not(:disabled) { border-color: var(--gate-border); color: var(--gate-text); background: var(--gate-card); }
