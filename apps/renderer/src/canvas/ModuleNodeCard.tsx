@@ -778,6 +778,11 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
       data-generation-ui={data.moduleType === 'image_generation' || data.moduleType === 'video_generation' ? 'true' : undefined}
       style={mediaNodeStyle}
     >
+      {hasSelectedImage && selectedImage && (
+        <div className="module-node__material-toolbar nodrag nopan" aria-label="Image material tools" onPointerDown={stopCanvasPointer}>
+          <MaterialLayeringAction key={selectedImage.assetId} nodeId={id} asset={selectedImage} />
+        </div>
+      )}
       <header className="module-node__header">
         <span
           className="module-node__icon"
@@ -4319,11 +4324,6 @@ function ProjectImageControl({
           <strong>{importing ? '正在导入…' : '添加图片素材'}</strong>
           <small>{importing ? '请稍候' : '上传'}</small>
         </DragSafeButton>
-      )}
-      {asset && (
-        <div className="module-node__layering-action nodrag nopan">
-          <MaterialLayeringAction key={asset.assetId} nodeId={nodeId} asset={asset} />
-        </div>
       )}
       {asset && (
         <div className="module-node__media-meta">

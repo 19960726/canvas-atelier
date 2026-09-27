@@ -33,15 +33,16 @@ it.each(['image_input', 'upload_image', 'canvas_library'] as const)('opens AI la
   analyze.mockRestore();
 });
 
-it.each(['image_input', 'upload_image'] as const)('keeps AI layering on the visible %s picture surface', moduleType => {
+it.each(['image_input', 'upload_image'] as const)('keeps AI layering above the %s card like generated-image tools', moduleType => {
   const node = createCanvasModuleNode('pasted-image-layer-source', moduleType, { x: 0, y: 0 });
   node.data.config.assetId = projectImage.assetId;
   useAppStore.setState(state => ({ project: { ...state.project, nodes: [node] }, projectImages: [projectImage] }));
   render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected /></ReactFlowProvider>);
 
-  const imageControl = screen.getByRole('group', { name: '图片素材粘贴替换区域' });
-  const visibleAction = imageControl.querySelector('.module-node__layering-action');
-  expect(visibleAction).not.toBeNull();
+  const card = screen.getByTestId('module-node-card');
+  const visibleAction = card.querySelector('.module-node__material-toolbar');
+  expect(visibleAction?.parentElement).toBe(card);
+  expect(card.querySelector('.module-node__image-control .image-layering__tool-icon')).toBeNull();
   const layeringButton = within(visibleAction as HTMLElement).getByRole('button', { name: 'AI 分层' });
   expect(layeringButton).toBeEnabled();
   expect(layeringButton).toHaveTextContent('AI 分层');
