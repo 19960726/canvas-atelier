@@ -3,6 +3,19 @@ import '@testing-library/jest-dom/vitest';
 import { afterEach, expect, it, vi } from 'vitest';
 import { SourceLayerAlignment } from './SourceLayerAlignment';
 afterEach(cleanup);
+it('opens correction outside the scaled node and returns focus after Escape', () => {
+  const view = render(<SourceLayerAlignment sourceUrl="source" width={100} height={200}
+    layers={[{ layerId: 'cup', name: '杯身', bounds: undefined }]} onApply={async () => {}} />);
+  const trigger = screen.getByRole('button', { name: '按原图位置校正图层' });
+  trigger.focus();
+  fireEvent.click(trigger);
+  const dialog = screen.getByRole('dialog', { name: '校正位置' });
+  expect(dialog).toHaveAttribute('aria-modal', 'true');
+  expect(view.container).not.toContainElement(dialog);
+  fireEvent.keyDown(dialog, { key: 'Escape' });
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+});
 it('requires original placement for every layer and only applies local bounds', async () => {
   const onApply = vi.fn(async () => {});
   render(<SourceLayerAlignment sourceUrl="source" width={100} height={100} layers={[

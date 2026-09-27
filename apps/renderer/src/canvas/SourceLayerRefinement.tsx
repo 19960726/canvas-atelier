@@ -2,6 +2,8 @@ import { useState } from 'react';
 import type { MattingRegion } from '@agent-canvas/desktop-core/preload-api';
 import { LayeringSelectionEditor } from './LayeringSelectionEditor';
 import type { LayeringBox } from '../app/layering-selection';
+import { WandSparkles } from 'lucide-react';
+import { LayerCorrectionDialog } from './LayerCorrectionDialog';
 
 export function SourceLayerRefinement({sourceUrl,width,height,layers,onApply}:{
   sourceUrl:string;width:number;height:number;
@@ -17,8 +19,8 @@ export function SourceLayerRefinement({sourceUrl,width,height,layers,onApply}:{
   const updateRegions=(next:MattingRegion[])=>setDrafts(old=>({...old,[selected]:{base,regions:next}}));
   const labels={keep:'保留实体',clear:'清除背景',glass:'玻璃半透明'};
   return <div className="image-layering__alignment">
-    <button type="button" disabled={busy||!layers.length} onClick={()=>{setSelected(layers[0]!.nodeId);setBox(null);setError(null);setOpen(true);}}>本地抠图与边缘精修</button>
-    {open&&layer&&<div role="group" aria-label="原图蒙版精修">
+    <button className="image-layering__repair-tool" type="button" aria-label="本地抠图与边缘精修" title="清除残留背景、保留主体或调整玻璃透明区域" disabled={busy||!layers.length} onClick={()=>{setSelected(layers[0]!.nodeId);setBox(null);setError(null);setOpen(true);}}><WandSparkles size={15} />边缘精修</button>
+    {open&&layer&&<LayerCorrectionDialog title="边缘精修" busy={busy} onClose={()=>setOpen(false)}><div role="group" aria-label="原图蒙版精修">
       <p>从原图提取，保持原大小和位置，不产生生成费用。可框选残留背景、需要保留的实体或玻璃；后添加的区域优先。</p>
       <select aria-label="精修图层" disabled={busy} value={selected} onChange={event=>{setSelected(event.target.value);setBox(null);setError(null);}}>
         {layers.map(item=><option key={item.nodeId} value={item.nodeId}>{item.name}</option>)}
@@ -33,6 +35,6 @@ export function SourceLayerRefinement({sourceUrl,width,height,layers,onApply}:{
       <button type="button" disabled={busy} onClick={()=>setOpen(false)}>关闭精修</button>
       <button type="button" disabled={busy} onClick={()=>{setBusy(true);setError(null);void onApply(selected,structuredClone(regions)).then(()=>{setDrafts(old=>{const next={...old};delete next[selected];return next;});setBox(null);}).catch(caught=>setError(caught instanceof Error?caught.message:'本地精修失败')).finally(()=>setBusy(false));}}>{busy?'正在本地精修…':'应用本地精修'}</button>
       {error&&<p role="alert">{error}</p>}
-    </div>}
+    </div></LayerCorrectionDialog>}
   </div>;
 }

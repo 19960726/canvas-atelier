@@ -435,6 +435,50 @@ html body .workspace--canvas-layout .module-node.module-node[data-module-type='i
 .image-layering__tool-icon:disabled { opacity: .45; cursor: not-allowed; }
 .image-layering__tool-icon:focus-visible { outline: 2px solid var(--gate-accent); outline-offset: 2px; }
 
+/* Repair actions share the node toolbar; editing lives outside the zoomed canvas. */
+.image-layering__repair-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+.image-layering__repair-tools:empty { display: none; }
+.image-layering .image-layering__repair-tool {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 32px; padding: 0 10px; margin: 0; border: 1px solid var(--gate-border-strong);
+  border-radius: 8px; background: var(--gate-card-muted); color: var(--gate-text);
+  font-family: inherit; font-weight: 600; font-size: 12px; line-height: 1.2; white-space: nowrap; cursor: pointer;
+}
+.image-layering__repair-tool:disabled { opacity: .45; cursor: not-allowed; }
+.image-layering__analysis-details { font-size: 12px; line-height: 1.6; }
+.image-layering__analysis-details summary { cursor: pointer; color: var(--gate-muted); }
+.image-layering__analysis-details ol { padding-left: 20px; max-height: 220px; overflow: auto; }
+.image-layering__analysis-details p { margin: 4px 0 10px; overflow-wrap: anywhere; }
+.image-layering__issue { padding: 10px 12px; border: 1px solid var(--gate-border-strong); border-radius: 8px; font-size: 12px; line-height: 1.6; }
+.image-layering__issue p { margin: 4px 0; overflow-wrap: anywhere; }
+.image-layering__issue summary { cursor: pointer; }
+.image-layering__progress-heading { flex-wrap: wrap; align-items: center; }
+.image-layering__progress-heading [data-state='error'], .image-layer-node [data-status='blocked'] { color: var(--gate-danger, #df8179); }
+.image-layering__progress-list > li { display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: center; }
+.image-layering__progress-list > li > span { grid-column: 2; grid-row: 1; overflow-wrap: anywhere; }
+.image-layering__progress-list > li > b { grid-column: 2; grid-row: 2; white-space: normal; }
+.image-layering__progress-list .image-layering__returned-thumbnail { grid-column: 1; grid-row: 1 / 3; width: 44px; height: 44px; }
+.image-layering__actions { flex-wrap: wrap; }
+.image-layer-node__error { font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.image-layer-node__error summary { cursor: pointer; }
+.layer-correction-backdrop { position: fixed; inset: 0; z-index: 1500; display: grid; place-items: center; padding: 20px; background: #0008; }
+.layer-correction-dialog { width: min(100%, 960px); max-height: calc(100dvh - 40px); overflow: auto; border: 1px solid var(--gate-border-strong, #4d655d); border-radius: 16px; color: var(--gate-text, #e4ece8); background: var(--gate-card, #202823); box-shadow: 0 24px 80px #0006; font-size: 13px; }
+.layer-correction-dialog > header { position: sticky; top: 0; z-index: 2; display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; background: inherit; border-bottom: 1px solid var(--gate-border, #42534a); }
+.layer-correction-dialog > header > div { display: grid; gap: 4px; }
+.layer-correction-dialog > header strong { font-size: 18px; }
+.layer-correction-dialog > header span { font-size: 12px; opacity: .75; }
+.layer-correction-dialog__body { padding: 16px 20px 20px; }
+.layer-correction-dialog__body > [role='group'] { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.layer-correction-dialog p, .layer-correction-dialog ol { flex-basis: 100%; margin: 0; line-height: 1.6; }
+.layer-correction-dialog ol { max-height: 130px; overflow: auto; }
+.layer-correction-dialog button, .layer-correction-dialog select { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; max-width: 100%; padding: 6px 12px; border: 1px solid var(--gate-border-strong, #4d655d); border-radius: 8px; color: inherit; background: var(--gate-card-muted, #2d3832); font: inherit; cursor: pointer; }
+.layer-correction-dialog button:disabled, .layer-correction-dialog select:disabled { opacity: .45; cursor: not-allowed; }
+.layer-correction-dialog :focus-visible, .image-layering__repair-tool:focus-visible { outline: 2px solid var(--gate-accent, #91d6bc); outline-offset: 3px; }
+.layer-correction-dialog .image-layering-dialog__source-stage { flex-basis: 100%; width: 100%; height: clamp(240px, 54dvh, 600px); min-height: 0; }
+.layer-correction-dialog__footer { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; width: 100%; gap: 8px; }
+.layer-correction-dialog__footer > span { margin-right: auto; }
+.layer-correction-dialog__footer > button:last-child { background: var(--gate-accent, #91d6bc); color: #12221b; }
+
 /* The correction popover belongs to the new image card, not the legacy
    floating-tool skin. Keep its controls compact but readable in both themes. */
 html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']

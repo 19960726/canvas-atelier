@@ -70,13 +70,13 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
     };
   }, [validatePixels, asset, sourceAsset, config.canvasHeight, config.canvasWidth, config.pixelMode, config.layerSelection, config.qualityReason, config.qualityValidationVersion, layerKind, qualityStatus, resultAssetId, retryValidation]);
 
-  const status = job?.status === 'failed' || job?.status === 'cancelled' ? job.status
+  const status = backgroundPreview.error ? 'blocked' : job?.status === 'failed' || job?.status === 'cancelled' ? job.status
     : qualityStatus === 'failed' ? 'failed'
       : qualityStatus === 'passed' ? 'completed'
         : job?.status === 'submitting' || job?.status === 'running' ? 'running'
           : job?.status === 'queued' || config.status === 'queued' ? 'queued'
             : job?.status === 'completed' || config.status === 'validating' ? 'validating' : 'planned';
-  const statusText = status === 'planned' ? '等待任务' : status === 'queued' ? '排队中' : status === 'running' ? '生成中'
+  const statusText = status === 'blocked' ? '合成受阻 · 图片已返回' : status === 'planned' ? '等待任务' : status === 'queued' ? '排队中' : status === 'running' ? '生成中'
     : status === 'validating' ? !asset && resultAssetId ? assetLoadFailed ? '图片读取失败' : '图片已返回，正在读取'
       : validationSaveFailed ? '验证结果保存失败' : validation === 'checking' ? '检查透明像素…' : '检查透明像素'
       : status === 'completed' ? '格式检查通过 · 待检查边缘' : status === 'cancelled' ? '任务已取消' : '需要检查';
@@ -93,7 +93,7 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
               <img src={preparedLayer.asset.displayUrl} alt={`${layerName}图层预览`} draggable={false} style={{ position: 'absolute',
                 left: `${preparedLayer.record.x / sourceDocumentInput.width * 100}%`, top: `${preparedLayer.record.y / sourceDocumentInput.height * 100}%`,
                 width: `${preparedLayer.record.width / sourceDocumentInput.width * 100}%`, height: `${preparedLayer.record.height / sourceDocumentInput.height * 100}%` }} />
-            </div> : <span role="status">{backgroundPreview.error ?? '正在处理图层像素…'}</span>
+            </div> : backgroundPreview.error ? <img src={asset.displayUrl} alt={`${layerName}已返回原始图片，尚未合成`} draggable={false} /> : <span role="status">正在处理图层像素…</span>
           : config.pixelMode === 'source' && layerKind === 'background'
           ? backgroundPreview.preview ? <img src={backgroundPreview.preview.layers[0]!.asset.displayUrl} alt={`${layerName}图层预览`} draggable={false} />
             : <span role="status">{backgroundPreview.error ?? (sourceDocumentInput ? '正在保留原图背景像素…' : '等待前景蒙版完成背景补全')}</span>
@@ -107,6 +107,7 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
       <span className="image-layer-node__kind">{layerKind === 'background' ? '背景' : '透明层'}</span>
     </div>
     <div className="image-layer-node__body">
+      {backgroundPreview.error && <details className="image-layer-node__error"><summary>查看合成问题</summary><p>{backgroundPreview.error}</p><p>本层返图已保留。请在分层工作台检查提示中的图层和背景。</p></details>}
       <div className="image-layer-node__heading"><strong title={layerName}>{layerName}</strong><span aria-live="polite" data-status={status} title={status === 'completed' ? '图片格式、画幅及透明通道已检查；提取范围和边缘请对照原图确认。' : undefined}>{statusText}</span></div>
       {status === 'running' && job?.progress !== undefined && <div className="image-layer-node__progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(job.progress * 100)}><span style={{ width: `${Math.round(job.progress * 100)}%` }} /></div>}
       {(jobError || qualityReason) && <p className="image-layer-node__error" role="status">{qualityReason ?? jobError}</p>}

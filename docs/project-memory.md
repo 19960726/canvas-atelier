@@ -1768,3 +1768,12 @@ Before producing an installer, verify at minimum:
 - 安装版 EXE、app.asar、最终界面 CSS、本地抠图 runtime manifest 与已验收候选逐字节相同；installed EXE SHA-256 `4ba6c6a612988eae439bbd046acd11d904f586c46b1bcf7260c7261d9309c4ec`，app.asar `34741c9ca33d2536870e42ee892d727a6dffceaa2c02a7e87a4ab85ed3962618`，CSS `a23d2ea8ea7fdae30664369d2b6b61c3cf6f9bab3e9815eb660b6364b31423fe`。
 - 直接启动已安装 EXE，`app.getVersion()`=1.6.179；在隔离 QA profile 完成图片粘贴、顶部 AI 分层入口位置、打开分层弹窗和三种范围选项检查，亮色对比度 12.64:1、深色 11.76:1，renderer pageErrors=[]，付费调用 0。记录 `work/layer-plan-layout-packaged-179/installed-receipt.json`。原正式项目没有用于此测试；已安装程序的真实供应商生成和六层交互布局仍未靠付费任务复测。
 - 验收状态更新：source PASS、build PASS、package PASS、installed app PASS；external provider 真实生图/像素质量 UNVERIFIED（本轮 0 付费调用）；GitHub release/update feed PENDING。先前 CLI 报认证失败是沙箱环境代理 `127.0.0.1:9` 无服务；经已授权的系统代理 `127.0.0.1:7890` 只读复查，GitHub 认证和远端查询恢复，等待本地提交、tag、资产发布与远端核验。
+
+### 2026-09-27 — 1.6.180 图标与分层修整界面
+
+- 根因：1.6.179 临时正式构建脚本设置 signAndEditExecutable=false，resources/icon.ico 虽为新版 N 图标，EXE 内嵌图标却保留 Electron 默认图标。新增可追踪 scripts/build-formal-release.mjs，启用资源编辑，并在产出后逐像素核对实际 EXE 的 32px 图标。Windows 工具缓存解压被 macOS 符号链接权限阻断时，恢复已下载的 Windows 工具缓存，未再次禁用资源编辑。
+- 两个本地修整入口没有专用样式，校正表单直接展开在缩放节点内。现采用 32px 紧凑工具入口和挂载在 body 的大图编辑弹窗，保持原图选框坐标、异步应用、失败保留、禁止忙时关闭、Escape 和回焦；既有供应商任务不变。
+- 整组 source document 遇到不匹配蒙版会拒绝合成，但节点原先仍显示绿色格式通过，并把完整共享错误覆盖所有预览。现在区分合成受阻和格式检查，节点保留明确标注的原始返图预览，技术原因放进详情；主工作台说明返图保留与合成不可用。没有放宽原图颜色一致性检查，没有宣称水流/玻璃成品质量已修复。
+- 回归：SourceLayerAlignment.test.tsx 新增 portal/Escape/回焦红绿回归；LayeringFailurePresentation.test.tsx 复现共享失败不应显示通过。聚焦 26/26；renderer 类型检查、完整构建、源码扫描通过。scripts/verify-layering-repair-ui.mjs 使用真实组件和生产 CSS 验证深浅主题、1280/800 窗口、缩放画布，4/4 通过。候选 EXE 图标像素通过；候选离线桌面图片粘贴、顶部 AI 分层及三种范围通过，页面错误 0。
+- 首轮全量测试与首次生成 desktop-core 产物并行，导致 7 项模块缺失失败；构建完成后已改为顺序全量重跑。正式安装与 GH 发布尚未完成，以后续报告为准。本轮新增付费调用 0。
+- 最终全量顺序重跑 290 文件通过/2 跳过，4247 项通过/2 跳过；退出 0。NSIS 1.6.180 安装退出 0；EXE/app.asar/icon/全部 renderer 产物 7 文件与候选同哈希，正式 EXE 图标像素通过。实际安装版独立离线项目完成粘贴、顶部 AI 分层、三种范围、保存与 reload，pageErrors=[]、paidCalls=0。安装包 353948577 bytes / SHA256 4ff959eca58cbaea1b8081a1622518a45db5691f092fbf2dabdc19e5b68e3139，latest.yml SHA512/size 通过。报告 docs/release-1.6.180.md；GH 公开状态仍以远端后续核对为准。

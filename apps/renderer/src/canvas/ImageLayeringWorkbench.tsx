@@ -222,8 +222,9 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     <header><strong>图片自动分层</strong><span>透明图层与多图层 PSD</span></header>
     {parsed.error && <p role="alert">分层结果无效：{parsed.error}</p>}
     {selectionResult.error && <p role="alert">{selectionResult.error}</p>}
-    {sourcePreview.error && config.pixelMode === 'source' && <p role="alert">{sourcePreview.error}</p>}
+    {sourcePreview.error && config.pixelMode === 'source' && <div className="image-layering__issue" role="alert"><strong>图片已返回，合成暂不可用</strong><p>请检查问题图层的透明区域与背景；已有返图已保留。</p><details><summary>查看失败原因</summary><p>{sourcePreview.error}</p></details></div>}
     {config.pixelMode === 'source' && sourceInput && !sourcePreview.preview && !sourcePreview.error && <p role="status">正在提取原图像素…</p>}
+    <div className="image-layering__repair-tools" role="group" aria-label="图层修整">
     {sourceAsset?.width && sourceAsset.height && onRefineLayer && <SourceLayerRefinement
       key={`${String(config.groupId)}:${sourceAsset.assetId}`} sourceUrl={sourceAsset.displayUrl} width={sourceAsset.width} height={sourceAsset.height}
       layers={layerNodes.filter(node => node.data.config.layerKind !== 'background' && !isShadowOnlyLayer(node.data.config) && boxSchema.safeParse(node.data.config.sourceBounds).success).map(node => ({
@@ -236,10 +237,11 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
       sourceUrl={sourceAsset.displayUrl} width={sourceAsset.width ?? Number(config.canvasWidth)} height={sourceAsset.height ?? Number(config.canvasHeight)}
       layers={generatedPlan.filter(layer => layer.kind !== 'background').map(layer => ({ layerId: String(layer.layerId), name: String(layer.name), bounds: layerStatusById.get(layer.layerId)?.sourceBounds }))}
       onApply={onApplySourceBounds} />}
+    </div>
     {generatedPlan.length > 0 && <details className="image-layering__analysis-details"><summary>查看分层分析详情</summary>
       <ol aria-label="已保存的分层分析">{generatedPlan.map(layer => <li key={String(layer.layerId)}><strong>{String(layer.name ?? '图层')}</strong><p>{String(layer.description ?? '')}</p></li>)}</ol>
     </details>}
-    {generatedPlan.length > 0 && <div className="image-layering__progress-heading" role="status" title="检查图片可读取、画幅与透明通道；请逐层隐藏，检查物体残边、透明孔洞和背景接缝。"><strong>格式检查 {passedCount} / {generatedPlan.length} 层</strong><span>{overallStatus}</span></div>}
+    {generatedPlan.length > 0 && <div className="image-layering__progress-heading" role="status" title="格式检查只确认图片可读取、画幅与透明通道，不代表合成和边缘质量通过。"><strong>格式检查 {passedCount} / {generatedPlan.length} 层</strong><span data-state={sourcePreview.error ? 'error' : 'pending'}>{overallStatus}</span></div>}
     {sourceAsset && <div className="image-layering__view-controls" role="group" aria-label="分层预览模式">
       <button type="button" aria-pressed={previewMode === 'original' || layered === null} onClick={() => setPreviewMode('original')}>原图</button>
       <button type="button" aria-pressed={previewMode === 'composite' && layered !== null} disabled={layered === null} onClick={() => setPreviewMode('composite')}>合成图</button>
@@ -252,7 +254,7 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
         const job = typeof layerConfig?.jobId === 'string' ? jobsById.get(layerConfig.jobId) : undefined;
         const status = !layerConfig ? '图层节点已删除'
           : layerConfig.qualityStatus === 'failed' ? '像素验证失败'
-          : layerConfig?.qualityStatus === 'passed' ? '验证通过'
+          : layerConfig?.qualityStatus === 'passed' ? '图片格式通过'
             : job?.status === 'failed' ? '任务失败'
               : job?.status === 'cancelled' ? '已取消'
                 : job?.status === 'running' || job?.status === 'submitting' || layerConfig?.status === 'running' ? '生成中'
