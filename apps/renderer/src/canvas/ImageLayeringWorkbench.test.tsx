@@ -19,6 +19,52 @@ const layers: LayeredImageRecord[] = [
 afterEach(cleanup);
 
 describe('image layering workbench', () => {
+  it.each(['bounds', 'source'] as const)('exports %s masks using their own coordinate space and reconstructs source pixels', async (maskSpace) => {
+    const sourcePixels = Uint8ClampedArray.from(Array.from({ length: 64 }, (_, i) => [i * 3, 60, 80, 255]).flat());
+    const maskAlpha = maskSpace === 'source' ? 224 : 255;
+    const maskPixels = Uint8ClampedArray.from(Array.from({ length: 64 }, (_, i) => [255, 0, 0, i % 8 >= 2 && i % 8 <= 5 && i >= 16 && i < 48 ? maskAlpha : 0]).flat());
+    class TestImage { naturalWidth = 8; naturalHeight = 8; crossOrigin = ''; src = ''; decode() { return Promise.resolve(); } }
+    vi.stubGlobal('Image', TestImage);
+    const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function(this: HTMLCanvasElement) {
+      let url = '';
+      return { imageSmoothingEnabled: true, imageSmoothingQuality: 'high',
+        createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+        putImageData: () => {}, drawImage: (image: TestImage) => { url = image.src; },
+        getImageData: () => ({ data: url === 'source-url' ? sourcePixels : url.includes(subject) ? maskPixels : new Uint8ClampedArray(256).fill(255) }),
+      } as never;
+    });
+    const preview = vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,preview');
+    const open = vi.fn(async (_bytes: Uint8Array) => ({ ok: true as const }));
+    const previous = window.novusDesktop;
+    Object.defineProperty(window, 'novusDesktop', { configurable: true, value: { projectImages: { openLayeredPsdInPhotoshop: open } } });
+    try {
+      const planLayers = layers.slice(0, 2).map(record => ({ ...record }));
+      const nodes = planLayers.map(record => {
+        const node = createCanvasModuleNode(record.layerId, 'image_layer', { x: 0, y: 0 });
+        node.data.config = { layerId: record.layerId, resultAssetId: record.assetId, qualityStatus: 'passed',
+          ...(record.kind === 'transparent' ? { maskSpace, sourceBounds: maskSpace === 'source'
+            ? { x: .375, y: .25, width: .5, height: .5 }
+            : { x: .625, y: .5, width: .25, height: .25 } } : {}) };
+        return node;
+      });
+      render(<ImageLayeringWorkbench config={{ canvasWidth: 8, canvasHeight: 8, sourceAssetId: 'source', planLayers, pixelMode: 'source' }}
+        assets={[...assets, { assetId: 'source', mediaType: 'image/png', displayUrl: 'source-url', width: 8, height: 8 }]} layerNodes={nodes} onLayersChange={() => {}} />);
+      await waitFor(() => expect(screen.getByRole('button', { name: '在 Photoshop 中打开' })).toBeEnabled());
+      expect(screen.getByText('图层已返回 · 待检查边缘与背景')).toBeVisible();
+      expect(screen.queryByText('已完成')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '在 Photoshop 中打开' }));
+      await waitFor(() => expect(open).toHaveBeenCalledOnce());
+      const psd = readPsd(open.mock.calls[0]![0], { useImageData: true });
+      expect([psd.width, psd.height]).toEqual([8, 8]);
+      expect([...psd.imageData!.data]).toEqual([...sourcePixels]);
+      const foreground = psd.children!.find(layer => layer.name === 'Subject')!;
+      expect([foreground.left, foreground.top]).toEqual(maskSpace === 'source' ? [1, 1] : [4, 3]);
+      const offset = (foreground.imageData!.width + 1) * 4;
+      const sourceRed = sourcePixels[(maskSpace === 'source' ? 2 * 8 + 2 : 4 * 8 + 5) * 4]!;
+      expect(foreground.imageData!.data[offset]).toBe(maskSpace === 'source' ? Math.round((sourceRed - (255 - maskAlpha)) * 255 / maskAlpha) : sourceRed);
+      expect(foreground.imageData!.data[offset + 3]).toBe(maskAlpha);
+    } finally { context.mockRestore(); preview.mockRestore(); vi.unstubAllGlobals(); Object.defineProperty(window, 'novusDesktop', { configurable: true, value: previous }); }
+  });
   it('exports scoped high resolution layers without shrinking them to the source size', async () => {
     class TestImage {
       naturalWidth = 4; naturalHeight = 4; crossOrigin = ''; src = '';
@@ -170,10 +216,10 @@ describe('image layering workbench', () => {
     await waitFor(() => expect(onRefreshJobs).toHaveBeenCalledOnce());
   });
 
-  it('requires another explicit confirmation before retrying a failed paid layer task', async () => {
+  it.each(['failed', 'completed'] as const)('requires explicit confirmation before retrying a rejected %s layer task', async (status) => {
     const failedNode = createCanvasModuleNode('failed-subject', 'image_layer', { x: 0, y: 0 });
-    failedNode.data.config = { ...failedNode.data.config, layerId: 'subject', name: 'Subject', jobId: 'failed-job', status: 'failed' };
-    const failedJob = { id: 'failed-job', status: 'failed', layeringLayerId: 'subject' } as ModelJob;
+    failedNode.data.config = { ...failedNode.data.config, layerId: 'subject', name: 'Subject', jobId: 'failed-job', status: 'failed', qualityStatus: 'failed' };
+    const failedJob = { id: 'failed-job', status, layeringLayerId: 'subject' } as ModelJob;
     const onRetryJob = vi.fn(async (_jobId: string) => {});
     render(<ImageLayeringWorkbench config={{ sourceAssetId: base, canvasWidth: 2, canvasHeight: 2, layers: [],
       planLayers: [{ layerId: 'base', name: 'Background' }, { layerId: 'subject', name: 'Subject' }] }}

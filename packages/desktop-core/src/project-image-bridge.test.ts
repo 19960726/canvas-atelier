@@ -35,9 +35,13 @@ describe('project image bridge', () => {
     const invoke = vi.fn(async () => null) as DesktopBridgeInvoke;
     const api = createPreloadApi(invoke);
 
-    expect(Object.keys(api.projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importToPhotoshop', 'list', 'openLayeredPsdInPhotoshop', 'pasteClipboardImage', 'writeClipboardImage']);
+    expect(Object.keys(api.projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importPreparedLayer', 'importToPhotoshop', 'list', 'openLayeredPsdInPhotoshop', 'pasteClipboardImage', 'refineLocalLayer', 'writeClipboardImage']);
     expect(api.projectImages).not.toHaveProperty('readFile');
     expect(api.projectImages).not.toHaveProperty('resolvePath');
+    const matting={width:8,height:8,rgba:new Uint8Array(256),bounds:{x:0,y:0,width:1,height:1},regions:[]};
+    await api.projectImages.refineLocalLayer!(matting);
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.refineLocalLayer,matting);
+    vi.mocked(invoke).mockClear();
     await api.projectImages.importImage({
       sessionId: 'session-1',
       target: { kind: 'module', nodeId: 'image-input' },

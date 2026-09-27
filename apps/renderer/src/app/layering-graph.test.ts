@@ -10,6 +10,15 @@ import { confirmLayeringPlan, parseLayeringAnalysis } from './layering-plan';
 import { buildDistantLayeringRepairTransaction, buildLayeringGraphTransaction } from './layering-graph';
 
 const assetId = 'a1b2c3d4e5f60718';
+it('persists source-space matte semantics on newly created original-pixel groups', async () => {
+  const plan = { ...parseLayeringAnalysis(reply, assetId, 1024, 768), pixelMode: 'source' as const };
+  const confirmation = await confirmLayeringPlan(plan, 'comfly', 'comfly-gpt-image-2', '1K', '2026-09-23T06:00:00.000Z');
+  const project = sourceProject();
+  const next = applyProjectTransaction(project, buildLayeringGraphTransaction(project, plan, confirmation, 'native-matte'));
+  const created = next.nodes.filter(node => node.type === 'module' && node.data.config.groupId === 'native-matte');
+  expect(created).toHaveLength(4);
+  for (const node of created) expect(node).toMatchObject({ data: { config: { maskSpace: 'source' } } });
+});
 const reply = JSON.stringify({ layers: [
   { layerId: 'background', kind: 'background', name: '背景', description: '补全遮挡后的厨房', included: true },
   { layerId: 'product', kind: 'transparent', name: '主体', description: '保留产品轮廓', included: true },
@@ -30,6 +39,18 @@ function sourceProject(): CanvasProject {
 }
 
 describe('durable AI layering graph', () => {
+  it('binds a library image to its explicitly selected source node', async () => {
+    const project = sourceProject();
+    const library = createCanvasModuleNode('library', 'canvas_library', { x: 600, y: 180 });
+    library.data.config.assetIds = [assetId];
+    const plan = parseLayeringAnalysis(reply, assetId, 1024, 768);
+    const confirmation = await confirmLayeringPlan(plan, 'comfly', 'comfly-gpt-image-2', '1K', '2026-09-27T00:00:00.000Z');
+    const next = applyProjectTransaction({ ...project, nodes: [...project.nodes, library] },
+      buildLayeringGraphTransaction({ ...project, nodes: [...project.nodes, library] }, plan, confirmation, 'library-group', library.id));
+    const group = next.nodes.find(n => n.id === 'image-layering-library-group');
+    expect(group?.type === 'module' && group.data.config.sourceNodeId).toBe(library.id);
+    expect(() => buildLayeringGraphTransaction(project, plan, confirmation, 'gone', library.id)).toThrow();
+  });
   it('persists the selected scope on every layer and composite through project serialization', async () => {
     const selection = { mode: 'objects' as const, box: { x: .2, y: .3, width: .4, height: .5 }, target: '料理机' };
     const plan = { ...parseLayeringAnalysis(reply, assetId, 1024, 768), selection };

@@ -27,9 +27,102 @@ import { PROJECT_STORAGE_KEY, loadPersistedProjectBundle } from './project-persi
 import { AUTOSAVE_IDLE_MS } from './autosave';
 import { registerEditorDraft } from './editor-draft-boundary';
 import { confirmLayeringPlan, parseLayeringAnalysis } from './layering-plan';
+import { canonicalJson } from '../../../../packages/desktop-core/src/canonical-json';
 import type { LayeringRouteEvidence } from './layering-route-evidence';
+import * as managedLayerPixels from './managed-layer-pixels';
 
 describe('project optimization memory', () => {
+  it('audit state: active provider task can lose a successful local refinement', async()=>{
+    const sourceId='a'.repeat(16),newId='b'.repeat(16);
+    const node=createCanvasModuleNode('audit-running-layer','image_layer',{x:0,y:0});
+    node.data.config={sourceAssetId:sourceId,groupId:'group',layerId:'subject',jobId:'provider-running',status:'running',qualityStatus:'pending',sourceBounds:{x:0,y:0,width:1,height:1}};
+    const project={...createStarterProject(),nodes:[node],edges:[]};
+    const source={assetId:sourceId,width:2,height:2,displayUrl:'source',mediaType:'image/png'};
+    const asset={...source,assetId:newId};
+    useAppStore.setState({project,projectImages:[source as never],saveStatus:'saved'});
+    const commit=vi.fn(async(request:ProjectCommitRequest)=>({ok:true,project:request.nextProject,revision:request.baseRevision+1}));
+    const imported=vi.fn(async()=>({asset,project:useAppStore.getState().project,revision:1}));
+    replaceProjectPersistenceClientForTests(createMockClient({commit:commit as never,importProjectImage:imported as never}));
+    const decode=vi.spyOn(managedLayerPixels,'decodeLayerPixels').mockResolvedValue(new Uint8Array(16));
+    const encode=vi.spyOn(managedLayerPixels,'layerPixelsUrl').mockReturnValue('data:image/png;base64,AA==');
+    const rgba=new Uint8Array([255,0,0,255,0,0,0,0,255,0,0,255,0,0,0,0]);
+    window.novusDesktop={projectImages:{refineLocalLayer:async()=>({width:2,height:2,rgba})}} as never;
+    try {
+      await expect(useAppStore.getState().refineImageLayer(node.id,project.id,[])).rejects.toThrow(/任务|生成/);
+      expect(imported).not.toHaveBeenCalled();
+    } finally {decode.mockRestore();encode.mockRestore();delete window.novusDesktop;}
+  });
+  it('audit state: task rebound while inference runs must invalidate completion', async()=>{
+    const sourceId='a'.repeat(16),newId='b'.repeat(16);
+    const node=createCanvasModuleNode('audit-retry-layer','image_layer',{x:0,y:0});
+    node.data.config={sourceAssetId:sourceId,groupId:'group',layerId:'subject',jobId:'old-failed',status:'failed',sourceBounds:{x:0,y:0,width:1,height:1}};
+    const project={...createStarterProject(),nodes:[node],edges:[]};
+    const source={assetId:sourceId,width:2,height:2,displayUrl:'source',mediaType:'image/png'};
+    const asset={...source,assetId:newId};
+    useAppStore.setState({project,projectImages:[source as never],saveStatus:'saved'});
+    const commit=vi.fn(async(request:ProjectCommitRequest)=>({ok:true,project:request.nextProject,revision:request.baseRevision+1}));
+    const imported=vi.fn(async()=>({asset,project:useAppStore.getState().project,revision:1}));
+    replaceProjectPersistenceClientForTests(createMockClient({commit:commit as never,importProjectImage:imported as never}));
+    const decode=vi.spyOn(managedLayerPixels,'decodeLayerPixels').mockResolvedValue(new Uint8Array(16));
+    const encode=vi.spyOn(managedLayerPixels,'layerPixelsUrl').mockReturnValue('data:image/png;base64,AA==');
+    const rgba=new Uint8Array([255,0,0,255,0,0,0,0,255,0,0,255,0,0,0,0]);
+    window.novusDesktop={projectImages:{refineLocalLayer:async()=>{
+      const current=useAppStore.getState().project;
+      useAppStore.setState({project:{...current,nodes:current.nodes.map(n=>n.id===node.id?{...node,data:{...node.data,config:{...node.data.config,jobId:'new-retry',status:'queued',qualityStatus:'pending'}}}:n)}});
+      return {width:2,height:2,rgba};
+    }}} as never;
+    try {
+      await expect(useAppStore.getState().refineImageLayer(node.id,project.id,[])).rejects.toThrow(/变更/);
+      expect(imported).not.toHaveBeenCalled();
+    } finally {decode.mockRestore();encode.mockRestore();delete window.novusDesktop;}
+  });
+
+
+  it.each(['success','write-failure','conflict','exception'])('saves local refinement atomically: %s', async (outcome) => {
+    const sourceId='a'.repeat(16),newId='b'.repeat(16);
+    const node=createCanvasModuleNode('refine-object','image_layer',{x:0,y:0});
+    node.data.config={sourceAssetId:sourceId,groupId:'refine-group',layerId:'subject',resultAssetId:'previous',
+      sourceBounds:{height:1,width:1,y:0,x:0}};
+    const project={...createStarterProject(),nodes:[node],edges:[]};
+    const source={assetId:sourceId,width:2,height:2,displayUrl:'source-url',mediaType:'image/png'};
+    const asset={...source,assetId:newId,displayUrl:'refined-url'};
+    useAppStore.setState({project,projectImages:[source as never],saveStatus:'saved'});
+    const commit=vi.fn(async (request: ProjectCommitRequest):Promise<ProjectCommitResult>=>{
+      if(outcome==='exception')throw Object.assign(new Error('write failed'),{retryable:true});
+      if(outcome!=='success')return {ok:false,project:request.previousProject,code:outcome==='conflict'?'REVISION_CONFLICT':'DURABLE_WRITE_FAILED',retryable:true,revision:2};
+      return {ok:true,project:request.nextProject,revision:request.baseRevision+1};
+    });
+    const importProjectImage=vi.fn(async()=>({asset,project:useAppStore.getState().project,revision:1}));
+    replaceProjectPersistenceClientForTests(createMockClient({commit,importProjectImage:importProjectImage as never}));
+    const decode=vi.spyOn(managedLayerPixels,'decodeLayerPixels').mockResolvedValue(new Uint8Array(16));
+    const encode=vi.spyOn(managedLayerPixels,'layerPixelsUrl').mockReturnValue('data:image/png;base64,AA==');
+    const pixels=new Uint8Array(16);pixels[3]=255;
+    const refine=vi.fn(async()=>({width:2,height:2,rgba:pixels}));
+    window.novusDesktop={projectImages:{refineLocalLayer:refine}} as never;
+    try {
+      const regions=[{mode:'glass' as const,box:{x:.25,y:.25,width:.5,height:.5}}];
+      if(outcome!=='success'){
+        await expect(useAppStore.getState().refineImageLayer(node.id,project.id,regions)).rejects.toThrow(/保存失败/);
+        expect(useAppStore.getState().project.nodes[0]).toEqual(node);
+        return;
+      }
+      await useAppStore.getState().refineImageLayer(node.id,project.id,regions);
+      expect(importProjectImage).toHaveBeenCalledOnce();expect(commit).toHaveBeenCalledOnce();
+      expect(useAppStore.getState().project.nodes[0]).toMatchObject({data:{config:{resultAssetId:newId,previousResultAssetId:'previous',
+        maskSpace:'source',pixelColorSpace:'foreground',mattingRegions:regions}}});
+      const saved=commit.mock.calls[0]![0];expect(saved.nextProject.nodes[0]).toEqual(useAppStore.getState().project.nodes[0]);
+    } finally {decode.mockRestore();encode.mockRestore();delete window.novusDesktop;}
+  });
+  it('persists layering drafts on the source node and rejects a late result from another project', async () => {
+    const node = createCanvasModuleNode('layer-source', 'image_generation', { x: 0, y: 0 });
+    const project = { ...useAppStore.getState().project, nodes: [node], edges: [] };
+    useAppStore.setState({ project });
+    const draft = { sourceAssetId: 'source', plan: null, analysisRoute: 'vision', generationRoute: 'gpt', resolution: '4K' as const,
+      layerCountMode: 'auto' as const, targetLayerCount: 5, selection: { mode: 'whole' as const }, step: 'analyze' as const, createdGroupId: null, started: false };
+    expect(await useAppStore.getState().draftImageLayering(node.id, project.id, draft)).toBe(true);
+    expect(useAppStore.getState().project.nodes[0]).toMatchObject({ data: { config: { layeringDrafts: { source: draft } } } });
+    expect(await useAppStore.getState().draftImageLayering(node.id, 'other-project', draft)).toBe(false);
+  });
   afterEach(() => vi.useRealTimers());
   beforeEach(() => {
     delete window.novusDesktop;
@@ -8212,6 +8305,120 @@ describe('stable module graph commits', () => {
     await expect(Promise.all([move, reorder])).resolves.toEqual([true, true]);
   });
 
+  it.each(['quality', 'visibility', 'records', 'stale-quality'] as const)('preserves queued original placement through %s saves', async action => {
+    const firstAck = deferred<ProjectCommitResult>();
+    const commit = vi.fn().mockReturnValueOnce(firstAck.promise).mockImplementation(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      canonicalJson(request.transaction); return { ok: true, project: request.nextProject, revision: request.baseRevision + 1 };
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    const group = createCanvasModuleNode('latest-group', 'image_layering', { x: 0, y: 0 });
+    group.data.config = { groupId: 'group', sourceAssetId: 'source', layers: [], planLayers: [{ layerId: 'background', kind: 'background' }, { layerId: 'subject', kind: 'transparent' }] };
+    const children = ['background', 'subject'].map(layerId => {
+      const node = createCanvasModuleNode(layerId, 'image_layer', { x: 0, y: 0 });
+      node.data.config = { groupId: 'group', sourceAssetId: 'source', layerId, resultAssetId: layerId, qualityStatus: 'passed', maskSpace: 'source' }; return node;
+    });
+    const project = { ...createStarterProject(), nodes: [group, ...children], edges: [] };
+    useAppStore.setState({ project, saveStatus: 'saved' });
+    const first = useAppStore.getState().commitNodePosition(group.id, { x: 10, y: 20 });
+    const bounds = { subject: { x: .1, y: .2, width: .3, height: .4 } };
+    const alignment = useAppStore.getState().alignSourceLayers(group.id, project.id, bounds);
+    const state = useAppStore.getState();
+    const next = action === 'visibility' ? state.updateImageLayerVisibility('subject', project.id, false)
+      : action === 'records' ? state.updateImageLayeringRecords(group.id, project.id, children.map((node, index) => ({ layerId: node.id, kind: index ? 'transparent' : 'background', name: node.id, assetId: node.id, x: 0, y: 0, width: 2, height: 2, visible: true, opacity: 1 })))
+        : state.updateImageLayerQuality('subject', project.id, action === 'stale-quality' ? 'old-asset' : 'subject', { ok: true });
+    const request = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    firstAck.resolve({ ok: true, project: request.nextProject, revision: 1 });
+    await Promise.all([first, alignment, next]);
+    const current = useAppStore.getState().project;
+    expect(current.nodes.find(node => node.id === 'subject')).toMatchObject({ data: { config: { sourceBounds: bounds.subject, pixelMode: 'source', maskSpace: 'source', resultAssetId: 'subject' } } });
+    expect(current.nodes.find(node => node.id === group.id)).toMatchObject({ data: { config: { pixelMode: 'source' } } });
+    expect(commit).toHaveBeenCalledTimes(action === 'stale-quality' ? 2 : 3);
+  });
+
+  it.each(['align', 'recheck', 'stale-recheck'] as const)('builds queued layer %s from the latest acknowledged result', async (action) => {
+    const firstAck = deferred<ProjectCommitResult>();
+    const commit = vi.fn().mockReturnValueOnce(firstAck.promise)
+      .mockImplementation(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        ok: true, project: request.nextProject, revision: request.baseRevision + 1,
+      }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    const group = createCanvasModuleNode('align-group', 'image_layering', { x: 0, y: 0 });
+    group.data.config = { ...group.data.config, groupId: 'group-a', sourceAssetId: 'source-a', planLayers: [
+      { layerId: 'background', kind: 'background' }, { layerId: 'subject', kind: 'transparent' },
+    ] };
+    const background = createCanvasModuleNode('align-background', 'image_layer', { x: 0, y: 0 });
+    background.data.config = { ...background.data.config, groupId: 'group-a', sourceAssetId: 'source-a', layerId: 'background' };
+    const layer = createCanvasModuleNode('align-layer', 'image_layer', { x: 0, y: 0 });
+    layer.data.config = { ...layer.data.config, groupId: 'group-a', sourceAssetId: 'source-a', layerId: 'subject',
+      resultAssetId: 'result-a', jobId: 'job-a', resultJobId: 'job-a', qualityStatus: 'failed', qualityReason: 'decode' };
+    const project = { ...createStarterProject(), nodes: [group, background, layer], edges: [] };
+    useAppStore.setState({ project, saveStatus: 'saved' });
+    const first = useAppStore.getState().commitNodePosition(group.id, { x: 50, y: 60 });
+    const bounds = { subject: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 } };
+    const queued = action === 'align'
+      ? useAppStore.getState().alignSourceLayers(group.id, project.id, bounds)
+      : useAppStore.getState().recheckImageLayer(layer.id, project.id, 'result-a');
+    const request = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    const latestResult = action === 'recheck' ? 'result-a' : 'result-b';
+    const latest = { ...request.nextProject, nodes: request.nextProject.nodes.map((node) => node.id === layer.id && node.type === 'module'
+      ? { ...node, data: { ...node.data, config: { ...node.data.config, resultAssetId: latestResult, jobId: 'job-b', resultJobId: 'job-b',
+        qualityStatus: 'passed', qualityReason: 'latest-reason', qualityValidationVersion: 2, resultWidth: 4096 } } } : node) };
+    firstAck.resolve({ ok: true, project: latest, revision: 1 });
+    await first;
+    await queued;
+    const finalLayer = useAppStore.getState().project.nodes.find((node) => node.id === layer.id)!;
+    expect(finalLayer).toMatchObject({ data: { config: { resultAssetId: latestResult, jobId: 'job-b', resultJobId: 'job-b', resultWidth: 4096,
+      qualityStatus: action === 'recheck' ? 'pending' : 'passed', qualityValidationVersion: 2 } } });
+    if (action === 'align') {
+      expect(finalLayer).toMatchObject({ data: { config: { pixelMode: 'source', sourceBounds: bounds.subject, qualityReason: 'latest-reason' } } });
+      expect(useAppStore.getState().project.nodes.find((node) => node.id === group.id)).toMatchObject({ position: { x: 50, y: 60 }, data: { config: { pixelMode: 'source' } } });
+      expect(useAppStore.getState().project.nodes.find((node) => node.id === background.id)).toMatchObject({ data: { config: { pixelMode: 'source' } } });
+    } else if (action === 'recheck') {
+      expect(finalLayer).toMatchObject({ data: { config: { status: 'validating' } } });
+      expect((finalLayer as CanvasModuleNode).data.config).not.toHaveProperty('qualityReason');
+    }
+    expect(commit).toHaveBeenCalledTimes(action === 'stale-recheck' ? 1 : 2);
+  });
+
+  it.each(['align', 'recheck'] as const)('refuses queued %s after its source ownership changes', async (action) => {
+    const firstAck = deferred<ProjectCommitResult>();
+    const commit = vi.fn().mockReturnValueOnce(firstAck.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    const group = createCanvasModuleNode('source-group', 'image_layering', { x: 0, y: 0 });
+    group.data.config = { ...group.data.config, groupId: 'group-a', sourceAssetId: 'source-a', planLayers: [{ layerId: 'subject', kind: 'transparent' }] };
+    const layer = createCanvasModuleNode('source-layer', 'image_layer', { x: 0, y: 0 });
+    layer.data.config = { ...layer.data.config, groupId: 'group-a', sourceAssetId: 'source-a', layerId: 'subject', resultAssetId: 'result-a', qualityStatus: 'passed' };
+    const project = { ...createStarterProject(), nodes: [group, layer], edges: [] };
+    useAppStore.setState({ project, saveStatus: 'saved' });
+    const first = useAppStore.getState().commitNodePosition(group.id, { x: 50, y: 60 });
+    const queued = action === 'align'
+      ? useAppStore.getState().alignSourceLayers(group.id, project.id, { subject: { x: 0, y: 0, width: 1, height: 1 } })
+      : useAppStore.getState().recheckImageLayer(layer.id, project.id, 'result-a');
+    const outcome = action === 'align' ? expect(queued).rejects.toThrow('分层方案已变更') : expect(queued).resolves.toBeUndefined();
+    const request = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    firstAck.resolve({ ok: true, revision: 1, project: { ...request.nextProject, nodes: request.nextProject.nodes.map((node) => node.type === 'module'
+      ? { ...node, data: { ...node.data, config: { ...node.data.config, sourceAssetId: 'replacement-source' } } } : node) } });
+    await first;
+    await outcome;
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === layer.id)).toMatchObject({ data: { config: { sourceAssetId: 'replacement-source', qualityStatus: 'passed' } } });
+  });
+
+  it('validates every foreground box before persisting source alignment', async () => {
+    const commit = vi.fn();
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    const group = createCanvasModuleNode('bounds-group', 'image_layering', { x: 0, y: 0 });
+    group.data.config = { ...group.data.config, groupId: 'group-a', sourceAssetId: 'source-a', planLayers: [{ layerId: 'subject', kind: 'transparent' }] };
+    const layer = createCanvasModuleNode('bounds-layer', 'image_layer', { x: 0, y: 0 });
+    layer.data.config = { ...layer.data.config, groupId: 'group-a', sourceAssetId: 'source-a', layerId: 'subject' };
+    const project = { ...createStarterProject(), nodes: [group, layer], edges: [] };
+    useAppStore.setState({ project, saveStatus: 'saved' });
+    await expect(useAppStore.getState().alignSourceLayers(group.id, project.id, {})).rejects.toThrow();
+    await expect(useAppStore.getState().alignSourceLayers(group.id, project.id, { subject: { x: 0, y: 0, width: -1, height: 1 } })).rejects.toThrow();
+    expect(commit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project).toEqual(project);
+  });
+
   it('serializes two direct durable callers and rebuilds the second project from the first acknowledgement', async () => {
     const firstAck = deferred<ProjectCommitResult>();
     const commit = vi.fn()
@@ -10516,7 +10723,7 @@ describe('GPT layering analysis app-store boundary', () => {
     });
   });
 
-  it('rebinds a failed layer retry to its original canvas node before any fixture submission', async () => {
+  it.each(['failed', 'completed'] as const)('rebinds a rejected %s layer retry to its original canvas node before any fixture submission', async (status) => {
     const assetId = 'abcdef0123456789';
     const projectId = 'layer-retry-project';
     const jobId = 'failed-layer-job';
@@ -10535,7 +10742,7 @@ describe('GPT layering analysis app-store boundary', () => {
     const failedJob: ModelJob = { id: jobId, kind: 'image', conversationId: 'image-layering-retry-group',
       displayName: 'GPT Image 2', modelId: 'gpt-image-2', modelRoute: 'comfly-gpt-image-2', projectId,
       projectSessionId: 'layer-retry-session', promptNodeId: layer.id, prompt: 'retry fixture', provider: 'comfly',
-      referenceAssetIds: [assetId], retryCount: 0, status: 'failed', layeringGroupId: 'retry-group',
+      referenceAssetIds: [assetId], retryCount: 0, status, resultAssetId: 'old-layer-result', layeringGroupId: 'retry-group',
       layeringLayerId: 'subject', resolution: '1K', imageOutputFormat: 'png', imageBackground: 'transparent', outputCount: 1 };
     const storage = createTestModelJobStorage([failedJob]);
     const release = deferred<void>();
@@ -10786,5 +10993,3 @@ describe('agent generation model selection', () => {
     expect(submitImageJob).not.toHaveBeenCalled();
   });
 });
-
-import { canonicalJson } from '../../../../packages/desktop-core/src/canonical-json';

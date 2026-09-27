@@ -8,6 +8,7 @@ import {
   transitionModelJob,
 } from '@agent-canvas/domain';
 import { createModelJobRunId } from './model-job-identity';
+import { isRejectedLayerResult } from './layer-result-retry';
 import { isExternalProviderJob, isUncertainExternalSubmission, UNCERTAIN_EXTERNAL_SUBMISSION_ERROR } from './model-job-retry-policy';
 
 const DEFAULT_POLL_CONCURRENCY = 4;
@@ -147,7 +148,7 @@ export interface ModelJobStore {
   stop(): void;
   processQueue(): Promise<void>;
   pollActiveJobs(): Promise<void>;
-  retryJob(id: string, overrides?: { id?: string; projectId?: string; projectSessionId?: string }): Promise<ModelJob>;
+  retryJob(id: string, overrides?: { id?: string; projectId?: string; projectSessionId?: string; rejectedLayerResultAssetId?: string }): Promise<ModelJob>;
   cancelQueuedJob(id: string): Promise<void>;
   listJobs(): Promise<ModelJob[]>;
   subscribe(listener: (jobs: ModelJob[]) => void): () => void;
@@ -335,7 +336,10 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
       if (existing !== undefined) return existing;
       const operation = (async () => {
         const job = await requireJob(storage, id);
-        if (job.status !== 'failed' && job.status !== 'cancelled') {
+        const rejectedLayerResult = job.status === 'completed'
+          && (overrides?.projectId === undefined || overrides.projectId === job.projectId)
+          && isRejectedLayerResult(options.getProject?.(), job, overrides?.rejectedLayerResultAssetId);
+        if (job.status !== 'failed' && job.status !== 'cancelled' && !rejectedLayerResult) {
           throw new Error(`model job cannot be retried from ${job.status}`);
         }
         if (isUncertainExternalSubmission(job)) {
@@ -724,6 +728,9 @@ function createResultMaterialization(
           ...(result.width === undefined ? {} : { resultWidth: result.width }),
           ...(result.height === undefined ? {} : { resultHeight: result.height }),
           resultJobId: job.id,
+          pixelColorSpace: null,
+          refinedFromAssetId: null,
+          mattingRegions: [],
           qualityStatus: 'pending',
           status: 'validating',
         },
@@ -1017,7 +1024,11 @@ function findExistingResult(project: CanvasProject | undefined, job: ModelJob, r
       && candidate.data.config.layerId === job.layeringLayerId
       && candidate.data.config.jobId === job.id
       && candidate.data.config.resultJobId === job.id
-      && candidate.data.config.resultAssetId === result.assetId);
+      && (candidate.data.config.resultAssetId === result.assetId
+        || (typeof candidate.data.config.resultAssetId === 'string'
+          && candidate.data.config.pixelColorSpace === 'foreground'
+          && candidate.data.config.maskSpace === 'source'
+          && candidate.data.config.refinedFromAssetId === result.assetId)));
   }
   const sourceNode = findFormalGenerationSourceNode(project, job.promptNodeId, job.kind);
   if (sourceNode !== undefined) {

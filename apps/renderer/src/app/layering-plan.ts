@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ModelJobProvider } from '@agent-canvas/domain';
-import { layeringSelectionSchema, type LayeringSelection } from './layering-selection';
+import { boxSchema, layeringSelectionSchema, type LayeringBox, type LayeringSelection } from './layering-selection';
 
 const MAX_CANVAS_SIDE = 8_192;
 const MAX_CANVAS_BYTES = 256 * 1024 * 1024;
@@ -10,6 +10,7 @@ const layerSchema = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().trim().min(1).max(1_000),
   included: z.boolean(),
+  sourceBounds: boxSchema.optional(),
 }).strict();
 
 const planSchema = z.object({
@@ -17,6 +18,7 @@ const planSchema = z.object({
   canvasWidth: z.number().int().positive().max(MAX_CANVAS_SIDE),
   canvasHeight: z.number().int().positive().max(MAX_CANVAS_SIDE),
   selection: layeringSelectionSchema.optional(),
+  pixelMode: z.literal('source').optional(),
   layers: z.array(layerSchema).min(2).max(12),
 }).strict().superRefine((plan, context) => {
   if (plan.canvasWidth * plan.canvasHeight * 4 > MAX_CANVAS_BYTES) {
@@ -43,6 +45,7 @@ const analysisReplySchema = z.object({ layers: z.array(layerSchema).min(2).max(1
 const resolutionSchema = z.enum(['1K', '2K', '4K']);
 
 export interface LayeringPlanLayer {
+  readonly sourceBounds?: LayeringBox;
   readonly layerId: string;
   readonly kind: 'background' | 'transparent';
   readonly name: string;
@@ -51,6 +54,7 @@ export interface LayeringPlanLayer {
 }
 
 export interface LayeringPlan {
+  readonly pixelMode?: 'source';
   readonly selection?: LayeringSelection;
   readonly sourceAssetId: string;
   readonly canvasWidth: number;
@@ -150,12 +154,14 @@ async function digestConfirmation(
     canvasWidth: plan.canvasWidth,
     canvasHeight: plan.canvasHeight,
     ...(plan.selection ? { selection: plan.selection } : {}),
+    ...(plan.pixelMode ? { pixelMode: plan.pixelMode } : {}),
     layers: plan.layers.map((layer) => ({
       layerId: layer.layerId,
       kind: layer.kind,
       name: layer.name.trim(),
       description: layer.description.trim(),
       included: layer.included,
+      ...(layer.sourceBounds ? { sourceBounds: layer.sourceBounds } : {}),
     })),
     provider,
     modelRoute,

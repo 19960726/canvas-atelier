@@ -12,5 +12,6 @@ test-results/
 /artifacts/
 /dist-builder/
 /apps/*/dist-builder/
+/apps/desktop-modern/build/local-matting-runtime/
 /recent-projects.index.json
 /main.cjs

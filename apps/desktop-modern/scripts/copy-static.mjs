@@ -1,10 +1,13 @@
 import { copyFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(scriptDir, '..');
 const workspaceRoot = resolve(appRoot, '..', '..');
+await build({ entryPoints: [resolve(appRoot, 'src/local-matting-worker-entry.ts')], outfile: resolve(appRoot, 'dist/local-matting-worker-entry.cjs'),
+  bundle: true, platform: 'node', target: 'node22', format: 'cjs' });
 const staticFiles = [
   {
     source: resolve(appRoot, 'src', 'safe-mode.html'),

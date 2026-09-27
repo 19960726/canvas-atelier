@@ -1,3 +1,8 @@
+import type { LayeredImageRecord } from './layered-image-config';
+import type { MattingRegion } from '@agent-canvas/desktop-core/preload-api';
+import { decodeLayerPixels, layerPixelsUrl } from './managed-layer-pixels';
+import { refineOwnedLayer } from './local-layer-refinement';
+import type { LayerQualityVerdict } from './layering-quality';
 import { create } from 'zustand';
 import { flushEditorDrafts } from './editor-draft-boundary';
 import { reverseFailureMessage } from './reverse-failure';
@@ -95,6 +100,7 @@ import {
   type ModelJobStorage,
   type ModelJobStore,
 } from '../jobs/job-store';
+import { isRejectedLayerResult } from '../jobs/layer-result-retry';
 import { createDesktopModelJobExecutor } from '../jobs/desktop-model-executor';
 import { formalGenerationJobMatchesNodeDraft, modelJobBelongsToProject } from '../jobs/project-model-jobs';
 import { withProviderOperationTimeout } from '../settings/provider-operation-timeout';
@@ -116,6 +122,8 @@ import { isGptImageQualityIdentity, supportsGptImageQuality } from './image-gene
 import { resolveImageResolutionRoute } from './image-resolution-routing';
 import { analyzeImageLayering as analyzeImageLayeringRequest } from './layering-analysis';
 import type { LayeringConfirmation, LayeringPlan } from './layering-plan';
+import { boxSchema, type LayeringBox } from './layering-selection';
+import type { LayeringDraft } from './layering-draft';
 import { matchesLayeringConfirmation } from './layering-plan';
 import { buildDistantLayeringRepairTransaction, buildLayeringGraphTransaction } from './layering-graph';
 import { buildLayeringJobRequests } from './layering-jobs';
@@ -358,6 +366,13 @@ interface AppState {
     readonly media: readonly ManagedReversePromptMediaIdentity[];
   }) => Promise<ReversePromptResult>;
   chatSkill: (input: SkillChatRequest) => Promise<ChatSkillBridgeResult>;
+  draftImageLayering: (nodeId: string, projectId: string, draft: LayeringDraft) => Promise<boolean>;
+  updateImageLayeringRecords: (nodeId: string, projectId: string, layers: LayeredImageRecord[]) => Promise<void>;
+  updateImageLayerQuality: (nodeId: string, projectId: string, assetId: string, verdict: LayerQualityVerdict) => Promise<void>;
+  updateImageLayerVisibility: (nodeId: string, projectId: string, visible: boolean) => Promise<void>;
+  alignSourceLayers: (groupNodeId: string, projectId: string, bounds: Record<string, LayeringBox>) => Promise<void>;
+  refineImageLayer: (nodeId: string, projectId: string, regions: MattingRegion[]) => Promise<void>;
+  recheckImageLayer: (nodeId: string, projectId: string, assetId: string) => Promise<void>;
   analyzeImageLayering: (input: {
     readonly selection?: import('./layering-selection').LayeringSelection;
     readonly sourceAssetId: string;
@@ -369,6 +384,7 @@ interface AppState {
     readonly targetLayerCount?: number;
   }) => Promise<LayeringPlan>;
   createConfirmedLayeringGroup: (input: {
+    readonly sourceNodeId?: string;
     readonly plan: LayeringPlan;
     readonly confirmation: LayeringConfirmation;
     readonly groupId: string;
@@ -1647,6 +1663,233 @@ export const useAppStore = create<AppState>((set, get) => ({
     const nextProject = applyProjectTransaction(state.project, transaction);
     return commitNow(transaction, { nextProject });
   }),
+  updateImageLayeringRecords: async (nodeId, projectId, layers) => {
+    const saved = await enqueueStableProjectOperation(set, get, async (commitNow) => {
+  const state = get();
+  if (state.project.id !== projectId) return true;
+  const node = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module' && item.id === nodeId && item.data.moduleType === 'image_layering');
+  if (!node) return true;
+  const groupId = node.data.config.groupId;
+  const layerNodes = state.project.nodes.filter((item): item is CanvasModuleNode => item.type === 'module'
+    && item.data.moduleType === 'image_layer' && item.data.config.groupId === groupId);
+  if (layerNodes.length && (layers.length !== layerNodes.length || layers.some(record => !layerNodes.some(child => child.data.config.layerId === record.layerId && child.data.config.resultAssetId === record.assetId && child.data.config.qualityStatus === 'passed')))) throw new Error('图层结果已更新，请重新操作');
+  const orderByLayerId = new Map(layers.map((layer, index) => [layer.layerId, index]));
+  const orderedLayerNodes = [...layerNodes].sort((left, right) => Number(orderByLayerId.get(String(left.data.config.layerId)) ?? Number.MAX_SAFE_INTEGER)
+    - Number(orderByLayerId.get(String(right.data.config.layerId)) ?? Number.MAX_SAFE_INTEGER));
+  const operations: ProjectTransaction['operations'][number][] = [{ kind: 'canvas', operation: { kind: 'update_node', node: {
+    ...node,
+    data: { ...node.data, config: { ...node.data.config, layers } },
+  } } }];
+  for (const [index, layerNode] of orderedLayerNodes.entries()) {
+    const record = layers.find((layer) => layer.layerId === layerNode.data.config.layerId);
+    if (!record) continue;
+    operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: {
+      ...layerNode,
+      data: { ...layerNode.data, config: { ...layerNode.data.config, order: index, visible: record.visible, opacity: record.opacity } },
+    } } });
+  }
+  const edgeIds = orderedLayerNodes.flatMap((layerNode) => {
+    const edge = state.project.edges.find((candidate) => candidate.source === layerNode.id && candidate.target === nodeId && candidate.targetPortId === 'layerImages');
+    return edge ? [edge.id] : [];
+  });
+  if (edgeIds.length > 0) operations.push({ kind: 'canvas', operation: { kind: 'reorder_input_edges', targetNodeId: nodeId, targetPortId: 'layerImages', edgeIds } });
+  return commitNow({
+    id: `image-layering-${nodeId}-${globalThis.crypto.randomUUID()}`,
+    label: 'Update image layers',
+    operations,
+  });
+    });
+    if (!saved) throw new Error('图层保存失败，请重试');
+  },
+  updateImageLayerQuality: async (nodeId, projectId, assetId, verdict) => {
+    const saved = await enqueueStableProjectOperation(set, get, async (commitNow) => {
+  const state = get();
+  if (state.project.id !== projectId) return true;
+  const current = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module' && item.id === nodeId && item.data.moduleType === 'image_layer');
+  if (!current || current.data.config.resultAssetId !== assetId) return true;
+  const groupId = current.data.config.groupId;
+  const siblings = state.project.nodes.filter((item): item is CanvasModuleNode => item.type === 'module'
+    && item.data.moduleType === 'image_layer' && item.data.config.groupId === groupId);
+  const group = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module'
+    && item.data.moduleType === 'image_layering' && item.data.config.groupId === groupId);
+  const nextConfig: Record<string, unknown> = {
+    ...current.data.config,
+    qualityStatus: verdict.ok ? 'passed' : 'failed',
+    qualityValidationVersion: 2,
+    ...(verdict.ok ? { status: 'completed' } : { qualityReason: verdict.reason, status: 'failed' }),
+  };
+  if (verdict.ok) delete nextConfig.qualityReason;
+  const updatedNode: CanvasModuleNode = { ...current, data: { ...current.data, config: nextConfig } };
+  const passedCount = siblings.filter((sibling) => sibling.id === current.id
+    ? verdict.ok : sibling.data.config.qualityStatus === 'passed').length;
+  const failedCount = siblings.filter((sibling) => sibling.id === current.id
+    ? !verdict.ok : sibling.data.config.qualityStatus === 'failed').length;
+  const expectedCount = group && Array.isArray(group.data.config.planLayers) ? group.data.config.planLayers.length : siblings.length;
+  const allPassed = passedCount === expectedCount;
+  const groupConfig = group ? {
+    ...group.data.config,
+    status: failedCount > 0 ? 'failed' : allPassed ? 'completed' : 'running',
+    resultState: failedCount > 0 ? 'needs_review' : allPassed ? 'ready' : 'validating',
+  } : null;
+  const operations: ProjectTransaction['operations'][number][] = [{ kind: 'canvas', operation: { kind: 'update_node', node: updatedNode } }];
+  if (group && groupConfig) operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: { ...group, data: { ...group.data, config: groupConfig } } } });
+  return commitNow({
+    id: `image-layer-quality-${nodeId}-${assetId}-${globalThis.crypto.randomUUID()}`,
+    label: 'Validate generated image layer',
+    operations,
+  });
+    });
+    if (!saved) throw new Error('图层像素验证结果无法保存。');
+  },
+  updateImageLayerVisibility: async (nodeId, projectId, visible) => {
+    const saved = await enqueueStableProjectOperation(set, get, async (commitNow) => {
+  const state = get();
+  if (state.project.id !== projectId) return true;
+  const node = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module' && item.id === nodeId && item.data.moduleType === 'image_layer');
+  if (!node) return true;
+  const group = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module'
+    && item.data.moduleType === 'image_layering' && item.data.config.groupId === node.data.config.groupId);
+  const operations: ProjectTransaction['operations'][number][] = [{ kind: 'canvas', operation: { kind: 'update_node', node: {
+    ...node, data: { ...node.data, config: { ...node.data.config, visible } },
+  } } }];
+  if (group && Array.isArray(group.data.config.layers)) {
+    const layers = (group.data.config.layers as LayeredImageRecord[]).map((layer) => layer.layerId === node.data.config.layerId ? { ...layer, visible } : layer);
+    operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: { ...group, data: { ...group.data, config: { ...group.data.config, layers } } } } });
+  }
+  return commitNow({
+    id: `image-layer-visibility-${nodeId}-${globalThis.crypto.randomUUID()}`,
+    label: 'Update image layer visibility',
+    operations,
+  });
+    });
+    if (!saved) throw new Error('图层可见性保存失败，请重试');
+  },
+  refineImageLayer: async (nodeId, projectId, regions) => {
+    const initial=get();
+    const owner=initial.project.nodes.find((node):node is CanvasModuleNode=>node.type==='module'&&node.id===nodeId&&node.data.moduleType==='image_layer');
+    if(initial.project.id!==projectId||!owner)throw new Error('项目或图层已变更');
+    const activeStatuses=['queued','submitting','running'];
+    const hasActiveTask=(state: ReturnType<typeof get>)=>state.modelJobs.some(job=>job.promptNodeId===nodeId&&activeStatuses.includes(job.status));
+    if(activeStatuses.includes(String(owner.data.config.status))||hasActiveTask(initial))throw new Error('图层生成任务尚未结束，请等待完成后精修');
+    const initialJobId=owner.data.config.jobId;
+    const sourceId=owner.data.config.sourceAssetId,previousAssetId=owner.data.config.resultAssetId,groupId=owner.data.config.groupId;
+    const source=initial.projectImages.find(asset=>asset.assetId===sourceId);
+    const bounds=boxSchema.parse(owner.data.config.sourceBounds),corrections=structuredClone(regions);
+    const refine=window.novusDesktop?.projectImages.refineLocalLayer;
+    if(!refine||!source?.width||!source.height)throw new Error('本地精修需要完整的原图和更新后的桌面组件');
+    const isCurrent=()=>{
+      const state=get(),node=state.project.nodes.find((item):item is CanvasModuleNode=>item.type==='module'&&item.id===nodeId);
+      const currentBounds=boxSchema.safeParse(node?.data.config.sourceBounds);
+      return state.project.id===projectId&&node?.data.moduleType==='image_layer'&&node.data.config.sourceAssetId===sourceId
+        &&node.data.config.resultAssetId===previousAssetId&&node.data.config.groupId===groupId
+        &&node.data.config.jobId===initialJobId&&!activeStatuses.includes(String(node.data.config.status))&&!hasActiveTask(state)
+        &&currentBounds.success&&(['x','y','width','height'] as const).every(key=>currentBounds.data[key]===bounds[key]);
+    };
+    await refineOwnedLayer({request:{width:source.width,height:source.height,bounds,regions:corrections},isCurrent,
+      decode:()=>decodeLayerPixels(source.displayUrl,source.width!,source.height!),refine,
+      save:async result=>{
+        const encoded=layerPixelsUrl(result.rgba,result.width,result.height).split(',')[1];
+        if(!encoded)throw new Error('精修图片编码失败');
+        const binary=atob(encoded),bytes=Uint8Array.from(binary,char=>char.charCodeAt(0));
+        const file=new File([bytes], 'refined-layer.png',{type:'image/png'});
+        if(!isCurrent())throw new Error('图层已变更');
+        const asset=await importAgentReferenceImageIntoProject(file,{preparedLayer:true},projectId);
+        if(!asset)throw new Error('精修图片保存失败，已有结果已保留');
+        const saved=await enqueueStableProjectOperation(set,get,async commitNow=>{
+          if(!isCurrent())throw new Error('图层已变更，已有结果未替换');
+          const current=get().project.nodes.find((node):node is CanvasModuleNode=>node.type==='module'&&node.id===nodeId)!;
+          return commitNow({id:`local-matte-${globalThis.crypto.randomUUID()}`,label:'Refine original image layer locally',operations:[
+            {kind:'canvas',operation:{kind:'update_node',node:{...current,data:{...current.data,config:{...current.data.config,
+              previousResultAssetId:previousAssetId??null,resultAssetId:asset.assetId,resultWidth:result.width,resultHeight:result.height,
+              refinedFromAssetId:current.data.config.refinedFromAssetId??previousAssetId??null,
+              pixelMode:'source',maskSpace:'source',pixelColorSpace:'foreground',mattingRegions:corrections,
+              status:'completed',qualityStatus:'passed',qualityReason:null,qualityValidationVersion:2,
+            }}}}},
+          ]},{retainRetryableFailure:false});
+        });
+        if(!saved)throw new Error('精修结果保存失败，请重试');
+      },
+    });
+  },
+  alignSourceLayers: async (groupNodeId, projectId, bounds) => {
+    const initial = get().project;
+    if (initial.id !== projectId) throw new Error('项目已切换，请重新打开图层校正');
+    const owner = initial.nodes.find((node): node is CanvasModuleNode => node.type === 'module'
+      && node.id === groupNodeId && node.data.moduleType === 'image_layering');
+    const groupId = owner?.data.config.groupId;
+    const sourceAssetId = owner?.data.config.sourceAssetId;
+    if (typeof groupId !== 'string' || !groupId || typeof sourceAssetId !== 'string' || !sourceAssetId) throw new Error('分层方案已变更');
+    const requestedBounds = Object.fromEntries(Object.entries(bounds).map(([id, box]) => [id, { ...box }]));
+    const saved = await enqueueStableProjectOperation(set, get, async (commitNow) => {
+      const project = get().project;
+      if (project.id !== projectId) throw new Error('项目已切换，请重新打开图层校正');
+      const group = project.nodes.find((node): node is CanvasModuleNode => node.type === 'module'
+        && node.id === groupNodeId && node.data.moduleType === 'image_layering');
+      if (!group || group.data.config.groupId !== groupId || group.data.config.sourceAssetId !== sourceAssetId
+        || !Array.isArray(group.data.config.planLayers)) throw new Error('分层方案已变更');
+      const children = project.nodes.filter((node): node is CanvasModuleNode => node.type === 'module'
+        && node.data.moduleType === 'image_layer' && node.data.config.groupId === groupId);
+      if (children.some((node) => node.data.config.sourceAssetId !== sourceAssetId)) throw new Error('图层源图已变更，无法校正');
+      const updatedPlan = group.data.config.planLayers.map((value: unknown) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('分层方案已变更');
+        const layer = value as Record<string, unknown>;
+        if (typeof layer.layerId !== 'string' || !children.some((node) => node.data.config.layerId === layer.layerId)) throw new Error('图层节点已删除，无法校正');
+        return layer.kind === 'background' ? layer : { ...layer, sourceBounds: boxSchema.parse(requestedBounds[layer.layerId]) };
+      });
+      const operations: ProjectTransaction['operations'][number][] = [{ kind: 'canvas', operation: { kind: 'update_node', node: {
+        ...group, data: { ...group.data, config: { ...group.data.config, pixelMode: 'source', planLayers: updatedPlan } },
+      } } }];
+      for (const child of children) {
+        const layer = updatedPlan.find((item) => item.layerId === child.data.config.layerId);
+        if (!layer) throw new Error('分层方案已变更');
+        operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: { ...child, data: { ...child.data, config: {
+          ...child.data.config, pixelMode: 'source', maskSpace: child.data.config.maskSpace === 'source' ? 'source' : 'bounds',
+          ...(layer.kind === 'background' ? {} : { sourceBounds: layer.sourceBounds }),
+        } } } } });
+      }
+      return commitNow({ id: `source-layer-bounds-${globalThis.crypto.randomUUID()}`, label: 'Align layers to original pixels', operations });
+    });
+    if (!saved) throw new Error('图层位置保存失败，请重试');
+  },
+  recheckImageLayer: async (nodeId, projectId, assetId) => {
+    const initial = get().project;
+    if (initial.id !== projectId || !assetId) return;
+    const owner = initial.nodes.find((node): node is CanvasModuleNode => node.type === 'module'
+      && node.id === nodeId && node.data.moduleType === 'image_layer');
+    if (!owner || owner.data.config.resultAssetId !== assetId) return;
+    const sourceAssetId = owner.data.config.sourceAssetId;
+    const groupId = owner.data.config.groupId;
+    if (typeof sourceAssetId !== 'string' || !sourceAssetId || typeof groupId !== 'string' || !groupId) return;
+    const saved = await enqueueStableProjectOperation(set, get, async (commitNow) => {
+      const project = get().project;
+      if (project.id !== projectId) return true;
+      const node = project.nodes.find((item): item is CanvasModuleNode => item.type === 'module'
+        && item.id === nodeId && item.data.moduleType === 'image_layer');
+      if (!node || node.data.config.resultAssetId !== assetId || node.data.config.sourceAssetId !== sourceAssetId
+        || node.data.config.groupId !== groupId) return true;
+      const config: Record<string, unknown> = { ...node.data.config, qualityStatus: 'pending', status: 'validating' };
+      delete config.qualityReason;
+      return commitNow({ id: `recheck-image-layer-${globalThis.crypto.randomUUID()}`, label: 'Recheck local image layer', operations: [
+        { kind: 'canvas', operation: { kind: 'update_node', node: { ...node, data: { ...node.data, config } } } },
+      ] });
+    });
+    if (!saved && get().project.id === projectId) throw new Error('本地图层检查无法保存，请重试');
+  },
+  draftImageLayering: async (nodeId, projectId, draft) => {
+    const state = get();
+    if (state.project.id !== projectId || state.saveStatus === 'read_only' || state.recoveryRequired
+      || state.projectCommitConflictCode !== null || pendingFailedProjectCommit !== null) return false;
+    const node = getModuleNode(state.project.nodes, nodeId);
+    if (!node || !draft.sourceAssetId) return false;
+    const previous = node.data.config.layeringDrafts;
+    const drafts = previous && typeof previous === 'object' && !Array.isArray(previous) ? previous as Record<string, unknown> : {};
+    if (JSON.stringify(drafts[draft.sourceAssetId]) === JSON.stringify(draft)) return true;
+    const nextNode = { ...node, data: { ...node.data, config: { ...node.data.config, layeringDrafts: { ...drafts, [draft.sourceAssetId]: draft } } } };
+    set({ project: { ...state.project, nodes: state.project.nodes.map(item => item.id === nodeId ? nextNode : item) },
+      canReloadDurableProject: false, saveStatus: 'pending', saveErrorCode: null });
+    scheduleProjectSave(get);
+    return true;
+  },
   draftGenerationNodeConfig: async (nodeId, config) => {
     const state = get();
     if (
@@ -1945,7 +2188,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     return plan;
   },
-  createConfirmedLayeringGroup: async ({ plan, confirmation, groupId }) => {
+  createConfirmedLayeringGroup: async ({ plan, confirmation, groupId, sourceNodeId }) => {
     const provider = confirmation.provider;
     if (!(await matchesLayeringConfirmation(confirmation, plan, provider, confirmation.modelRoute, confirmation.resolution))) {
       throw new Error('The layering plan or selected route changed after confirmation. Please review and confirm again.');
@@ -1960,7 +2203,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         || !current.projectImages.some((asset) => asset.assetId === confirmation.sourceAssetId)) {
         throw new Error('The project or source image changed before the layering group could be saved.');
       }
-      const transaction = buildLayeringGraphTransaction(current.project, plan, confirmation, groupId);
+      const transaction = buildLayeringGraphTransaction(current.project, plan, confirmation, groupId, sourceNodeId);
       return commitNow(transaction, { kind: 'canvas' });
     });
   },
@@ -2799,6 +3042,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         id: retryId,
         projectId: expectedProjectId,
         projectSessionId,
+        ...(hasLayeringSource && job.status === 'completed' ? { rejectedLayerResultAssetId: job.resultAssetId } : {}),
       });
 
       if (hasFormalSource || hasLayeringSource) {
@@ -2816,7 +3060,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             const retryConfig: Record<string, unknown> = {
               ...source.data.config, jobId: retry.id, status: 'queued', qualityStatus: 'pending',
             };
-            for (const key of ['qualityReason', 'resultAssetId', 'resultJobId', 'resultWidth', 'resultHeight']) delete retryConfig[key];
+            for (const key of ['qualityReason', 'resultAssetId', 'resultJobId', 'resultWidth', 'resultHeight', 'pixelColorSpace', 'refinedFromAssetId', 'mattingRegions']) delete retryConfig[key];
             const nextLayer: CanvasModuleNode = { ...source, data: { ...source.data, config: retryConfig,
               execution: { ...source.data.execution, state: 'queued' } } };
             const nextGroup: CanvasModuleNode = { ...group, data: { ...group.data, config: {
@@ -3062,7 +3306,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
 const pristineAppStoreState = useAppStore.getState();
 
-async function importAgentReferenceImageIntoProject(file?: File, options?: { readonly fromClipboard: true }): Promise<ProjectImageAssetSummary | null> {
+async function importAgentReferenceImageIntoProject(file?: File, options?: { readonly fromClipboard?: true; readonly preparedLayer?: true }, expectedProjectId?: string): Promise<ProjectImageAssetSummary | null> {
   let importedAsset: ProjectImageAssetSummary | null = null;
   const completed = await enqueueStableProjectOperation(
     (partial) => useAppStore.setState(partial),
@@ -3070,6 +3314,7 @@ async function importAgentReferenceImageIntoProject(file?: File, options?: { rea
     async () => {
       const generation = projectPersistenceGeneration;
       const before = useAppStore.getState();
+      if (expectedProjectId !== undefined && before.project.id !== expectedProjectId) return false;
       if (
         before.projectImageImportingNodeId !== null
         || before.saveStatus === 'read_only'
@@ -3089,7 +3334,7 @@ async function importAgentReferenceImageIntoProject(file?: File, options?: { rea
           ? await projectPersistenceClient.importProjectImage({ kind: 'agent_reference' } as unknown as ProjectImageImportTarget, undefined, options)
           : file === undefined
           ? await projectPersistenceClient.importProjectImage({ kind: 'agent_reference' } as unknown as ProjectImageImportTarget)
-          : await projectPersistenceClient.importProjectImage({ kind: 'agent_reference' } as unknown as ProjectImageImportTarget, file);
+          : await projectPersistenceClient.importProjectImage({ kind: 'agent_reference' } as unknown as ProjectImageImportTarget, file,options);
         if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
         if (result === null) {
           useAppStore.setState({
@@ -4632,6 +4877,7 @@ async function recoverModelJobsInBackground(
 }
 
 function layeringRetryMatches(project: CanvasProject, job: ModelJob, source: CanvasModuleNode): boolean {
+  if (job.status === 'completed') return isRejectedLayerResult(project, job, job.resultAssetId);
   if ((job.status !== 'failed' && job.status !== 'cancelled') || job.layeringGroupId === undefined
     || job.layeringLayerId === undefined || source.data.moduleType !== 'image_layer'
     || source.id !== job.promptNodeId || source.data.config.groupId !== job.layeringGroupId

@@ -5794,6 +5794,13 @@ html body .workspace--canvas-layout .module-node.module-node[data-module-type='i
 }
 
 /* COLLAPSED EMPTY IMAGE SQUARE CONTRACT */
+/* A single result must retain its complete original framing for layer comparison. */
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true'][data-result-count='1']
+) .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item > img {
+  object-fit: contain !important;
+}
+
 html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
   .module-node__summary--generation[data-editor-expanded='false'][data-has-result='false']
 ) {

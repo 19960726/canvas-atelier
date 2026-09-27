@@ -22,6 +22,12 @@ extraResources:
     to: mcp
   - from: dist/photoshop
     to: photoshop
+  - from: build/local-matting-runtime
+    to: local-matting-runtime
+  - from: build/local-matting-runtime/node_modules
+    to: local-matting-runtime/node_modules
+    filter:
+      - "**/*"
 win:
   icon: icon.ico
   signAndEditExecutable: true

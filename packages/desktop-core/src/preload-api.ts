@@ -1,3 +1,5 @@
+import type { LocalMattingRequest, LocalMattingResult } from './local-matting.js';
+export type { LocalMattingRequest, LocalMattingResult, MattingRegion } from './local-matting.js';
 import type {
   CloseProjectBridgeRequest,
   CommitAck,
@@ -164,6 +166,8 @@ export const BRIDGE_CHANNELS = {
   importProjectImage: 'novus-desktop:import-project-image',
   importProjectImageToPhotoshop: 'novus-desktop:import-project-image-to-photoshop',
   openLayeredPsdInPhotoshop: 'novus-desktop:open-layered-psd-in-photoshop',
+  refineLocalLayer: 'novus-desktop:refine-local-layer',
+  importPreparedLayer: 'novus-desktop:import-prepared-layer',
   importProjectVideo: 'novus-desktop:import-project-video',
   pasteProjectClipboardImage: 'novus-desktop:paste-project-clipboard-image',
   writeClipboardImage: 'novus-desktop:write-clipboard-image',
@@ -330,6 +334,8 @@ export interface DesktopGenerationHistoryBridgeApi {
 }
 
 export interface DesktopProjectImageBridgeApi {
+  importPreparedLayer?(request: {sessionId:string;bytes:Uint8Array}): Promise<ImportDroppedProjectMediaBridgeResult | null>;
+  refineLocalLayer?(request: LocalMattingRequest): Promise<LocalMattingResult>;
   importImage(request: ImportProjectImageBridgeRequest): Promise<ImportProjectImageBridgeResult | null>;
   importToPhotoshop(request: PhotoshopImportRequest): Promise<PhotoshopImportResult>;
   openLayeredPsdInPhotoshop(bytes: Uint8Array): Promise<{
@@ -542,6 +548,12 @@ export function createPreloadApi(
       });
     },
     projectImages: {
+      importPreparedLayer(request) {
+        return invoke<ImportDroppedProjectMediaBridgeResult | null>(BRIDGE_CHANNELS.importPreparedLayer, request);
+      },
+      refineLocalLayer(request) {
+        return invoke<LocalMattingResult>(BRIDGE_CHANNELS.refineLocalLayer, request);
+      },
       importImage(request) {
         return invoke<ImportProjectImageBridgeResult | null>(BRIDGE_CHANNELS.importProjectImage, request);
       },

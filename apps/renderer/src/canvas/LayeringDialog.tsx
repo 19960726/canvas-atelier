@@ -8,6 +8,7 @@ import { IMAGE_RESOLUTION_TIERS, imageModelFamilyDisplayName, imageResolutionFam
 import { listRunnableProviderProfiles } from '../app/provider-profiles';
 import { LayeringSelectionEditor } from './LayeringSelectionEditor';
 import type { LayeringBox, LayeringSelection } from '../app/layering-selection';
+import type { LayeringDraft } from '../app/layering-draft';
 
 type LayeringSourceImage = Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'label' | 'width' | 'height'>;
 type Resolution = '1K' | '2K' | '4K';
@@ -21,6 +22,8 @@ function isGenericLayerName(value: string): boolean {
 }
 
 export interface LayeringDialogProps {
+  readonly initialDraft?: LayeringDraft | null;
+  readonly onDraftChange?: (draft: LayeringDraft) => void;
   readonly sourceAsset: LayeringSourceImage | null;
   readonly onAnalyze: (input: {
     readonly selection?: LayeringSelection;
@@ -41,28 +44,38 @@ export interface LayeringDialogProps {
   readonly routeEvidence?: readonly LayeringRouteEvidence[];
 }
 
-export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart, onClose, profiles: suppliedProfiles, routeEvidence = PRODUCTION_LAYERING_ROUTE_EVIDENCE }: LayeringDialogProps) {
+export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart, onClose, initialDraft, onDraftChange, profiles: suppliedProfiles, routeEvidence = PRODUCTION_LAYERING_ROUTE_EVIDENCE }: LayeringDialogProps) {
+  const restored = initialDraft?.sourceAssetId === sourceAsset?.assetId ? initialDraft : null;
   const [profiles, setProfiles] = useState<readonly ProviderBridgeProfile[]>(suppliedProfiles ?? []);
   const [loadingProfiles, setLoadingProfiles] = useState(suppliedProfiles === undefined);
   const [profileError, setProfileError] = useState<string | null>(null);
-  const [analysisRoute, setAnalysisRoute] = useState('');
-  const [generationRoute, setGenerationRoute] = useState('');
-  const [resolution, setResolution] = useState<Resolution>('4K');
-  const [layerCountMode, setLayerCountMode] = useState<LayerCountMode>('auto');
-  const [scope, setScope] = useState<LayeringSelection['mode']>('whole');
-  const [selectionBox, setSelectionBox] = useState<LayeringBox | null>(null);
-  const [selectionTarget, setSelectionTarget] = useState('');
-  const [targetLayerCount, setTargetLayerCount] = useState(5);
-  const [plan, setPlan] = useState<LayeringPlan | null>(null);
-  const [step, setStep] = useState<'analyze' | 'edit' | 'review'>('analyze');
+  const [analysisRoute, setAnalysisRoute] = useState(restored?.analysisRoute ?? '');
+  const [generationRoute, setGenerationRoute] = useState(restored?.generationRoute ?? '');
+  const [resolution, setResolution] = useState<Resolution>(restored?.resolution ?? '4K');
+  const [layerCountMode, setLayerCountMode] = useState<LayerCountMode>(restored?.layerCountMode ?? 'auto');
+  const [scope, setScope] = useState<LayeringSelection['mode']>(restored?.scopeDraft?.mode ?? restored?.selection.mode ?? 'whole');
+  const [selectionBox, setSelectionBox] = useState<LayeringBox | null>(restored?.scopeDraft ? restored.scopeDraft.box : restored?.selection.mode !== 'whole' ? restored?.selection.box ?? null : null);
+  const [selectionTarget, setSelectionTarget] = useState(restored?.scopeDraft?.target ?? restored?.selection.target ?? '');
+  const [targetLayerCount, setTargetLayerCount] = useState(restored?.targetLayerCount ?? 5);
+  const [plan, setPlan] = useState<LayeringPlan | null>(restored?.plan ?? null);
+  const [step, setStep] = useState<'analyze' | 'edit' | 'review'>(restored?.step ?? 'analyze');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [createdGroupId, setCreatedGroupId] = useState<string | null>(null);
+  const [createdGroupId, setCreatedGroupId] = useState<string | null>(restored?.createdGroupId ?? null);
+  const [started, setStarted] = useState(restored?.started ?? false);
+  const [positionLayerId, setPositionLayerId] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const reviewRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const busyRef = useRef(false);
+  const draftChangeRef = useRef(onDraftChange); draftChangeRef.current = onDraftChange;
+  const draft: LayeringDraft = { sourceAssetId: sourceAsset?.assetId ?? '', plan, analysisRoute, generationRoute, resolution,
+    layerCountMode, targetLayerCount, step, createdGroupId, started,
+    scopeDraft: { mode: scope, box: selectionBox, target: selectionTarget },
+    selection: scope === 'whole' || !selectionBox ? { mode: 'whole', target: selectionTarget } : { mode: scope, box: selectionBox, target: selectionTarget } };
+  const draftKey = JSON.stringify(draft);
+  useEffect(() => { if (sourceAsset) draftChangeRef.current?.(draft); }, [draftKey]);
 
   useEffect(() => {
     const controls = controlsRef.current;
@@ -113,6 +126,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
   const resolutionOptions = resolutionRoutes.map(({ tier }) => tier);
   const generationProfile = resolutionRoutes.find(({ tier }) => tier === resolution)?.profile;
   const activePlan = plan;
+  const positionLayer = activePlan?.layers.find(layer => layer.layerId === positionLayerId && layer.kind === 'transparent');
   const includedCount = activePlan?.layers.filter((layer) => layer.included).length ?? 0;
   const genericLayer = activePlan?.layers.find((layer) => layer.kind === 'transparent' && isGenericLayerName(layer.name));
   const hasNamedLayers = activePlan?.layers.every((layer) => layer.name.trim().length > 0 && layer.name.trim().length <= 80) ?? false;
@@ -120,12 +134,14 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
   const planValid = activePlan !== null && activePlan.layers[0]?.kind === 'background' && activePlan.layers[0]?.included === true
     && activePlan.layers.some((layer) => layer.kind === 'transparent' && layer.included)
     && activePlan.layers.filter((layer) => layer.kind === 'transparent').length <= 11
-    && hasNamedLayers && hasDescribedLayers && genericLayer === undefined;
+    && hasNamedLayers && hasDescribedLayers && genericLayer === undefined
+    && (activePlan.pixelMode !== 'source' || activePlan.layers.every(layer => !layer.included || layer.kind === 'background' || layer.sourceBounds));
   const planValidationMessage = genericLayer !== undefined
     ? '请将通用图层名改成具体产品、摆件或对应阴影名称后再继续。'
     : !hasDescribedLayers ? '请为每层填写包含范围和遮挡关系的说明。'
       : !hasNamedLayers ? '请为每个图层填写名称。'
-        : '请保留背景层，并至少包含一个透明前景层。';
+        : activePlan?.pixelMode === 'source' && activePlan.layers.some(layer => layer.included && layer.kind === 'transparent' && !layer.sourceBounds)
+          ? '请逐层标注物体或阴影在原图中的位置和大小。' : '请保留背景层，并至少包含一个透明前景层。';
 
   useEffect(() => {
     if (resolutionOptions.length > 0 && !resolutionOptions.includes(resolution)) setResolution(resolutionOptions[resolutionOptions.length - 1]!);
@@ -168,6 +184,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
     setError(null);
     setPlan(null);
     setCreatedGroupId(null);
+    setStarted(false);
     try {
       const selection: LayeringSelection | undefined = scope === 'whole'
         ? selectionTarget.trim() ? { mode: 'whole', target: selectionTarget.trim() } : undefined
@@ -178,6 +195,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
       if (controlsRef.current) controlsRef.current.scrollTop = 0;
       setPlan(selection ? { ...nextPlan, selection } : nextPlan);
       setStep('edit');
+      draftChangeRef.current?.({ ...draft, plan: selection ? { ...nextPlan, selection } : nextPlan, step: 'edit', createdGroupId: null, started: false });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '图片分析失败，请重试。');
     } finally {
@@ -186,10 +204,16 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
     }
   };
 
-  const resetScopePlan = () => { setPlan(null); setStep('analyze'); setCreatedGroupId(null); setError(null); };
+  const resetScopePlan = () => { setPlan(null); setStep('analyze'); setCreatedGroupId(null); setStarted(false); setError(null); };
   const updateLayer = (layerId: string, patch: Partial<LayeringPlanLayer>) => {
     if (!activePlan) return;
-    setPlan({ ...activePlan, layers: activePlan.layers.map((layer) => layer.layerId === layerId ? { ...layer, ...patch } : layer) });
+    setPlan({ ...activePlan, layers: activePlan.layers.map((layer) => {
+      if (layer.layerId !== layerId) return layer;
+      const next = { ...layer, ...patch };
+      if (next.sourceBounds === undefined) delete next.sourceBounds;
+      return next;
+    }) });
+    setStarted(false);
     setStep('edit');
     setCreatedGroupId(null);
     setError(null);
@@ -200,13 +224,14 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
     const layers = [...activePlan.layers];
     [layers[index], layers[index + direction]] = [layers[index + direction]!, layers[index]!];
     setPlan({ ...activePlan, layers });
+    setStarted(false);
     setStep('edit');
     setCreatedGroupId(null);
     setError(null);
   };
 
   const confirmAndStart = async () => {
-    if (!activePlan || !generationProfile || !planValid || busyRef.current) return;
+    if (!activePlan || !generationProfile || !planValid || busyRef.current || started) return;
     busyRef.current = true;
     setBusy(true);
     setError(null);
@@ -220,6 +245,8 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
       }
       const started = await onStart({ plan: activePlan, confirmation, groupId });
       if (!started) throw new Error('分层任务没有启动；分层节点已保存在画布，可以稍后检查并重试。');
+      setStarted(true);
+      draftChangeRef.current?.({ ...draft, createdGroupId: groupId, started: true });
       onClose();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '分层任务无法启动。');
@@ -238,9 +265,11 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
       <div className="image-layering-dialog__body">
         <div className="image-layering-dialog__source-panel">
           {sourceAsset ? <LayeringSelectionEditor url={sourceAsset.displayUrl} label={sourceAsset.label} width={sourceAsset.width ?? 1} height={sourceAsset.height ?? 1}
-            selecting={scope !== 'whole'} disabled={busy} box={selectionBox} onChange={box => { setSelectionBox(box); resetScopePlan(); }} />
+            selecting={!!positionLayer || scope !== 'whole'} disabled={busy} box={positionLayer ? positionLayer.sourceBounds ?? null : selectionBox}
+            onChange={box => { if (positionLayer) updateLayer(positionLayer.layerId, { sourceBounds: box ?? undefined }); else { setSelectionBox(box); resetScopePlan(); } }} />
             : <div className="image-layering-dialog__no-source"><Layers3 size={26} /><span>请先在画布中选择一个可用的项目图片。</span></div>}
           {sourceAsset && <div className="image-layering-dialog__source-meta"><strong>{sourceAsset.label || '项目图片'}</strong><span>{sourceAsset.width} × {sourceAsset.height} px</span></div>}
+          {positionLayer && <p className="image-layering-dialog__hint">正在标注：{positionLayer.name}。在原图上贴合物体或阴影边缘框选，保持它原来的位置和大小。<button type="button" onClick={() => setPositionLayerId(null)}>结束标注</button></p>}
           <div className="image-layering-dialog__workflow" aria-label="分层流程"><span data-active={step === 'analyze'}>01 分析</span><i aria-hidden="true" /><span data-active={step === 'edit' || step === 'review'}>02 检查</span><i aria-hidden="true" /><span data-active={step === 'review'}>03 确认</span></div>
         </div>
         <div className="image-layering-dialog__controls" ref={controlsRef}>
@@ -283,6 +312,8 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
             <div className="image-layering-dialog__section-heading"><div><span className="image-layering-dialog__eyebrow">STEP 02</span><h3>检查分层方案</h3></div><span className="image-layering-dialog__count">{includedCount} 个图层</span></div>
             <ol className="image-layering-dialog__layer-list" aria-label="可编辑分层方案">
               {activePlan.layers.map((layer, index) => <li key={layer.layerId} data-layer-kind={layer.kind}>
+                {activePlan.pixelMode === 'source' && layer.kind === 'transparent' && <button type="button" disabled={busy}
+                  aria-label={`标注原图位置 ${layer.name}`} onClick={() => setPositionLayerId(layer.layerId)}>{layer.sourceBounds ? '校正原图位置' : '标注原图位置'}</button>}
                 <span className="image-layering-dialog__order">{String(index + 1).padStart(2, '0')}</span>
                 <div className="image-layering-dialog__layer-fields"><input aria-label={`图层名称 ${layer.name}`} value={layer.name} maxLength={80} onChange={(event) => updateLayer(layer.layerId, { name: event.target.value })} /><small>{layer.kind === 'background' ? '背景 · 不透明底图' : '透明前景 · 独立像素层'}</small><textarea aria-label={`图层说明 ${layer.name}`} value={layer.description} maxLength={1_000} rows={2} onChange={(event) => updateLayer(layer.layerId, { description: event.target.value })} /></div>
                 <div className="image-layering-dialog__layer-actions"><button type="button" aria-label={`上移图层 ${layer.name}`} disabled={index <= 1} title="上移" onClick={() => moveLayer(index, -1)}><ArrowUp size={14} /></button><button type="button" aria-label={`下移图层 ${layer.name}`} disabled={index === 0 || index === activePlan.layers.length - 1} title="下移" onClick={() => moveLayer(index, 1)}><ArrowDown size={14} /></button><button type="button" className="image-layering-dialog__include" aria-label={`${layer.included ? '排除' : '包含'}图层 ${layer.name}`} aria-pressed={layer.included} disabled={layer.kind === 'background'} title={layer.included ? '包含此层' : '排除'} onClick={() => updateLayer(layer.layerId, { included: !layer.included })}>{layer.included ? <Check size={14} /> : <span>—</span>}</button></div>
@@ -305,8 +336,8 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
             {!selectedGptProfile && <p className="image-layering-dialog__validation" role="status">没有可用的 GPT Image 透明编辑模型。请在设置中配置并启用支持图片编辑的 Comfly GPT Image 模型后重新打开。</p>}
             {selectedGptProfile && <p className="image-layering-dialog__hint">画质固定为最高（high）。{scope === 'whole' ? '范围：整图。' : scope === 'objects' ? '范围：框选物品。' : '范围：框选区域。'}前景逐层返回透明图片，保持原图位置；画幅比例不符会显示具体原因。</p>}
             <p className="image-layering-dialog__hint">点击“确认生成”后才会提交上方数量的图像任务。生成费用由所选服务商决定。</p>
-            <button className="image-layering-dialog__button image-layering-dialog__button--primary" type="button" onClick={() => { void confirmAndStart(); }} disabled={!generationProfile || !planValid || busy}>
-              {busy ? <LoaderCircle className="is-spinning" size={15} /> : <Check size={15} />}<span>{busy ? '正在保存并提交…' : `确认生成 ${includedCount} 层`}</span>
+            <button className="image-layering-dialog__button image-layering-dialog__button--primary" type="button" onClick={() => { void confirmAndStart(); }} disabled={!generationProfile || !planValid || busy || started}>
+              {busy ? <LoaderCircle className="is-spinning" size={15} /> : <Check size={15} />}<span>{busy ? '正在保存并提交…' : started ? '该方案已提交，可在画布查看图层' : `确认生成 ${includedCount} 层`}</span>
             </button>
           </section>}
           {(profileError || (!loadingProfiles && visionProfiles.length === 0)) && <p className="image-layering-dialog__validation" role="status">{profileError ?? '没有已配置且支持图片理解的视觉分析模型。'}</p>}

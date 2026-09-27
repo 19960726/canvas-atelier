@@ -12,7 +12,6 @@ import {
   type CanvasModuleNodeData,
   type CanvasModuleNode,
   type CanvasModulePortDefinition,
-  type ProjectTransaction,
   type ModelJob,
   type ImageQuality,
   type ImageOutputFormat,
@@ -48,9 +47,13 @@ import { ImageColorCorrectionControls } from './ImageColorCorrectionControls';
 import { ImageColorCorrectionImage } from './ImageColorCorrectionImage';
 import { ImageComparisonDivider } from './ImageComparisonDivider';
 import { ImageLayeringWorkbench } from './ImageLayeringWorkbench';
+import { sourceLayerInputFromNodes } from './source-layer-preview';
 import { ImageLayerNodeWorkbench } from './ImageLayerNodeWorkbench';
 import { LayeringDialog } from './LayeringDialog';
+import { restoreLayeringDraft, type LayeringDraft } from '../app/layering-draft';
+import { MaterialLayeringAction } from './MaterialLayeringAction';
 import type { LayerQualityVerdict } from '../app/layering-quality';
+import type { LayeringBox } from '../app/layering-selection';
 import type { LayeringConfirmation, LayeringPlan } from '../app/layering-plan';
 import { eligibleForLayeringRoute, PRODUCTION_LAYERING_ROUTE_EVIDENCE } from '../app/layering-route-evidence';
 import type { LayeredImageRecord } from '../app/layered-image-config';
@@ -804,6 +807,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
       </header>
       {data.moduleType === 'image_input' || data.moduleType === 'upload_image' ? (
         <ProjectImageControl
+          nodeId={id}
           assetId={typeof data.config.assetId === 'string' ? data.config.assetId : undefined}
           assets={projectImages}
           error={projectImageError}
@@ -820,6 +824,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
         />
       ) : data.moduleType === 'canvas_library' ? (
         <CanvasLibraryControl
+          nodeId={id}
           assets={filteredProjectImages}
           allAssetCount={projectImages.length}
           assetIds={readAssetIds(data.config.assetIds)}
@@ -839,6 +844,9 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
         <ReverseResultPreview result={upstreamReverseResult} />
       ) : data.moduleType === 'image_layer' ? (
         <ImageLayerNodeWorkbench
+          sourceDocumentInput={data.config.pixelMode === 'source' ? sourceLayerInputFromNodes(
+            (project.nodes.find((node) => node.type === 'module' && node.data.moduleType === 'image_layering' && node.data.config.groupId === data.config.groupId) as CanvasModuleNode | undefined)?.data.config ?? {},
+            project.nodes.filter((node): node is CanvasModuleNode => node.type === 'module' && node.data.moduleType === 'image_layer' && node.data.config.groupId === data.config.groupId), projectImages) : null}
           validatePixels={false}
           nodeId={id}
           config={data.config}
@@ -857,6 +865,9 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
           layerNodes={project.nodes.filter((node): node is CanvasModuleNode => node.type === 'module'
             && node.data.moduleType === 'image_layer' && node.data.config.groupId === data.config.groupId)}
           onLayersChange={(layers) => persistImageLayeringRecords(id, layers)}
+          onApplySourceBounds={(bounds) => persistSourceLayerBounds(id, project.id, bounds)}
+          onRefineLayer={(nodeId, regions) => useAppStore.getState().refineImageLayer(nodeId, project.id, regions)}
+          onRecheckLayer={(nodeId, assetId) => recheckImageLayer(nodeId, project.id, assetId)}
           onRefreshJobs={useAppStore.getState().refreshModelJobs}
           onRetryJob={useAppStore.getState().retryModelJob}
           canRetryJob={(job) => job.provider !== undefined && job.modelRoute !== undefined && eligibleForLayeringRoute({ provider: job.provider, modelRoute: job.modelRoute, modelId: job.modelId, displayName: job.displayName ?? job.modelRoute, capabilities: ['image_generation', 'image_edit', 'async_tasks'] }, PRODUCTION_LAYERING_ROUTE_EVIDENCE)}
@@ -965,95 +976,25 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
 
 async function persistImageLayeringRecords(nodeId: string, layers: LayeredImageRecord[]): Promise<void> {
   const state = useAppStore.getState();
-  const node = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module' && item.id === nodeId && item.data.moduleType === 'image_layering');
-  if (!node) return;
-  const groupId = node.data.config.groupId;
-  const layerNodes = state.project.nodes.filter((item): item is CanvasModuleNode => item.type === 'module'
-    && item.data.moduleType === 'image_layer' && item.data.config.groupId === groupId);
-  const orderByLayerId = new Map(layers.map((layer, index) => [layer.layerId, index]));
-  const orderedLayerNodes = [...layerNodes].sort((left, right) => Number(orderByLayerId.get(String(left.data.config.layerId)) ?? Number.MAX_SAFE_INTEGER)
-    - Number(orderByLayerId.get(String(right.data.config.layerId)) ?? Number.MAX_SAFE_INTEGER));
-  const operations: ProjectTransaction['operations'][number][] = [{ kind: 'canvas', operation: { kind: 'update_node', node: {
-    ...node,
-    data: { ...node.data, config: { ...node.data.config, layers } },
-  } } }];
-  for (const [index, layerNode] of orderedLayerNodes.entries()) {
-    const record = layers.find((layer) => layer.layerId === layerNode.data.config.layerId);
-    if (!record) continue;
-    operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: {
-      ...layerNode,
-      data: { ...layerNode.data, config: { ...layerNode.data.config, order: index, visible: record.visible, opacity: record.opacity } },
-    } } });
-  }
-  const edgeIds = orderedLayerNodes.flatMap((layerNode) => {
-    const edge = state.project.edges.find((candidate) => candidate.source === layerNode.id && candidate.target === nodeId && candidate.targetPortId === 'layerImages');
-    return edge ? [edge.id] : [];
-  });
-  if (edgeIds.length > 0) operations.push({ kind: 'canvas', operation: { kind: 'reorder_input_edges', targetNodeId: nodeId, targetPortId: 'layerImages', edgeIds } });
-  const saved = await state.commitProjectTransaction({
-    id: `image-layering-${nodeId}-${globalThis.crypto.randomUUID()}`,
-    label: 'Update image layers',
-    operations,
-  });
-  if (!saved) throw new Error('图层保存失败，请重试');
+  await state.updateImageLayeringRecords(nodeId, state.project.id, layers);
+}
+
+export async function persistSourceLayerBounds(groupNodeId: string, projectId: string, bounds: Record<string, LayeringBox>): Promise<void> {
+  await useAppStore.getState().alignSourceLayers(groupNodeId, projectId, bounds);
+}
+
+export async function recheckImageLayer(nodeId: string, projectId: string, assetId: string): Promise<void> {
+  await useAppStore.getState().recheckImageLayer(nodeId, projectId, assetId);
 }
 
 export async function persistImageLayerQuality(nodeId: string, assetId: string, verdict: LayerQualityVerdict): Promise<void> {
   const state = useAppStore.getState();
-  const current = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module' && item.id === nodeId && item.data.moduleType === 'image_layer');
-  if (!current || current.data.config.resultAssetId !== assetId) return;
-  const groupId = current.data.config.groupId;
-  const siblings = state.project.nodes.filter((item): item is CanvasModuleNode => item.type === 'module'
-    && item.data.moduleType === 'image_layer' && item.data.config.groupId === groupId);
-  const group = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module'
-    && item.data.moduleType === 'image_layering' && item.data.config.groupId === groupId);
-  const nextConfig: Record<string, unknown> = {
-    ...current.data.config,
-    qualityStatus: verdict.ok ? 'passed' : 'failed',
-    qualityValidationVersion: 2,
-    ...(verdict.ok ? { status: 'completed' } : { qualityReason: verdict.reason, status: 'failed' }),
-  };
-  if (verdict.ok) delete nextConfig.qualityReason;
-  const updatedNode: CanvasModuleNode = { ...current, data: { ...current.data, config: nextConfig } };
-  const passedCount = siblings.filter((sibling) => sibling.id === current.id
-    ? verdict.ok : sibling.data.config.qualityStatus === 'passed').length;
-  const failedCount = siblings.filter((sibling) => sibling.id === current.id
-    ? !verdict.ok : sibling.data.config.qualityStatus === 'failed').length;
-  const allPassed = passedCount === siblings.length;
-  const groupConfig = group ? {
-    ...group.data.config,
-    status: failedCount > 0 ? 'failed' : allPassed ? 'completed' : 'running',
-    resultState: failedCount > 0 ? 'needs_review' : allPassed ? 'ready' : 'validating',
-  } : null;
-  const operations: ProjectTransaction['operations'][number][] = [{ kind: 'canvas', operation: { kind: 'update_node', node: updatedNode } }];
-  if (group && groupConfig) operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: { ...group, data: { ...group.data, config: groupConfig } } } });
-  const saved = await state.commitProjectTransaction({
-    id: `image-layer-quality-${nodeId}-${assetId}-${globalThis.crypto.randomUUID()}`,
-    label: 'Validate generated image layer',
-    operations,
-  });
-  if (!saved) throw new Error('图层像素验证结果无法保存。');
+  await state.updateImageLayerQuality(nodeId, state.project.id, assetId, verdict);
 }
 
 async function persistImageLayerVisibility(nodeId: string, visible: boolean): Promise<void> {
   const state = useAppStore.getState();
-  const node = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module' && item.id === nodeId && item.data.moduleType === 'image_layer');
-  if (!node) return;
-  const group = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module'
-    && item.data.moduleType === 'image_layering' && item.data.config.groupId === node.data.config.groupId);
-  const operations: ProjectTransaction['operations'][number][] = [{ kind: 'canvas', operation: { kind: 'update_node', node: {
-    ...node, data: { ...node.data, config: { ...node.data.config, visible } },
-  } } }];
-  if (group && Array.isArray(group.data.config.layers)) {
-    const layers = (group.data.config.layers as LayeredImageRecord[]).map((layer) => layer.layerId === node.data.config.layerId ? { ...layer, visible } : layer);
-    operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: { ...group, data: { ...group.data, config: { ...group.data.config, layers } } } } });
-  }
-  const saved = await state.commitProjectTransaction({
-    id: `image-layer-visibility-${nodeId}-${globalThis.crypto.randomUUID()}`,
-    label: 'Update image layer visibility',
-    operations,
-  });
-  if (!saved) throw new Error('图层可见性保存失败，请重试');
+  await state.updateImageLayerVisibility(nodeId, state.project.id, visible);
 }
 
 function portPriority(moduleType: CanvasModuleNodeData['moduleType'], port: CanvasModulePortDefinition): 'primary-media' | 'secondary' | 'secondary-output' | undefined {
@@ -1717,6 +1658,11 @@ function ImageGenerationSummary({
   const [showOriginalForComparison, setShowOriginalForComparison] = useState(false);
   const [comparisonPosition, setComparisonPosition] = useState(50);
   const [layeringDialogOpen, setLayeringDialogOpen] = useState(false);
+  const saveLayeringDraft = useCallback((draft: LayeringDraft) => {
+    void useAppStore.getState().draftImageLayering(id, activeProjectId, draft).then(saved => {
+      if (!saved) setRunError('分层方案暂未保存，请检查项目保存状态。');
+    });
+  }, [id, activeProjectId]);
   const closeLayeringDialog = useCallback(() => setLayeringDialogOpen(false), []);
   const draftGenerationNodeConfig = useAppStore((state) => state.draftGenerationNodeConfig);
   const selectedImageRoute = compatibleRoutes.find((route) => route.modelRoute === modelRoute);
@@ -2245,7 +2191,10 @@ function ImageGenerationSummary({
         />
       )}
       {layeringDialogOpen && <LayeringDialog
+        key={selectedColorAsset?.assetId}
         sourceAsset={selectedColorAsset ?? null}
+        initialDraft={selectedColorAsset ? restoreLayeringDraft(selectedColorAsset.assetId, config, useAppStore.getState().project.nodes) : null}
+        onDraftChange={saveLayeringDraft}
         onAnalyze={onAnalyzeLayering}
         onCreateGroup={onCreateLayeringGroup}
         onStart={onStartLayering}
@@ -4274,6 +4223,7 @@ function formatTimestamp(milliseconds: number): string {
 }
 
 function ProjectImageControl({
+  nodeId,
   assetId,
   assets,
   error,
@@ -4282,6 +4232,7 @@ function ProjectImageControl({
   onImport,
   onSelect,
 }: {
+  nodeId: string;
   assetId?: string;
   assets: readonly ProjectImageAssetSummary[];
   error: string | null;
@@ -4374,6 +4325,7 @@ function ProjectImageControl({
           <strong title={asset.label}>{asset.label}</strong>
           <span className="module-node__media-tools">
             <small>{formatAssetDimensions(asset)}</small>
+            <MaterialLayeringAction key={asset.assetId} nodeId={nodeId} asset={asset} />
             {moduleType === 'image_input' && assets.length > 0 && (
               <span className="module-node__media-picker nodrag nopan" title="选择项目图像 / Choose project image">
                 <Images size={13} aria-hidden="true" />
@@ -4503,6 +4455,7 @@ function openBrowserFilePicker(accept: string, onImport: (file?: File) => void):
 }
 
 function CanvasLibraryControl({
+  nodeId,
   allAssetCount,
   assets,
   assetIds,
@@ -4511,6 +4464,7 @@ function CanvasLibraryControl({
   onSelectionChange,
   query,
 }: {
+  nodeId: string;
   allAssetCount: number;
   assets: readonly ProjectImageAssetSummary[];
   assetIds: string[];
@@ -4560,6 +4514,7 @@ function CanvasLibraryControl({
               {selected && (
                 <span className="module-node__library-order">
                   <small>{`参考 ${position + 1} / Reference ${position + 1}`}</small>
+                  <MaterialLayeringAction key={asset.assetId} nodeId={nodeId} asset={asset} label={`AI 分层 ${asset.label}`} />
                   <button type="button" aria-label={`上移 ${asset.label} / Move ${asset.label} up`} disabled={position === 0} onClick={() => move(asset.assetId, -1)}>↑</button>
                   <button type="button" aria-label={`下移 ${asset.label} / Move ${asset.label} down`} disabled={position === assetIds.length - 1} onClick={() => move(asset.assetId, 1)}>↓</button>
                 </span>

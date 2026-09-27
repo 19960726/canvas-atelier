@@ -272,6 +272,58 @@ describe('persistent model job store', () => {
     expect(await storage.get('layer-restart')).toMatchObject({ status: 'running', providerTaskId: 'saved-provider-task', progress: 0.6 });
   });
 
+  it('preserves a saved locally refined derivative during completed task recovery', async () => {
+    const layer=createCanvasModuleNode('refined-layer','image_layer',{x:0,y:0});
+    layer.data.config={groupId:'group-a',layerId:'subject',jobId:'completed-layer',resultJobId:'completed-layer',
+      resultAssetId:'local-refined',refinedFromAssetId:'provider-old',pixelColorSpace:'foreground',maskSpace:'source'};
+    const project={...createStarterProject(),nodes:[layer],edges:[]};
+    const storage=createInMemoryModelJobStorage(),commit=vi.fn();
+    const store=createModelJobStore({storage,executor:createExecutor(),commitProjectTransaction:commit,getProject:()=>project,now:fixedNow});
+    const [job]=await store.enqueueConfirmedJobs({conversationId:'layer-conversation',projectId:project.id,confirmedAt,
+      requests:[request({id:'completed-layer',promptNodeId:layer.id,layeringGroupId:'group-a',layeringLayerId:'subject'})]});
+    await storage.put({...job!,status:'completed',resultAssetId:'provider-old',resultNodeId:layer.id});
+    await store.recover();
+    expect(commit).not.toHaveBeenCalled();
+    expect(project.nodes[0]!.data.config.resultAssetId).toBe('local-refined');
+  });
+
+  it('queues a rejected completed layer result only with explicit current-result authorization', async () => {
+    const layer = createCanvasModuleNode('rejected-layer', 'image_layer', { x: 0, y: 0 });
+    layer.data.config = { ...layer.data.config, groupId: 'group-a', layerId: 'subject', sourceAssetId: 'source-a',
+      jobId: 'completed-layer', resultJobId: 'completed-layer', resultAssetId: 'result-a', qualityStatus: 'failed',
+      provider: 'comfly', modelRoute: 'gpt-image', resolution: '4K' };
+    const group = createCanvasModuleNode('layer-group', 'image_layering', { x: 0, y: 0 });
+    group.data.config = { ...group.data.config, groupId: 'group-a', sourceAssetId: 'source-a' };
+    let project: CanvasProject = { ...createStarterProject(), nodes: [layer, group], edges: [] };
+    const storage = createInMemoryModelJobStorage();
+    const executor = createExecutor();
+    const store = createModelJobStore({ storage, executor, commitProjectTransaction: vi.fn(), getProject: () => project, now: fixedNow });
+    const [job] = await store.enqueueConfirmedJobs({ conversationId: 'layer-conversation', projectId: project.id, confirmedAt,
+      requests: [request({ id: 'completed-layer', promptNodeId: layer.id, referenceAssetIds: ['source-a'], resolution: '4K',
+        layeringGroupId: 'group-a', layeringLayerId: 'subject', imageOutputFormat: 'png', imageBackground: 'transparent', outputCount: 1 })] });
+    const completed = { ...job!, status: 'completed' as const, resultAssetId: 'result-a', resultNodeId: layer.id, providerTaskId: 'original-task' };
+    await storage.put(completed);
+
+    await expect(store.retryJob(completed.id)).rejects.toThrow('cannot be retried from completed');
+    await expect(store.retryJob(completed.id, { rejectedLayerResultAssetId: 'obsolete-result' })).rejects.toThrow('cannot be retried from completed');
+    await expect(store.retryJob(completed.id, { projectId: 'foreign-project', rejectedLayerResultAssetId: 'result-a' })).rejects.toThrow('cannot be retried from completed');
+    const currentProject = project;
+    project = { ...project, id: 'foreign-project' };
+    await expect(store.retryJob(completed.id, { rejectedLayerResultAssetId: 'result-a' })).rejects.toThrow('cannot be retried from completed');
+    project = currentProject;
+    expect(await storage.list()).toHaveLength(1);
+
+    const retry = await store.retryJob(completed.id, { id: 'replacement-layer', rejectedLayerResultAssetId: 'result-a' });
+    expect(retry).toMatchObject({ id: 'replacement-layer', projectId: project.id, status: 'queued', retryCount: 1,
+      promptNodeId: layer.id, layeringGroupId: 'group-a', layeringLayerId: 'subject', referenceAssetIds: ['source-a'],
+      provider: 'comfly', modelRoute: 'gpt-image', resolution: '4K', imageOutputFormat: 'png', imageBackground: 'transparent' });
+    expect(retry.resultAssetId).toBeUndefined();
+    expect(retry.providerTaskId).toBeUndefined();
+    expect(await storage.get(completed.id)).toEqual(completed);
+    expect(await storage.list()).toHaveLength(2);
+    expect(executor.submit).not.toHaveBeenCalled();
+  });
+
   it('keeps layer ownership when retrying a failed layer task without submitting it', async () => {
     const storage = createInMemoryModelJobStorage();
     const submit = vi.fn(async () => ({ providerTaskId: 'new-task' }));

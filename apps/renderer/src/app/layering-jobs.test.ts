@@ -22,6 +22,16 @@ const routeEvidence: LayeringRouteEvidence = {
 };
 
 describe('confirmed GPT layering requests', () => {
+  it('requests continuous source-coordinate mattes, including glass and soft shadows', async () => {
+    const parsed = parseLayeringAnalysis(planReply, 'source-asset', 1200, 1600);
+    const plan = { ...parsed, pixelMode: 'source' as const, layers: parsed.layers.map(layer => ({ ...layer,
+      sourceBounds: { x: .25, y: .25, width: .5, height: .5 } })) };
+    const confirmation = await confirmLayeringPlan(plan, 'comfly', imageProfile.modelRoute, '2K', '2026-09-23T06:05:00.000Z');
+    const requests = await buildLayeringJobRequests(plan, confirmation, imageProfile, 'matte', [routeEvidence], () => crypto.randomUUID());
+    expect(requests[1]!.prompt).toContain('continuous alpha');
+    expect(requests[1]!.prompt).toContain('glass');
+    expect(requests[0]!.prompt).toContain('Preserve every unoccluded');
+  });
   it('binds scope to confirmation and every layer request, rejecting a moved selection', async () => {
     const plan = { ...parseLayeringAnalysis(planReply, 'source-asset', 1200, 1600),
       selection: { mode: 'objects' as const, box: { x: .25, y: .5, width: .25, height: .25 }, target: '红色料理机' } };

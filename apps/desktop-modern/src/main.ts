@@ -15,6 +15,8 @@ import { parseAssetByteRange } from './asset-byte-range.js';
 import { acquireRelayMeWebToken } from './relayme-web-login.js';
 import { createRecoveryWorkerScanner } from './recovery-worker-runner.js';
 import { saveAndOpenLayeredPsdInPhotoshop } from './layered-psd-open.js';
+import { createLocalMattingService } from './local-matting-service.js';
+import { withPreparedLayerFile } from './prepared-layer-file.js';
 
 import {
   BRIDGE_CHANNELS,
@@ -342,6 +344,24 @@ app.whenReady().then(async () => {
     sendCloseFlushRequest: sendRendererCloseFlushRequest,
   });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
+  ipcMain.handle(BRIDGE_CHANNELS.importPreparedLayer, async (event, input: unknown) => {
+    if(event.sender!==mainWindow?.webContents||!desktopHandlers)throw new Error('无法从此窗口保存精修图层');
+    const request=input as {sessionId?:unknown;bytes?:unknown}|null;
+    if(typeof request?.sessionId!=='string'||!(request.bytes instanceof Uint8Array)||request.bytes.length<24||request.bytes.length>40*1024*1024)throw new Error('无效的精修图片');
+    const png=Buffer.from(request.bytes);
+    const width=png.readUInt32BE(16),height=png.readUInt32BE(20);
+    if(!png.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))||!width||!height||width>8192||height>8192||width*height>12_000_000)throw new Error('精修图片尺寸无效');
+    const handlers=desktopHandlers;
+    return withPreparedLayerFile(app.getPath('temp'),png,sourcePath=>handlers.importDroppedProjectMedia(event,
+      {request:{sessionId:request.sessionId,target:{kind:'agent_reference',operationId:`dropped_media_${globalThis.crypto.randomUUID()}`}},sourcePath}));
+  });
+  const refineLocalLayer = createLocalMattingService((request) => new Worker(join(__dirname, 'local-matting-worker-entry.cjs'), {
+    workerData: { request, runtimeDirectory: join(process.resourcesPath, 'local-matting-runtime') },
+  }));
+  ipcMain.handle(BRIDGE_CHANNELS.refineLocalLayer, (event, request: unknown) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('无法从此窗口执行本地精修');
+    return refineLocalLayer(request);
+  });
   ipcMain.handle(BRIDGE_CHANNELS.openLayeredPsdInPhotoshop, (event, bytes: unknown) => {
     if (event.sender !== mainWindow?.webContents) return { ok: false, code: 'invalid_psd' };
     return saveAndOpenLayeredPsdInPhotoshop(bytes, {

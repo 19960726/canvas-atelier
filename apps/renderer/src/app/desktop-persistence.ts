@@ -162,7 +162,7 @@ export interface ProjectPersistenceClient {
     readonly historyId: string;
     readonly operationId: string;
   }): Promise<ProjectHistoryCopyResult | null>;
-  importProjectImage(target: ProjectImageImportTarget, file?: File, options?: { readonly fromClipboard: true }): Promise<ProjectImageImportResult | null>;
+  importProjectImage(target: ProjectImageImportTarget, file?: File, options?: { readonly fromClipboard?: true; readonly preparedLayer?: true }): Promise<ProjectImageImportResult | null>;
   importDroppedMedia?(input: {
     readonly file: File;
     readonly operationId: string;
@@ -638,7 +638,11 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       if (writableSessionId === null) return null;
       const operationId = createDesktopDroppedMediaOperationId();
       const nativeAgentClipboard = options?.fromClipboard === true && target.kind === 'agent_reference';
-      let result = nativeAgentClipboard
+      const preparedLayer=options?.preparedLayer===true;
+      if(preparedLayer&&(!file||target.kind!=='agent_reference'||!bridge.projectImages.importPreparedLayer))throw new Error('本地精修保存组件不可用');
+      let result = preparedLayer
+        ? await bridge.projectImages.importPreparedLayer!({sessionId:writableSessionId,bytes:new Uint8Array(await file!.arrayBuffer())})
+        : nativeAgentClipboard
         ? await bridge.projectImages.pasteClipboardImage({
             sessionId: writableSessionId,
             target: { kind: 'agent_reference', operationId: createDesktopClipboardOperationId() },
@@ -651,7 +655,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
               : { kind: 'agent_reference', operationId },
           }, file)
         : await bridge.projectImages.importImage({ sessionId: writableSessionId, target });
-      if (result === null && !nativeAgentClipboard && file !== undefined && (target.kind === 'module' || target.kind === 'agent_reference')) {
+      if (result === null && !preparedLayer && !nativeAgentClipboard && file !== undefined && (target.kind === 'module' || target.kind === 'agent_reference')) {
         result = await bridge.projectImages.pasteClipboardImage({
           sessionId: writableSessionId,
           target: target.kind === 'module'

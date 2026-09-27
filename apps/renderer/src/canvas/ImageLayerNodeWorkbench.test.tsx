@@ -1,9 +1,44 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import { describe, expect, it, vi } from 'vitest';
-import { ImageLayerNodeWorkbench } from './ImageLayerNodeWorkbench';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ImageLayerNodeWorkbench, validateManagedImageLayer } from './ImageLayerNodeWorkbench';
+import { buildSourceLayerDocument } from '../app/source-layer-document';
+import { composeLayeredRgba } from '../app/layered-psd';
+afterEach(cleanup);
 
 describe('ImageLayerNodeWorkbench', () => {
+  it('does not present format validation as a clean cutout acceptance', () => {
+    render(<ImageLayerNodeWorkbench nodeId="layer-a" config={{ name: '产品', qualityStatus: 'passed' }} onQualityResult={vi.fn()} onVisibilityChange={vi.fn()} />);
+    const region = screen.getByRole('region', { name: '画布图层：产品' });
+    expect(within(region).getByText('格式检查通过 · 待检查边缘')).toBeVisible();
+    expect(within(region).queryByText('像素验证通过')).not.toBeInTheDocument();
+  });
+  it('places a centered provider mask into the original corner before testing selection visibility', async () => {
+    const width = 8, height = 8;
+    const mask = Uint8ClampedArray.from(Array.from({ length: 64 }, (_, i) => [255, 255, 255,
+      i % 8 >= 3 && i % 8 <= 4 && i >= 24 && i < 40 ? 255 : 0]).flat());
+    vi.stubGlobal('Image', class { naturalWidth = width; naturalHeight = height; decode = async () => {}; });
+    const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage: vi.fn(), getImageData: () => ({ data: mask }),
+    } as never);
+    try {
+      const selection = { mode: 'region' as const, box: { x: 0, y: 0, width: .25, height: .25 } };
+      const config = { layerKind: 'transparent', canvasWidth: width, canvasHeight: height, layerSelection: selection };
+      const asset = { assetId: 'mask', displayUrl: 'novus-asset://mask', mediaType: 'image/png' as const, width, height };
+      expect(await validateManagedImageLayer(asset, config, true)).toEqual({ ok: false, reason: 'alpha_empty' });
+      expect(await validateManagedImageLayer(asset, { ...config, pixelMode: 'source' }, true)).toEqual({ ok: true });
+      const source = new Uint8Array(width * height * 4).fill(255);
+      const document = await buildSourceLayerDocument({ width, height, source, selection, layers: [
+        { id: 'bg', name: '背景', kind: 'background', visible: true, opacity: 1, load: async () => source },
+        { id: 'object', name: '角落物品', kind: 'transparent', visible: true, opacity: 1,
+          bounds: selection.box, load: async () => new Uint8Array(mask) },
+      ] });
+      // Trimming retains one transparent pixel around the 2 x 2 selection.
+      expect(document.layers[1]).toMatchObject({ x: 0, y: 0, width: 3, height: 3 });
+      expect(composeLayeredRgba(document)).toEqual(source);
+    } finally { context.mockRestore(); vi.unstubAllGlobals(); }
+  });
   it('shows independent layer identity, transparent kind and status without a fake preview', () => {
     render(<ImageLayerNodeWorkbench nodeId="layer-a" config={{ name: '产品主体', layerKind: 'transparent', status: 'queued' }} onQualityResult={vi.fn()} onVisibilityChange={vi.fn()} />);
     expect(screen.getByRole('region', { name: '画布图层：产品主体' })).toHaveAttribute('data-layer-status', 'queued');

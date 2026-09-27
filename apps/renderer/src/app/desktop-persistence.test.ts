@@ -13,6 +13,18 @@ import {
 import { PROJECT_STORAGE_KEY } from './project-persistence';
 
 describe('desktop persistence', () => {
+  it('imports an in-memory refined PNG without a file path or clipboard fallback', async () => {
+    const project=createStarterProject();
+    const prepared=vi.fn(async()=>null),dropped=vi.fn(async()=>null),clipboard=vi.fn(async()=>null);
+    const bridge={openProject:vi.fn(async()=>createDesktopSession(project,'refined-session',0)),
+      projectImages:{importPreparedLayer:prepared,importDroppedMedia:dropped,pasteClipboardImage:clipboard,list:vi.fn(async()=>[])}};
+    const client=createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const file={arrayBuffer:async()=>new Uint8Array([137,80,78,71]).buffer} as File;
+    await client.importProjectImage({kind:'agent_reference'} as never,file,{preparedLayer:true} as never);
+    expect(prepared).toHaveBeenCalledWith({sessionId:'refined-session',bytes:new Uint8Array([137,80,78,71])});
+    expect(dropped).not.toHaveBeenCalled();expect(clipboard).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     localStorage.clear();
   });

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const boxSchema = z.object({
+export const boxSchema = z.object({
   x: z.number().finite().min(0).max(1), y: z.number().finite().min(0).max(1),
   width: z.number().finite().positive().max(1), height: z.number().finite().positive().max(1),
 }).strict().refine(box => box.x + box.width <= 1.000001 && box.y + box.height <= 1.000001, '选区必须在原图范围内');

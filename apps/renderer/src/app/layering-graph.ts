@@ -15,6 +15,7 @@ export function buildLayeringGraphTransaction(
   plan: LayeringPlan,
   confirmation: LayeringConfirmation,
   groupId: string,
+  sourceNodeId?: string,
 ): ProjectTransaction {
   if (!isSafeId(groupId)) throw new Error('The layering group identifier is invalid.');
   if (confirmation.sourceAssetId !== plan.sourceAssetId
@@ -26,8 +27,10 @@ export function buildLayeringGraphTransaction(
     throw new Error('This layering group already exists in the project.');
   }
   const sourceNode = project.nodes.find((node): node is CanvasModuleNode => node.type === 'module'
+    && (sourceNodeId === undefined || node.id === sourceNodeId)
     && (node.data.config.assetId === plan.sourceAssetId
-      || (Array.isArray(node.data.config.resultAssetIds) && node.data.config.resultAssetIds.includes(plan.sourceAssetId))));
+      || (Array.isArray(node.data.config.resultAssetIds) && node.data.config.resultAssetIds.includes(plan.sourceAssetId))
+      || (node.data.moduleType === 'canvas_library' && Array.isArray(node.data.config.assetIds) && node.data.config.assetIds.includes(plan.sourceAssetId))));
   if (sourceNode === undefined) throw new Error('A source image node for the selected managed asset is required.');
   if (project.assets !== undefined && !project.assets.some((asset) => asset.assetId === plan.sourceAssetId && asset.mediaType.startsWith('image/'))) {
     throw new Error('The selected source image is not a managed project asset.');
@@ -53,6 +56,8 @@ export function buildLayeringGraphTransaction(
       layerKind: layer.kind,
       canvasWidth: plan.canvasWidth,
       canvasHeight: plan.canvasHeight,
+      ...(plan.pixelMode ? { pixelMode: plan.pixelMode, maskSpace: 'source' } : {}),
+      ...(layer.sourceBounds ? { sourceBounds: layer.sourceBounds } : {}),
       ...(plan.selection ? { layerSelection: plan.selection } : {}),
       name: layer.name,
       description: layer.description,
@@ -79,12 +84,14 @@ export function buildLayeringGraphTransaction(
     planVersion: 1,
     canvasWidth: plan.canvasWidth,
     canvasHeight: plan.canvasHeight,
+    ...(plan.pixelMode ? { pixelMode: plan.pixelMode, maskSpace: 'source' } : {}),
     ...(plan.selection ? { layerSelection: plan.selection } : {}),
     planLayers: includedLayers.map((layer, order) => ({
       layerId: layer.layerId,
       kind: layer.kind,
       name: layer.name,
       description: layer.description,
+      ...(layer.sourceBounds ? { sourceBounds: layer.sourceBounds } : {}),
       order,
     })),
     resultState: 'empty',

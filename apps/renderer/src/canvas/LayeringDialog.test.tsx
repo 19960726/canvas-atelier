@@ -54,6 +54,34 @@ function renderDialog(analysisPlan: LayeringPlan = plan) {
 }
 
 describe('LayeringDialog', () => {
+  it('restores an unfinished region choice without silently switching it to whole image', () => {
+    let draft: unknown;
+    const props = { sourceAsset, profiles: [analysisProfile, gptImageProfile], routeEvidence,
+      onAnalyze: vi.fn(async () => plan), onCreateGroup: vi.fn(async () => true), onStart: vi.fn(async () => true), onClose: vi.fn(),
+      onDraftChange: (value: unknown) => { draft = value; } };
+    const view = render(<LayeringDialog {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '框选区域' }));
+    view.unmount();
+    render(<LayeringDialog {...props} initialDraft={draft as never} />);
+    expect(screen.getByRole('button', { name: '框选区域' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '分析图片' })).toBeDisabled();
+    expect(props.onAnalyze).not.toHaveBeenCalled();
+  });
+  it('restores edited descriptions after closing and remounting without charging for another analysis', async () => {
+    let draft: unknown;
+    const onAnalyze = vi.fn(async () => plan);
+    const props = { sourceAsset, profiles: [analysisProfile, gptImageProfile], routeEvidence,
+      onAnalyze, onCreateGroup: vi.fn(async () => true), onStart: vi.fn(async () => true), onClose: vi.fn(),
+      onDraftChange: (value: unknown) => { draft = value; } };
+    const view = render(<LayeringDialog {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '分析图片' }));
+    await screen.findByRole('list', { name: '可编辑分层方案' });
+    fireEvent.change(screen.getByRole('textbox', { name: '图层说明 产品本体' }), { target: { value: '保留原位置和大小，不含投影' } });
+    view.unmount();
+    render(<LayeringDialog {...props} initialDraft={draft as never} />);
+    expect(screen.getByRole('textbox', { name: '图层说明 产品本体' })).toHaveValue('保留原位置和大小，不含投影');
+    expect(onAnalyze).toHaveBeenCalledOnce();
+  });
   it('requires a selection for object mode and sends its target with analysis', async () => {
     const { onAnalyze } = renderDialog();
     fireEvent.click(screen.getByRole('button', { name: '框选物品' }));

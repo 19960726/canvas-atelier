@@ -1,0 +1,47 @@
+import { z } from 'zod';
+
+const boxSchema = z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1),
+  width: z.number().positive().max(1), height: z.number().positive().max(1) })
+  .refine(box => box.x + box.width <= 1.000001 && box.y + box.height <= 1.000001);
+const regionSchema = z.object({ mode: z.enum(['keep', 'clear', 'glass']), box: boxSchema });
+export type MattingRegion = z.infer<typeof regionSchema>;
+export interface LocalMattingRequest {
+  width: number; height: number; rgba: Uint8Array;
+  bounds: z.infer<typeof boxSchema>; regions: MattingRegion[];
+}
+export interface LocalMattingResult { width: number; height: number; rgba: Uint8Array; }
+
+export function parseLocalMattingRequest(value: unknown): LocalMattingRequest {
+  const result = z.object({ width: z.number().int().min(1).max(8192), height: z.number().int().min(1).max(8192),
+    rgba: z.instanceof(Uint8Array), bounds: boxSchema, regions: z.array(regionSchema).max(64) }).parse(value);
+  if (result.width * result.height > 12_000_000 || result.rgba.length !== result.width * result.height * 4)
+    throw new Error('本地精修的原图像素尺寸无效或超过 1200 万像素');
+  return result;
+}
+
+/** Build a trimap at source coordinates; regions are ordered user corrections. */
+export function createSourceTrimap(mask: Uint8Array, width: number, height: number, radius: number, regions: readonly MattingRegion[]): Uint8Array {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width * height > 12_000_000
+    || mask.length !== width * height || !Number.isInteger(radius) || radius < 1 || radius > 128) throw new Error('精修蒙版尺寸无效');
+  const integral = new Uint32Array((width + 1) * (height + 1)), stride = width + 1;
+  for (let y = 0; y < height; y++) {
+    let sum = 0;
+    for (let x = 0; x < width; x++) {
+      sum += mask[y * width + x]! > 127 ? 1 : 0;
+      integral[(y + 1) * stride + x + 1] = integral[y * stride + x + 1]! + sum;
+    }
+  }
+  const result = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const x0 = Math.max(0, x - radius), x1 = Math.min(width, x + radius + 1);
+    const y0 = Math.max(0, y - radius), y1 = Math.min(height, y + radius + 1);
+    const sum = integral[y1 * stride + x1]! - integral[y0 * stride + x1]! - integral[y1 * stride + x0]! + integral[y0 * stride + x0]!;
+    result[y * width + x] = sum === 0 ? 0 : sum === (x1 - x0) * (y1 - y0) ? 255 : 128;
+  }
+  for (const candidate of regions) {
+    const { mode, box } = regionSchema.parse(candidate), value = mode === 'keep' ? 255 : mode === 'clear' ? 0 : 128;
+    for (let y = Math.floor(box.y * height); y < Math.min(height, Math.ceil((box.y + box.height) * height)); y++)
+      for (let x = Math.floor(box.x * width); x < Math.min(width, Math.ceil((box.x + box.width) * width)); x++) result[y * width + x] = value;
+  }
+  return result;
+}

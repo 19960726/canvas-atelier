@@ -14,6 +14,48 @@ import { AUTO_IMAGE_COLOR_CORRECTION, ORIGINAL_IMAGE_COLOR_CORRECTION } from '..
 
 const originalDesktop = window.novusDesktop;
 
+it.each(['image_input', 'upload_image', 'canvas_library'] as const)('opens AI layering for %s material without calling a provider', async moduleType => {
+  const node = createCanvasModuleNode('material-layer-source', moduleType, { x: 0, y: 0 });
+  node.data.config = moduleType === 'canvas_library' ? { assetIds: [projectImage.assetId] } : { assetId: projectImage.assetId };
+  useAppStore.setState(state => ({ project: { ...state.project, nodes: [node] }, projectImages: [projectImage] }));
+  const analyze = vi.spyOn(useAppStore.getState(), 'analyzeImageLayering');
+  const view = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected /></ReactFlowProvider>);
+  fireEvent.click(screen.getByRole('button', { name: /AI 分层/ }));
+  expect(screen.getByRole('dialog', { name: 'AI 图片分层' })).toBeVisible();
+  expect(screen.getByRole('button', { name: '框选物品' })).toBeVisible();
+  fireEvent.change(screen.getByRole('textbox', { name: '要提取的内容' }), { target: { value: '只提取红色料理机' } });
+  expect(analyze).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '关闭 AI 图片分层' }));
+  view.rerender(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected /></ReactFlowProvider>);
+  fireEvent.click(screen.getByRole('button', { name: /AI 分层/ }));
+  expect(screen.getByRole('dialog', { name: 'AI 图片分层' })).toBeVisible();
+  expect(screen.getByRole('textbox', { name: '要提取的内容' })).toHaveValue('只提取红色料理机');
+  analyze.mockRestore();
+});
+
+it('closes the material layering dialog when the source image is replaced', () => {
+  const node = createCanvasModuleNode('replace-material', 'image_input', { x: 0, y: 0 });
+  node.data.config.assetId = projectImage.assetId;
+  const replacement = { ...projectImage, assetId: 'ffeeddccbbaa9988', label: 'Replacement' };
+  useAppStore.setState(state => ({ project: { ...state.project, nodes: [node] }, projectImages: [projectImage, replacement] }));
+  const view = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected /></ReactFlowProvider>);
+  fireEvent.click(screen.getByRole('button', { name: 'AI 分层' }));
+  const next = { ...node, data: { ...node.data, config: { assetId: replacement.assetId } } };
+  act(() => useAppStore.setState(state => ({ project: { ...state.project, nodes: [next] } })));
+  view.rerender(<ReactFlowProvider><ModuleNodeCard id={next.id} data={next.data} selected /></ReactFlowProvider>);
+  expect(screen.queryByRole('dialog', { name: 'AI 图片分层' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'AI 分层' }));
+  expect(screen.getByRole('textbox', { name: '要提取的内容' })).toHaveValue('');
+});
+
+it('disables material layering when native dimensions are missing', () => {
+  const node = createCanvasModuleNode('no-size', 'image_input', { x: 0, y: 0 });
+  node.data.config.assetId = projectImage.assetId;
+  useAppStore.setState({ projectImages: [{ ...projectImage, width: null }] });
+  render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected /></ReactFlowProvider>);
+  expect(screen.getByRole('button', { name: /AI 分层/ })).toBeDisabled();
+});
+
 const projectImage = {
   assetId: '0123456789abcdef',
   byteSize: 42,
@@ -7094,13 +7136,14 @@ it('writes a successful layer verdict as JSON-safe data accepted by the real jou
   const node = createCanvasModuleNode('layer-json-safe', 'image_layer', { x: 0, y: 0 });
   node.data.config = { ...node.data.config, resultAssetId: projectImage.assetId, qualityStatus: 'failed', qualityReason: 'dimensions' };
   useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [node], edges: [] } });
-  const commit = vi.spyOn(useAppStore.getState(), 'commitProjectTransaction').mockImplementation(async transaction => {
-    canonicalJson(transaction);
-    return true;
+  const commit = vi.fn(async (request: import('../app/desktop-persistence').ProjectCommitRequest) => {
+    canonicalJson(request.transaction);
+    return { ok: true as const, project: request.nextProject, revision: request.baseRevision + 1 };
   });
+  replaceProjectPersistenceClientForTests({ ...createProjectPersistenceClient(), commit });
   try {
     await expect(persistImageLayerQuality(node.id, projectImage.assetId, { ok: true })).resolves.toBeUndefined();
-    const transaction = commit.mock.calls[0]![0];
+    const transaction = commit.mock.calls[0]![0].transaction;
     expect(canonicalJson(transaction)).not.toContain('qualityReason');
   } finally { commit.mockRestore(); }
 });
@@ -7110,12 +7153,14 @@ it('uses a new transaction identity when a layer is checked again after a decode
   node.data.config = { ...node.data.config, resultAssetId: projectImage.assetId, qualityStatus: 'pending' };
   useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [node], edges: [] } });
   const payloads = new Map<string, string>();
-  const commit = vi.spyOn(useAppStore.getState(), 'commitProjectTransaction').mockImplementation(async transaction => {
+  const commit = vi.fn(async (request: import('../app/desktop-persistence').ProjectCommitRequest) => {
+    const transaction = request.transaction;
     const payload = canonicalJson(transaction);
     if (payloads.has(transaction.id) && payloads.get(transaction.id) !== payload) throw new Error('INVALID_REQUEST: conflicting duplicate transaction');
     payloads.set(transaction.id, payload);
-    return true;
+    return { ok: true as const, project: request.nextProject, revision: request.baseRevision + 1 };
   });
+  replaceProjectPersistenceClientForTests({ ...createProjectPersistenceClient(), commit });
   try {
     await persistImageLayerQuality(node.id, projectImage.assetId, { ok: false, reason: 'decode' });
     await expect(persistImageLayerQuality(node.id, projectImage.assetId, { ok: true })).resolves.toBeUndefined();

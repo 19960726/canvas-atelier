@@ -27,12 +27,16 @@ export async function buildLayeringJobRequests(
   if (!/^[A-Za-z0-9_-]{1,80}$/u.test(groupId)) throw new Error('The layering group identifier is invalid.');
   if (typeof profile.modelId !== 'string' || profile.modelId.length === 0) throw new Error('The selected GPT Image model id is unavailable.');
   const aspectRatio = closestImageAspectRatio(plan.canvasWidth, plan.canvasHeight);
+  if (plan.pixelMode === 'source' && plan.layers.some(layer => layer.included && layer.kind === 'transparent' && !layer.sourceBounds)) {
+    throw new Error('请先在原图中标注每个透明图层的位置与范围。');
+  }
 
   return plan.layers.filter((layer) => layer.included).map((layer) => ({
     id: createId(),
     kind: 'image' as const,
     promptNodeId: `image-layer-${groupId}-${layer.layerId}`,
-    prompt: buildLayerPrompt(layer.kind, layer.name, layer.description) + '\n'
+    prompt: buildLayerPrompt(layer.kind, layer.name, layer.description)
+      + (plan.pixelMode === 'source' && layer.kind === 'transparent' ? `\nOUTPUT AN ALPHA MATTE ONLY. Use white RGB with continuous alpha: opaque surfaces alpha 1, empty space and handle holes alpha 0, anti-aliased edges, glass transmission and soft shadows use their actual partial opacity. Do not bake the original background into glass or fill handle holes. Do not redraw colors, textures, lettering, glow, or lighting. The application extracts original pixels locally and removes background contribution where alpha is partial. Original canvas ${plan.canvasWidth}x${plan.canvasHeight}; approximate original object bounds ${JSON.stringify(layer.sourceBounds)} describe the search area, not a crop or resize. Keep the whole source frame and exact pixel placement, with no zoom, crop, centering or enlargement.` : '') + '\n'
       + selectionInstruction(readLayeringSelection(plan.selection), plan.canvasWidth, plan.canvasHeight),
     provider: profile.provider,
     modelRoute: profile.modelRoute,
@@ -64,7 +68,7 @@ function closestImageAspectRatio(width: number, height: number): ImageAspectRati
 
 function buildLayerPrompt(kind: 'background' | 'transparent', name: string, description: string): string {
   const outputContract = kind === 'background'
-    ? 'Generate one complete opaque background image covering the full original canvas. Do not draw foreground objects unless named in this layer.'
+    ? 'Generate one complete opaque background image covering the full original canvas. Preserve every unoccluded source pixel, perspective, texture, lighting and framing; inpaint only the removed objects and their shadows. Do not draw foreground objects unless named in this layer.'
     : 'Generate exactly the named foreground elements as one pixel layer on a fully transparent background. Preserve the original canvas framing and place the subject at its original location. Do not add a background.';
   return [
     'Use the attached original image as the sole visual reference. Create one independently editable image layer for a layered PSD.',
