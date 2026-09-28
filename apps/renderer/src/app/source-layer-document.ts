@@ -15,6 +15,7 @@ export interface SourcePixelLayer {
 /** Decode masks one at a time, retain original placement and trim only transparent padding. */
 export async function buildSourceLayerDocument(input: {
   width: number; height: number; source: Uint8Array; selection: LayeringSelection; layers: readonly SourcePixelLayer[];
+  backgroundMode?: 'preserve' | 'replace';
 }): Promise<LayeredPsdDocument> {
   const { width, height, source, layers, selection } = input;
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 8192 || height > 8192
@@ -22,8 +23,12 @@ export async function buildSourceLayerDocument(input: {
   if (layers.length < 2 || layers[0]?.kind !== 'background' || layers.slice(1).some(layer => layer.kind !== 'transparent')) throw new Error('分层记录需要一个背景和至少一个前景');
   for (let i = 3; i < source.length; i += 4) if (source[i] !== 255) throw new Error('原图像素分层需要不透明原图，请先合成背景');
   if (layers.slice(1).some(layer => !layer.bounds)) throw new Error('请先标注每个图层在原图中的位置');
+  if (input.backgroundMode === 'replace' && selection.mode !== 'whole') throw new Error('完整补全背景只适用于整图分层');
   const generated = await layers[0]!.load();
   if (generated.length !== source.length) throw new Error('背景补全尺寸与原图不一致');
+  if (input.backgroundMode === 'replace') for (let p = 3; p < generated.length; p += 4) {
+    if (generated[p] !== 255) throw new Error('完整补全背景包含透明空洞，请检查背景层');
+  }
   const coverage = new Uint8Array(width * height);
   const edgeFallback = new Uint8Array(width * height);
   const foregrounds: LayeredPsdLayer[] = [];
@@ -135,16 +140,16 @@ export async function buildSourceLayerDocument(input: {
       for(let y=Math.floor(b.y*height);y<Math.min(height,Math.ceil((b.y+b.height)*height));y++)for(let x=Math.floor(b.x*width);x<Math.min(width,Math.ceil((b.x+b.width)*width));x++)erased[y*width+x]=1;
     }
     for(let p=0;p<erased.length;p++)if(erased[p]&&generated[p*4+3]!==255)throw new Error('补全背景包含透明空洞，请重新检查背景层');
-    background=repairLayerBackground(source,generated,width,height,erased);
+    background=input.backgroundMode === 'replace' ? generated.slice() : repairLayerBackground(source,generated,width,height,erased);
     // Donor feathering is useful beneath a removed object, but its correction
     // field must not repaint nearby pixels that no foreground actually covers.
-    for (let pixel = 0; pixel < erased.length; pixel++) {
+    if (input.backgroundMode !== 'replace') for (let pixel = 0; pixel < erased.length; pixel++) {
       if (!erased[pixel]) background.set(source.subarray(pixel * 4, pixel * 4 + 4), pixel * 4);
     }
     // At anti-aliased edges the foreground is original RGB with partial alpha.
     // Keep the original backdrop at those pixels so source + matte reconstructs
     // the original without baking the generated background into the edge.
-    for (let i = 0, p = 0; i < edgeFallback.length; i += 1, p += 4) {
+    if (input.backgroundMode !== 'replace') for (let i = 0, p = 0; i < edgeFallback.length; i += 1, p += 4) {
       if (edgeFallback[i]) background.set(source.subarray(p, p + 4), p);
     }
     background=applyLayerSelection(background,width,height,selection,source);
@@ -157,6 +162,7 @@ export async function buildSourceLayerDocument(input: {
       foregrounds.push(trimmed);
     }
   }
+  if (input.backgroundMode === 'replace' && !repair) background = generated.slice();
   foregrounds.sort((a,b)=>layers.findIndex(layer=>layer.id===a.id)-layers.findIndex(layer=>layer.id===b.id));
   return { width, height, layers: [{ ...layers[0]!, x: 0, y: 0, width, height, rgba: background }, ...foregrounds] };
 }

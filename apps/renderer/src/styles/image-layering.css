@@ -51,6 +51,9 @@
 .image-layering__view-controls button { padding: 5px 9px; border: 1px solid var(--gate-border); border-radius: 7px; color: var(--gate-muted); background: var(--gate-card); cursor: pointer; }
 .image-layering__view-controls button[aria-pressed='true'] { color: var(--gate-accent); background: var(--gate-preview-surface); }
 .image-layering__view-controls button:disabled { opacity: .45; cursor: default; }
+.image-layering__background-choice { display: grid; gap: 6px; padding: 9px; border: 1px solid var(--gate-border); border-radius: 9px; background: var(--gate-card); }
+.image-layering__background-choice .image-layering__view-controls { flex-wrap: wrap; }
+.image-layering__background-choice p { margin: 0; color: var(--gate-muted); font-size: 11px; line-height: 1.45; }
 .image-layering__source-preview { display: block; max-width: 100%; max-height: 180px; object-fit: contain; border-radius: 8px; }
 .image-layering__returned-thumbnail { width: 64px; height: 48px; object-fit: contain; grid-column: 1 / -1; }
 .image-layering__scope-preview { display: block; width: 100%; height: 100%; max-height: 172px; }

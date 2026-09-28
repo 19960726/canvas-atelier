@@ -870,6 +870,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
           layerNodes={project.nodes.filter((node): node is CanvasModuleNode => node.type === 'module'
             && node.data.moduleType === 'image_layer' && node.data.config.groupId === data.config.groupId)}
           onLayersChange={(layers) => persistImageLayeringRecords(id, layers)}
+          onBackgroundModeChange={(mode) => useAppStore.getState().updateImageLayeringBackgroundMode(id, project.id, mode)}
           onApplySourceBounds={(bounds) => persistSourceLayerBounds(id, project.id, bounds)}
           onRefineLayer={(nodeId, regions) => useAppStore.getState().refineImageLayer(nodeId, project.id, regions)}
           onRecheckLayer={(nodeId, assetId) => recheckImageLayer(nodeId, project.id, assetId)}

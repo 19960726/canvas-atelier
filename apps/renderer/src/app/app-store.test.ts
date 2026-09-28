@@ -8346,6 +8346,20 @@ describe('stable module graph commits', () => {
     expect(commit).toHaveBeenCalledTimes(action === 'stale-quality' ? 2 : 3);
   });
 
+  it('persists the selected full-background composition mode on the layering group', async () => {
+    const commit = vi.fn().mockImplementation(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true, project: request.nextProject, revision: request.baseRevision + 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    const group = createCanvasModuleNode('background-mode-group', 'image_layering', { x: 0, y: 0 });
+    group.data.config = { ...group.data.config, groupId: 'background-mode-group', pixelMode: 'source', layerSelection: { mode: 'whole' } };
+    const project = { ...createStarterProject(), nodes: [group], edges: [] };
+    useAppStore.setState({ project, saveStatus: 'saved' });
+    await useAppStore.getState().updateImageLayeringBackgroundMode(group.id, project.id, 'replace');
+    expect((useAppStore.getState().project.nodes.find(node => node.id === group.id) as CanvasModuleNode).data.config.backgroundMode).toBe('replace');
+    expect(commit).toHaveBeenCalledOnce();
+  });
+
   it.each(['align', 'recheck', 'stale-recheck'] as const)('builds queued layer %s from the latest acknowledged result', async (action) => {
     const firstAck = deferred<ProjectCommitResult>();
     const commit = vi.fn().mockReturnValueOnce(firstAck.promise)

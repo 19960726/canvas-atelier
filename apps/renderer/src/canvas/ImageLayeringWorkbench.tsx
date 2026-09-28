@@ -16,12 +16,13 @@ import {isShadowOnlyLayer} from '../app/shadow-layer-role';
 
 type ManagedImage = Pick<ProjectImageAssetSummary, 'assetId' | 'mediaType' | 'displayUrl'> & Partial<Pick<ProjectImageAssetSummary, 'width' | 'height'>>;
 
-export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs = [], onLayersChange, onRefreshJobs, onRetryJob, canRetryJob, onApplySourceBounds, onRecheckLayer, onRefineLayer }: {
+export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs = [], onLayersChange, onBackgroundModeChange, onRefreshJobs, onRetryJob, canRetryJob, onApplySourceBounds, onRecheckLayer, onRefineLayer }: {
   config: Readonly<Record<string, unknown>>;
   assets: readonly ManagedImage[];
   layerNodes?: readonly CanvasModuleNode[];
   jobs?: readonly ModelJob[];
   onLayersChange: (layers: LayeredImageRecord[]) => void | Promise<void>;
+  onBackgroundModeChange?: (mode: 'preserve' | 'replace') => Promise<void>;
   onRefreshJobs?: () => Promise<void>;
   onRetryJob?: (jobId: string) => Promise<void>;
   canRetryJob?: (job: ModelJob) => boolean;
@@ -34,6 +35,7 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
   const [exporting, setExporting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [switchingBackground, setSwitchingBackground] = useState(false);
   const [retryCandidateId, setRetryCandidateId] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const generatedConfig = useMemo(() => {
@@ -76,7 +78,7 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
   }).length;
   const sourceInput: SourceLayerInput | null = config.pixelMode === 'source' && parsed.document && sourceAsset && selection ? {
     sourceUrl: sourceAsset.displayUrl, width: sourceAsset.width ?? parsed.document.canvasWidth, height: sourceAsset.height ?? parsed.document.canvasHeight,
-    selection, layers: parsed.document.layers.map(layer => {
+    selection, backgroundMode: config.backgroundMode === 'replace' ? 'replace' : 'preserve', layers: parsed.document.layers.map(layer => {
       const layerConfig = layerNodes.find(node => node.data.config.layerId === layer.record.layerId)?.data.config;
       return { record: layer.record, url: layer.asset.displayUrl, bounds: layerConfig?.sourceBounds,
         preparedRgb: layerConfig?.pixelColorSpace === 'foreground',shadowOnly:isShadowOnlyLayer(layerConfig??{}),
@@ -125,6 +127,14 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     } catch (error) {
       setExportError(error instanceof Error ? error.message : '图层保存失败');
     }
+  };
+  const changeBackgroundMode = async (mode: 'preserve' | 'replace') => {
+    if (!onBackgroundModeChange || switchingBackground) return;
+    setSwitchingBackground(true);
+    setExportError(null);
+    try { await onBackgroundModeChange(mode); }
+    catch (error) { setExportError(error instanceof Error ? error.message : '背景模式保存失败'); }
+    finally { setSwitchingBackground(false); }
   };
   const moveLayer = (index: number, direction: -1 | 1) => {
     if (!layered || index === 0 || index + direction < 1 || index + direction >= layered.layers.length) return;
@@ -246,6 +256,16 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     {sourceAsset && <div className="image-layering__view-controls" role="group" aria-label="分层预览模式">
       <button type="button" aria-pressed={previewMode === 'original' || layered === null} onClick={() => setPreviewMode('original')}>原图</button>
       <button type="button" aria-pressed={previewMode === 'composite' && layered !== null} disabled={layered === null} onClick={() => setPreviewMode('composite')}>合成图</button>
+    </div>}
+    {config.pixelMode === 'source' && selection?.mode === 'whole' && onBackgroundModeChange && <div className="image-layering__background-choice">
+      <div className="image-layering__view-controls" role="group" aria-label="背景合成方式">
+        <button type="button" aria-pressed={config.backgroundMode !== 'replace'} disabled={switchingBackground || exporting}
+          onClick={() => { void changeBackgroundMode('preserve'); }}>保留原图背景</button>
+        <button type="button" aria-pressed={config.backgroundMode === 'replace'} disabled={switchingBackground || exporting}
+          onClick={() => { void changeBackgroundMode('replace'); }}>使用完整补全背景</button>
+      </div>
+      <p>{config.backgroundMode === 'replace' ? '整张使用补全背景；厨房场景可能与原图不同。前景保持原图坐标和尺寸。'
+        : '保留未被前景覆盖的原图背景；蒙版漏抠处可能留下残影。'}</p>
     </div>}
     {layered === null ? <div className="image-layering__empty">
       {sourceAsset && <img className="image-layering__source-preview" src={sourceAsset.displayUrl} alt="原图预览" draggable={false} />}

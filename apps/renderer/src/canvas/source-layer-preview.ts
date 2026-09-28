@@ -8,7 +8,7 @@ import type { ProjectImageAssetSummary } from '@agent-canvas/desktop-core';
 import {isShadowOnlyLayer} from '../app/shadow-layer-role';
 
 export interface SourceLayerInput {
-  sourceUrl: string; width: number; height: number; selection: unknown;
+  sourceUrl: string; width: number; height: number; selection: unknown; backgroundMode?: 'preserve' | 'replace';
   layers: { record: LayeredImageConfig['layers'][number]['record']; url: string; bounds: unknown; maskSpace?: 'source' | 'bounds'; preparedRgb?: boolean; shadowOnly?:boolean }[];
 }
 
@@ -39,12 +39,14 @@ export function sourceLayerInputFromNodes(config: Readonly<Record<string, unknow
       url: asset.displayUrl, bounds: node.data.config.sourceBounds, preparedRgb: node.data.config.pixelColorSpace === 'foreground',shadowOnly:isShadowOnlyLayer(node.data.config),
       maskSpace: node.data.config.maskSpace === 'source' ? 'source' : 'bounds' });
   }
-  return { sourceUrl: source.displayUrl, width, height, selection: config.layerSelection, layers };
+  return { sourceUrl: source.displayUrl, width, height, selection: config.layerSelection,
+    backgroundMode: config.backgroundMode === 'replace' ? 'replace' : 'preserve', layers };
 }
 
 export async function prepareSourceLayerDocument(input: SourceLayerInput) {
   return buildSourceLayerDocument({ width: input.width, height: input.height,
     source: await decodeLayerPixels(input.sourceUrl, input.width, input.height), selection: readLayeringSelection(input.selection),
+    backgroundMode: input.backgroundMode,
     layers: input.layers.map(({ record, url, bounds, maskSpace, preparedRgb,shadowOnly }) => ({ id: record.layerId, name: record.name, kind: record.kind, maskSpace, preparedRgb,shadowOnly,
       visible: record.visible, opacity: record.opacity,
       ...(record.kind === 'transparent' ? { bounds: boxSchema.parse(bounds) } : {}),

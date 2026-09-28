@@ -100,6 +100,26 @@ it('keeps original background pixels outside local foreground coverage', async (
     .toEqual([...source.slice((16 * width + 17) * 4, (16 * width + 17) * 4 + 4)]);
 });
 
+it('uses the entire clean donor for whole-image local refinement when background replacement is selected', async () => {
+  const width = 8, height = 8;
+  const source = new Uint8Array(width * height * 4), donor = new Uint8Array(source.length), object = new Uint8Array(source.length);
+  for (let pixel = 0; pixel < width * height; pixel++) {
+    source.set([180, 190, 200, 255], pixel * 4);
+    donor.set([20, 30, 40, 255], pixel * 4);
+  }
+  const center = (4 * width + 4) * 4;
+  source.set([220, 40, 20, 255], center); object.set([220, 40, 20, 255], center);
+  const document = await buildSourceLayerDocument({ width, height, source, selection: { mode: 'whole' }, backgroundMode: 'replace', layers: [
+    { id: 'bg', name: '背景', kind: 'background', visible: true, opacity: 1, load: async () => donor },
+    { id: 'object', name: '主体', kind: 'transparent', visible: true, opacity: 1, preparedRgb: true,
+      maskSpace: 'source', bounds: { x: .25, y: .25, width: .5, height: .5 }, load: async () => object },
+  ] });
+  expect([...document.layers[0]!.rgba]).toEqual([...donor]);
+  const composite = composeLayeredRgba(document);
+  expect([...composite.slice(center, center + 4)]).toEqual([220, 40, 20, 255]);
+  expect([...composite.slice(0, 4)]).toEqual([20, 30, 40, 255]);
+});
+
 it('keeps original edge pixels when source-space matte and generated background colors differ', async () => {
   const source = new Uint8Array(4 * 4 * 4).fill(255);
   const background = source.map((value, i) => i % 4 === 3 ? value : 0);

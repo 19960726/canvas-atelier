@@ -19,6 +19,16 @@ const layers: LayeredImageRecord[] = [
 afterEach(cleanup);
 
 describe('image layering workbench', () => {
+  it('saves the whole-image clean-background choice separately from the preview toggle', async () => {
+    const onBackgroundModeChange = vi.fn(async () => {});
+    render(<ImageLayeringWorkbench config={{ pixelMode: 'source', layerSelection: { mode: 'whole' }, sourceAssetId: base, layers: [] }}
+      assets={assets} onLayersChange={() => {}} onBackgroundModeChange={onBackgroundModeChange} />);
+    const choices = screen.getByRole('group', { name: '背景合成方式' });
+    expect(within(choices).getByRole('button', { name: '保留原图背景' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(within(choices).getByRole('button', { name: '使用完整补全背景' }));
+    await waitFor(() => expect(onBackgroundModeChange).toHaveBeenCalledWith('replace'));
+    expect(screen.getByRole('group', { name: '分层预览模式' })).toBeInTheDocument();
+  });
   it.each(['bounds', 'source'] as const)('exports %s masks using their own coordinate space and reconstructs source pixels', async (maskSpace) => {
     const sourcePixels = Uint8ClampedArray.from(Array.from({ length: 64 }, (_, i) => [i * 3, 60, 80, 255]).flat());
     const maskAlpha = maskSpace === 'source' ? 224 : 255;

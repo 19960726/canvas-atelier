@@ -2,6 +2,7 @@ import type { LayeredImageRecord } from './layered-image-config';
 import type { MattingRegion } from '@agent-canvas/desktop-core/preload-api';
 import { decodeLayerPixels, layerPixelsUrl } from './managed-layer-pixels';
 import { refineOwnedLayer } from './local-layer-refinement';
+import { readLayeringSelection } from './layering-selection';
 import type { LayerQualityVerdict } from './layering-quality';
 import { create } from 'zustand';
 import { flushEditorDrafts } from './editor-draft-boundary';
@@ -368,6 +369,7 @@ interface AppState {
   chatSkill: (input: SkillChatRequest) => Promise<ChatSkillBridgeResult>;
   draftImageLayering: (nodeId: string, projectId: string, draft: LayeringDraft) => Promise<boolean>;
   updateImageLayeringRecords: (nodeId: string, projectId: string, layers: LayeredImageRecord[]) => Promise<void>;
+  updateImageLayeringBackgroundMode: (nodeId: string, projectId: string, mode: 'preserve' | 'replace') => Promise<void>;
   updateImageLayerQuality: (nodeId: string, projectId: string, assetId: string, verdict: LayerQualityVerdict) => Promise<void>;
   updateImageLayerVisibility: (nodeId: string, projectId: string, visible: boolean) => Promise<void>;
   alignSourceLayers: (groupNodeId: string, projectId: string, bounds: Record<string, LayeringBox>) => Promise<void>;
@@ -1700,6 +1702,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   });
     });
     if (!saved) throw new Error('图层保存失败，请重试');
+  },
+  updateImageLayeringBackgroundMode: async (nodeId, projectId, mode) => {
+    const saved = await enqueueStableProjectOperation(set, get, async (commitNow) => {
+      const state = get();
+      if (state.project.id !== projectId) return true;
+      const node = state.project.nodes.find((item): item is CanvasModuleNode => item.type === 'module'
+        && item.id === nodeId && item.data.moduleType === 'image_layering');
+      if (!node) return true;
+      if (node.data.config.pixelMode !== 'source' || readLayeringSelection(node.data.config.layerSelection).mode !== 'whole') {
+        if (mode === 'replace') throw new Error('完整补全背景只适用于整图原图像素分层');
+      }
+      if ((node.data.config.backgroundMode === 'replace' ? 'replace' : 'preserve') === mode) return true;
+      const updated: CanvasModuleNode = { ...node, data: { ...node.data,
+        config: { ...node.data.config, backgroundMode: mode } } };
+      const transaction: ProjectTransaction = {
+        id: `image-layering-background-${nodeId}-${globalThis.crypto.randomUUID()}`,
+        label: 'Update image layering background',
+        operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: updated } }],
+      };
+      return commitNow(transaction);
+    });
+    if (!saved) throw new Error('背景模式保存失败，请重试');
   },
   updateImageLayerQuality: async (nodeId, projectId, assetId, verdict) => {
     const saved = await enqueueStableProjectOperation(set, get, async (commitNow) => {
