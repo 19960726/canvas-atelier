@@ -668,9 +668,11 @@ describe('generation history concurrent lifecycle', () => {
     await new Store(harness).ingest({ operationId: 'operation_ingest_aaaaaaaa', record, source: chunks(pngBytes) });
     const hashEntered = deferred<void>();
     const releaseHash = deferred<void>();
+    let capacityHashCalls = 0;
     const slow = new Store({
       ...harness,
       hashFile: async () => {
+        capacityHashCalls += 1;
         hashEntered.resolve();
         await releaseHash.promise;
         return record.output!.sha256;
@@ -691,6 +693,7 @@ describe('generation history concurrent lifecycle', () => {
     expect(committedBeforeAuditFinished).toBe(true);
     releaseHash.resolve();
     await expect(capacity).resolves.toMatchObject({ activeCount: 1 });
+    expect(capacityHashCalls).toBe(1);
     expect((await new Store(harness).list({ filters: { trashState: 'all' } })).records[0]!.favorite).toBe(true);
   }, 5_000);
 

@@ -131,6 +131,12 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    return () => { cancelled = true; };
+  }, [bridge, request]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (typeof bridge?.getCapacity !== 'function') return;
     void bridge.getCapacity()
       .then((nextCapacity) => {
         if (!cancelled) setCapacity(nextCapacity);
@@ -139,7 +145,7 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
         if (!cancelled) setCapacity(null);
       });
     return () => { cancelled = true; };
-  }, [bridge, request]);
+  }, [bridge]);
 
   useEffect(() => {
     let cancelled = false;

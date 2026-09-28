@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, test } from './helpers/e2e-test';
 import { e2eState, openEmptyApp, queueProjectImageImport } from './helpers/app';
 
 const evidenceDir = path.join(process.cwd(), 'work', 'qa-layering-user-image-20260924', 'final-r6');
-const sourcePath = path.join(process.cwd(), 'work', 'qa-layering-user-image-20260924', 'source-image.png');
+const sourcePath = process.env.CANVAS_USER_POSTER_FIXTURE ?? path.join(process.cwd(), 'work', 'qa-layering-user-image-20260924', 'source-image.png');
 const layerPlan = [
   { layerId: 'warm-background', kind: 'background', name: '暖灰色渐变背景', description: '补全海报的暖灰色背景，不含产品、文字或图形。', included: true },
   { layerId: 'podium', kind: 'transparent', name: '底部弧形展台', description: '画面底部的棕色弧形台面，不含产品本体。', included: true },
@@ -22,6 +23,7 @@ const layerPlan = [
 ] as const;
 
 test('uses the supplied poster pixels for a zero-credit layering flow and checks the visible node sockets', async ({ page }) => {
+  test.skip(!existsSync(sourcePath), 'Optional private poster is not in the repository; set CANVAS_USER_POSTER_FIXTURE to the original PNG (SHA-256 is checked).');
   test.setTimeout(120_000);
   await mkdir(evidenceDir, { recursive: true });
   const buffer = await readFile(sourcePath);
@@ -58,9 +60,7 @@ test('uses the supplied poster pixels for a zero-credit layering flow and checks
   expect(await names.evaluateAll((elements) => elements.map((element) => (element as HTMLInputElement).value)))
     .toEqual(layerPlan.map((layer) => layer.name));
   await page.screenshot({ path: path.join(evidenceDir, '02-user-poster-editable-plan.png'), fullPage: true });
-  await dialog.getByRole('button', { name: '下一步：确认生成' }).click();
-  await expect(dialog.getByRole('region', { name: '生成确认摘要' })).toBeVisible();
-  const confirmGeneration = dialog.getByRole('button', { name: '确认生成 12 层' });
+  const confirmGeneration = dialog.getByRole('button', { name: '下一步：确认生成' });
   await expect(confirmGeneration).toBeDisabled();
   await confirmGeneration.scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(evidenceDir, '03-user-poster-generation-blocked.png'), fullPage: true });

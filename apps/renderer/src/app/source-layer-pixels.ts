@@ -22,9 +22,24 @@ export function extractOriginalLayer(source: Uint8Array, mask: Uint8Array, width
       if ((x + .5) / width < bounds.x - marginX || (x + .5) / width > bounds.x + bounds.width + marginX
         || (y + .5) / height < bounds.y - marginY || (y + .5) / height > bounds.y + bounds.height + marginY) outsideAlpha += alpha;
     }
-    if (outsideAlpha > totalAlpha * .2) throw new Error('返回蒙版与标注的原图位置不符，请检查返图或校正位置；未自动拉伸物体');
+    if (outsideAlpha > totalAlpha * .2) {
+      // A provider matte can contain a second object outside the requested
+      // search box. Keep the requested object when the matte also has real
+      // coverage inside the box; discard only the out-of-scope alpha. A matte
+      // with no in-scope coverage remains a hard placement failure.
+      const canvasAlpha = width * height * 255;
+      if (outsideAlpha >= totalAlpha || totalAlpha >= canvasAlpha * .95) {
+        throw new Error('返回蒙版与标注的原图位置不符，请检查返图或校正位置；未自动拉伸物体');
+      }
+    }
     const result = source.slice();
     for (let i = 0; i < result.length; i += 4) {
+      const x = (i / 4) % width, y = Math.floor(i / 4 / width);
+      if ((x + .5) / width < bounds.x - marginX || (x + .5) / width > bounds.x + bounds.width + marginX
+        || (y + .5) / height < bounds.y - marginY || (y + .5) / height > bounds.y + bounds.height + marginY) {
+        result.fill(0, i, i + 4);
+        continue;
+      }
       result[i + 3] = Math.round(source[i + 3]! * mask[i + 3]! / 255);
       if (!result[i + 3]) result.fill(0, i, i + 4);
     }

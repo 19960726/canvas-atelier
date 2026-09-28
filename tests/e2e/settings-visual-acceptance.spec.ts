@@ -42,6 +42,12 @@ for (const width of [1680, 1024, 480]) {
       await page.getByTestId('settings-toggle').click();
       const drawer = page.getByTestId('settings-drawer');
       await expect(drawer).toBeVisible();
+      // Check interior surfaces as well as the outer drawer: legacy dark-mode
+      // rules previously left navy islands inside the graphite/mint theme.
+      const surface = theme === 'dark' ? 'rgb(32, 37, 35)' : 'rgb(253, 253, 251)';
+      await expect(drawer.locator('.settings-drawer__header')).toHaveCSS('background-color', surface);
+      await expect(drawer.locator('.settings-drawer__body')).toHaveCSS('background-color', surface);
+      await expect(drawer.locator('.settings-tabs')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
       const navigation = drawer.getByRole('tablist', { name: '设置分类' });
       const body = drawer.locator('.settings-drawer__body');
       const navBox = (await navigation.boundingBox())!;

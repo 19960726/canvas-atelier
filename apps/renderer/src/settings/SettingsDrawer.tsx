@@ -180,6 +180,9 @@ export function SettingsDrawer({
   const [message, setMessage] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<'idle' | 'checking' | ConnectionStatus>('idle');
   const [capacity, setCapacity] = useState<GenerationHistoryCapacityBridgeResult | null>(null);
+  const [capacityLoading, setCapacityLoading] = useState(false);
+  const [capacityError, setCapacityError] = useState<string | null>(null);
+  const [capacityRefresh, setCapacityRefresh] = useState(0);
   const [selectedProvider, setSelectedProvider] = useState<ProviderBridgeProvider>('comfly');
   const [activeProvider, setActiveProvider] = useState<ProviderBridgeProvider | null>(null);
   const [endpointDirty, setEndpointDirty] = useState(false);
@@ -290,18 +293,24 @@ export function SettingsDrawer({
   useEffect(() => subscribeMcpPermissions(setMcpPermissions), []);
 
   useEffect(() => {
+    if (activeTab !== 'storage' || !bridge?.history) return;
     let cancelled = false;
-    bridge?.history?.getCapacity()
+    setCapacityLoading(true);
+    setCapacityError(null);
+    bridge.history.getCapacity()
       .then((result) => {
         if (!cancelled) setCapacity(result);
       })
       .catch(() => {
-        if (!cancelled) setCapacity(null);
+        if (!cancelled) setCapacityError('容量读取失败，请稍后点击刷新重试。');
+      })
+      .finally(() => {
+        if (!cancelled) setCapacityLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [bridge?.history]);
+  }, [activeTab, bridge?.history, capacityRefresh]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1183,7 +1192,8 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
         </section>
 
         <section className="settings-section settings-local-storage settings-layer" aria-label="本地保存" data-testid="settings-storage-local-layer">
-          <header><span><Database size={16} /></span><div><strong>本地保存</strong><small>查看历史媒体占用与缓存存储路径。</small></div><button className="settings-section__secondary settings-storage-refresh" type="button" disabled={!bridge?.history} onClick={() => { void bridge?.history?.getCapacity().then(setCapacity); }}><span className="settings-action-content"><RefreshCw size={14} />刷新</span></button></header>
+          <header><span><Database size={16} /></span><div><strong>本地保存</strong><small>查看历史媒体占用与缓存存储路径。</small></div><button className="settings-section__secondary settings-storage-refresh" type="button" disabled={!bridge?.history || capacityLoading} onClick={() => setCapacityRefresh((value) => value + 1)}><span className="settings-action-content"><RefreshCw size={14} />{capacityLoading ? '读取中…' : '刷新'}</span></button></header>
+          {capacityError && <p role="alert">{capacityError}</p>}
           <label className="settings-cache-directory-field">
             <span>缓存存储路径</span>
             <input aria-label="当前缓存路径" value={cacheDirectory?.path ?? (bridge?.storage ? '正在读取…' : '仅桌面版可选择缓存路径')} readOnly />

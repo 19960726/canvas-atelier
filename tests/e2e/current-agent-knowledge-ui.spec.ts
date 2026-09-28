@@ -38,7 +38,7 @@ test('captures Agent bottom selectors and the Canvas reverse knowledge picker', 
 
   await page.getByTestId('agent-model-trigger').click();
   const modelPicker = page.getByRole('dialog', { name: '选择聊天模型' });
-  await expect(modelPicker).toHaveAttribute('data-anchor', 'composer-footer');
+  await expect(modelPicker).toHaveAttribute('data-anchor', 'reasoning');
   await page.screenshot({ path: artifact('ui-check-agent-model-picker-dark.png'), fullPage: true });
 
   await page.getByTestId('agent-toggle').click();

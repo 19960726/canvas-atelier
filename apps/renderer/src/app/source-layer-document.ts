@@ -25,8 +25,14 @@ export async function buildSourceLayerDocument(input: {
   const generated = await layers[0]!.load();
   if (generated.length !== source.length) throw new Error('背景补全尺寸与原图不一致');
   const coverage = new Uint8Array(width * height);
+  const edgeFallback = new Uint8Array(width * height);
   const foregrounds: LayeredPsdLayer[] = [];
   const objects=layers.slice(1).filter(layer=>!layer.shadowOnly);
+  // Provider source-space mattes must reconstruct original pixels when all
+  // layers are visible. Use the donor only under actual foreground coverage;
+  // applying donor feathering outside those mattes visibly changes the image.
+  // Locally prepared RGB layers use the separate donor repair path.
+  const allowEdgeFallback=objects.length>0&&objects.every(layer=>layer.preparedRgb || layer.maskSpace === 'source');
   const repair=objects.length>0&&objects.every(layer=>layer.preparedRgb);
   let totalBytes = source.length;
   // Legacy source-color masks must not duplicate the same source object into
@@ -37,8 +43,13 @@ export async function buildSourceLayerDocument(input: {
     if(repair&&layer.shadowOnly)continue;
     const mask = await layer.load();
     if (mask.length !== source.length) throw new Error('图层像素尺寸与原图不一致');
-    const rgba = applyLayerSelection(layer.preparedRgb ? mask.slice()
-      : extractOriginalLayer(source, mask, width, height, layer.bounds!, layer.maskSpace), width, height, selection);
+    let rgba: Uint8Array;
+    try {
+      rgba = applyLayerSelection(layer.preparedRgb ? mask.slice()
+        : extractOriginalLayer(source, mask, width, height, layer.bounds!, layer.maskSpace), width, height, selection);
+    } catch (error) {
+      throw new Error(`图层“${layer.name}”：${error instanceof Error ? error.message : '原图像素提取失败'}`);
+    }
     if (!rgba.some((value, index) => index % 4 === 3 && value > 0)) throw new Error(`图层“${layer.name}”在所选范围内没有可见像素，请校正原图位置`);
     for (let i = 0; i < coverage.length; i++) {
       const offset = i * 4;
@@ -51,13 +62,18 @@ export async function buildSourceLayerDocument(input: {
           // C = alpha * F + (1-alpha) * B. Copying C straight into a
           // translucent layer bakes the old backdrop in a second time.
           const alpha = rgba[offset + 3]! / 255;
+          let mismatch = false;
+          const corrected = [0, 1, 2].map(channel => Math.max(0, Math.min(255, Math.round(
+            (source[offset + channel]! - (1 - alpha) * generated[offset + channel]!) / alpha))));
           for (let channel = 0; channel < 3; channel++) {
-            rgba[offset + channel] = Math.max(0, Math.min(255, Math.round(
-              (source[offset + channel]! - (1 - alpha) * generated[offset + channel]!) / alpha)));
-            if (Math.abs(Math.round(alpha * rgba[offset + channel]! + (1 - alpha) * generated[offset + channel]!)
-              - source[offset + channel]!) > 1) {
-              throw new Error(`图层“${layer.name}”的透明蒙版与补全背景不匹配，无法保留原图颜色；请检查该层与背景返图`);
-            }
+            if (Math.abs(Math.round(alpha * corrected[channel]! + (1 - alpha) * generated[offset + channel]!)
+              - source[offset + channel]!) > 1) mismatch = true;
+          }
+          if (mismatch) {
+            if (!allowEdgeFallback) throw new Error(`图层“${layer.name}”的透明蒙版与补全背景不匹配，无法保留原图颜色；请检查该层与背景返图`);
+            edgeFallback[offset / 4] = 1;
+          } else {
+            for (let channel = 0; channel < 3; channel++) rgba[offset + channel] = corrected[channel]!;
           }
         }
       }
@@ -74,6 +90,14 @@ export async function buildSourceLayerDocument(input: {
     if (generated[offset + 3] !== 255) throw new Error('补全背景包含透明空洞，请重新检查背景层');
     background.set(generated.subarray(offset, offset + 4), offset);
   }
+  if (!repair) {
+    // A valid aligned source matte can still carry provider RGB that was
+    // composited over a different backdrop. Keep the original backdrop at
+    // those edge pixels without enabling the broader donor repair pass.
+    for (let i = 0, p = 0; i < edgeFallback.length; i += 1, p += 4) {
+      if (edgeFallback[i]) background.set(source.subarray(p, p + 4), p);
+    }
+  }
   if(repair){
     const erased=coverage.slice(),excluded=coverage.slice();
     for(const layer of layers.slice(1).filter(layer=>layer.shadowOnly)){
@@ -81,7 +105,14 @@ export async function buildSourceLayerDocument(input: {
       for(let y=Math.floor(b.y*height);y<Math.min(height,Math.ceil((b.y+b.height)*height));y++)for(let x=Math.floor(b.x*width);x<Math.min(width,Math.ceil((b.x+b.width)*width));x++)erased[y*width+x]=1;
     }
     for(let p=0;p<erased.length;p++)if(erased[p]&&generated[p*4+3]!==255)throw new Error('补全背景包含透明空洞，请重新检查背景层');
-    background=applyLayerSelection(repairLayerBackground(source,generated,width,height,erased),width,height,selection,source);
+    background=repairLayerBackground(source,generated,width,height,erased);
+    // At anti-aliased edges the foreground is original RGB with partial alpha.
+    // Keep the original backdrop at those pixels so source + matte reconstructs
+    // the original without baking the generated background into the edge.
+    for (let i = 0, p = 0; i < edgeFallback.length; i += 1, p += 4) {
+      if (edgeFallback[i]) background.set(source.subarray(p, p + 4), p);
+    }
+    background=applyLayerSelection(background,width,height,selection,source);
     for(const layer of layers.slice(1).filter(layer=>layer.shadowOnly).reverse()){
       const rgba=applyLayerSelection(extractShadowResidual(source,background,width,height,layer.bounds!,excluded),width,height,selection);
       for(let p=0;p<excluded.length;p++)if(rgba[p*4+3])excluded[p]=1;

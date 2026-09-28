@@ -2,6 +2,17 @@ import { expect, it } from 'vitest';
 import { composeLayeredRgba } from './layered-psd';
 import { buildSourceLayerDocument } from './source-layer-document';
 
+it('identifies the offending layer when its source-space mask exceeds its bounds', async () => {
+  const width = 32, height = 32, source = new Uint8Array(width * height * 4).fill(255);
+  const mask = new Uint8Array(source.length);
+  mask.set([255, 255, 255, 255], (28 * width + 28) * 4);
+  await expect(buildSourceLayerDocument({ width, height, source, selection: { mode: 'whole' }, layers: [
+    { id: 'bg', name: '背景', kind: 'background', visible: true, opacity: 1, load: async () => source },
+    { id: 'hand', name: '下方托握手部与手臂', kind: 'transparent', visible: true, opacity: 1,
+      maskSpace: 'source', bounds: { x: 0, y: 0, width: .3, height: .3 }, load: async () => mask },
+  ] })).rejects.toThrow(/下方托握手部与手臂.*原图位置不符/);
+});
+
 it('reconstructs a shadow from original pixels after local object refinement instead of a redrawn provider shadow',async()=>{
   const width=48,height=48,source=new Uint8Array(width*height*4),background=new Uint8Array(source.length),object=new Uint8Array(source.length),wrongShadow=new Uint8Array(source.length);
   for(let p=0;p<width*height;p++){source.set([200,180,160,255],p*4);background.set([180,160,140,255],p*4);}
@@ -57,15 +68,35 @@ it('exports a locally refined foreground without applying source color extractio
   expect([...isolated.slice((1*4+2)*4,(1*4+2)*4+4)]).toEqual([30,60,90,128]);
 });
 
-it('rejects incompatible partial-alpha and background pixels rather than silently changing source colors', async () => {
+it('keeps original edge pixels when source-space matte and generated background colors differ', async () => {
   const source = new Uint8Array(4 * 4 * 4).fill(255);
   const background = source.map((value, i) => i % 4 === 3 ? value : 0);
   const mask = source.map((value, i) => i % 4 === 3 ? 64 : value);
-  await expect(buildSourceLayerDocument({ width: 4, height: 4, source, selection: { mode: 'whole' }, layers: [
+  const doc = await buildSourceLayerDocument({ width: 4, height: 4, source, selection: { mode: 'whole' }, layers: [
     { id: 'bg', name: '背景', kind: 'background', visible: true, opacity: 1, load: async () => background },
     { id: 'glass', name: '玻璃', kind: 'transparent', visible: true, opacity: 1, maskSpace: 'source',
       bounds: { x: 0, y: 0, width: 1, height: 1 }, load: async () => mask },
-  ] })).rejects.toThrow(/玻璃.*蒙版.*背景/);
+  ] });
+  expect(composeLayeredRgba(doc)).toEqual(source);
+});
+
+it('keeps the full source image unchanged when a provider matte leaks beyond its annotated object', async () => {
+  const width = 16, height = 16;
+  const source = Uint8Array.from(Array.from({ length: width * height }, (_, i) => [i % 240, 80, 140, 255]).flat());
+  const donor = source.map((value, i) => i % 4 === 3 ? value : Math.min(255, value + 50));
+  const mask = new Uint8Array(source.length);
+  for (let y = 4; y < 8; y++) for (let x = 4; x < 8; x++) mask[(y * width + x) * 4 + 3] = 255;
+  mask[(6 * width + 8) * 4 + 3] = 128;
+  for (let y = 12; y < 16; y++) for (let x = 12; x < 16; x++) mask[(y * width + x) * 4 + 3] = 255;
+  const doc = await buildSourceLayerDocument({ width, height, source, selection: { mode: 'whole' }, layers: [
+    { id: 'bg', name: '背景', kind: 'background', visible: true, opacity: 1, load: async () => donor },
+    { id: 'object', name: '物体', kind: 'transparent', visible: true, opacity: 1, maskSpace: 'source',
+      bounds: { x: .2, y: .2, width: .4, height: .4 }, load: async () => mask },
+  ] });
+  const composite = composeLayeredRgba(doc);
+  for (let i = 0; i < source.length; i++) expect(Math.abs(composite[i]! - source[i]!)).toBeLessThanOrEqual(1);
+  const isolated = composeLayeredRgba({ ...doc, layers: doc.layers.map(layer => ({ ...layer, visible: layer.id === 'object' })) });
+  expect(isolated[(13 * width + 13) * 4 + 3]).toBe(0);
 });
 
 it('removes background color contribution from native partial-alpha mattes and retains source appearance', async () => {

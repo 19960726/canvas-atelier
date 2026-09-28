@@ -1,5 +1,40 @@
 # Canvas Atelier project memory
 
+## 2026-09-28 1.6.182 实际源图分层与安装版验收
+
+- 用户要求所有当前失败项逐项通过后才交付安装包，并将此顺序记入长期记忆；继续保护正在运行的 1.6.180 窗口、真实项目和已有素材，新增付费调用为零。
+- 水杯项目 revision 2728 的六层源空间返图中，下方握杯手部蒙版有 26.4% alpha 权重越出标注范围。现在保留标注区域内的原图像素、裁掉越界内容，不拉伸物体；纯越界或近乎全画布蒙版仍报位置错误。抗锯齿边缘若无法按补全背景反推颜色，则原图颜色与原图背景一起保留。实际六层组合成功。
+- 修复中增加逐像素验收，发现背景修复原先改变物体外侧约 39 万像素；最终对供应商源空间蒙版只在前景覆盖处使用补全背景。真实 2196×2196 水杯的六层 PSD 与原图比较，最大 RGB 差 1、超过 1 的像素为 0；六层像素及坐标经 ag-psd 回读一致。真实项目未写入，Photoshop 2026 打开六层 PSD 成功。证据：work/repair-182/current-water-composite-comparison.json、work/repair-181/current-water-six-layer-psd-receipt.json、work/repair-181/current-water-psd-photoshop.log。
+- 1.6.182 候选 EXE、app.asar 与外置 renderer 均建立独立 SHA-256 指纹。候选实际 UI 明暗设置、原图导入/保存/重载、250 条历史打开（1052 ms，主线程采样最大 173 ms）、MCP 14 工具、离线图片/视频/反推、四供应商配置及 Photoshop 智能对象检查通过。候选记录在 work/repair-182/；全部离线，未提交付费任务。
+- 最终 Vitest 4254/4254 通过，2 项按默认配置跳过的性能测试另行开启后 2/2 通过；完整 typecheck/build 通过。最终安装包位于 E:/画布项目/staging-canvas-build/formal-182-final-output/CanvasAtelier-Win10-11-x64-1.6.182.exe，353949115 字节，SHA-256 ea19ea3d66f0e950a932dd71ae633f442cb304ad9efb804161ed65e12253f745；latest.yml 的大小与 SHA-512 匹配。
+- 安装前确认正式目录无 GUI，仅有标准 MCP 桥接进程；NSIS 安装退出 0。安装目录的 EXE、app.asar 和外置 renderer 全部与最终候选同哈希。安装版 UI 首次隔离资料初始化时粘贴测试超时，资料稳定后同一安装版重试通过；MCP 14 工具、离线生图结果与重启、视频/反推、Photoshop 智能对象再次通过，页面错误和测试网络尝试均为 0。实际在线供应商生成未调用，不声称在线结果质量已验收。
+- 项目本地交付记录 work/repair-182/。公开远端发布仍以源码提交、安装包资产上传并核对远端 digest 为准；未核对前不得称已公开发布。
+
+## 2026-09-27 1.6.181 候选实际验收（未安装、未发布）
+
+- 候选目录：E:/画布项目/staging-canvas-build/formal-181-output/win-unpacked。最终修复额外发现生图编辑器的空 imageColorCorrections 对象触发无操作保存，使 MCP 确认期间 revision 变化。回归先红后绿，相关 631 项通过；完整 build/typecheck 与 EXE 图标验证通过。
+- 实际候选 MCP 14 工具、视频与反推链路、多供应商 GPT 返回/重启均通过，pageErrors 为空、离线执行器没有网络调用。旧 runner 的图片确认弹窗、默认中画质、控件数量假设过时，已在当前 work 副本适配既有产品约定，未改变生产权限策略。
+- 候选实际设置明暗颜色一致，原图导入/保存/reload、三种分层范围、250 条历史隔离副本打开验证通过；打开约 1051 ms，主线程最大采样间隔 425 ms。report: work/repair-181/packaged/packaged-receipt.json。必须比较独立 renderer 文件指纹，不能只比较 EXE/app.asar。
+- 实际 Photoshop 2026 已打开真实 2196×2196 三层 PSD 并核对图层；候选 public importToPhotoshop 智能对象适配、位置及清理检查也通过。仅测试自建文档，真实项目不改动。
+- 浏览器可用素材覆盖的 253 场景分轮通过；缺失私有海报素材的 1 场景显式跳过。压力测试原 trace DOM 快照干扰 250 ms 测量，关闭该 spec trace 后 6 组合均通过，保留性能门槛及截图证据。
+- 最终完整 Vitest 4252 通过、2 个可选性能测试跳过（291 文件通过），full-suite-181-final.log。当前用户仍运行正式 1.6.180；具体新安装包准备好后再请用户保存关闭，安装版验证前不发布。
+
+## 2026-09-27 设置混色与真实素材离线验证（继续中，未发布）
+
+- 用户新增要求：全画布功能验收、设置页更强调视觉层次与品牌感，验收后发布安装包；仍禁止新增付费调用。设置混色已复现：canvas-layout.css 深色旧选择器以更高优先级将标题/内容/导航列表写死为 #0f141d，而卡片读取灰绿主题变量。移除设置页旧规则并显式用 settings-paper 作为抽屉底色，浏览器回归先红后绿，3 宽度 × 明暗主题 6 项通过；保留灰绿/薄荷绿体系。
+- SettingsDrawer 现在只在存储页读取容量；刷新有忙状态、失败提示和重试，失败保留最近容量。新回归先红后绿；设置与样式共 147 项通过。全量基线 4250 通过、2 跳过；随后修改仍需最终回归。
+- work/repair-181/history-volume-receipt.json：只读复制真实 250 条/1.05 GB 历史到隔离目录，列表 275 ms、全库审计 1257 ms、并发收藏 747 ms；153 原文件各哈希一次，真实索引未改变。Windows nativeImage 异步缩略图探针比同步更慢，因此未替换生产实现，不能称首次打开所有性能问题完全消除。
+- 本地离线 matting 对真实下方手部和杯身输出原图 2196×2196，不透明像素差异 0；可见遮挡部分保持原图，不虚构补全被遮住的杯身。真实三层 PSD 31,289,882 字节，重新解码后每层像素、坐标、尺寸一致（real-psd-receipt.json）。这是导出与两层局部验证，原六层供应商返图仍质量失败。
+- 全量 254 项浏览器验收进行中，发现旧测试缺 sourceBounds、旧模型弹层 anchor 与当前界面不一致，正在修正并复测；压力测量须在不并行运行离线模型时复验。尚未正式构建、安装、发布，真实 GUI 保持运行。
+
+## 2026-09-27 1.6.180 后续分层与历史排查（未发布）
+
+- 只读核验现有水杯项目 revision 2695/2697：原图 2196×2196，六层返图 2880×2880；最新背景已完成格式检查。离线实际像素复现下方手部层包含杯身、越界 alpha 权重 26.512% 超过 20% 容差，触发整组合成失败。其他层未触发范围检查不等于语义正确。统一画布比对发现杯盖与杯身的生成结果改变了位置/尺度；杯盖橙色标记局部匹配估计 +96/+88 原图像素、局部尺度约 1.22，此结果不能描述为整层精确缩放率。指甲特征则原位，不能统一缩放修复。
+- 状态根因：独立 SourceForegroundPreview 的提取错误未传到节点，整组未就绪时依然绿色 completed。现通过有输入身份的错误回传阻断该状态；source-layer-document 为原位提取错误补充图层名称。保持现有位置/颜色保护，不拉伸、不放宽阈值。回归 SourceForegroundFailure.test.tsx、source-layer-document.test.ts 均先红后绿。
+- 历史根因：GenerationHistoryDrawer 的筛选 effect 每次重复完整容量审计；getCapacity 在仅收藏/引用元数据变化时也重做全库哈希。现将容量 effect 与筛选分离，文件清单未变时保留新元数据并复用本次审计；文件/回收站状态变化继续重新校验。GenerationHistoryDrawer.test.tsx、generation-history-store.test.ts 先红后绿，后者完整 42 项通过。
+- 验证命令：npm.cmd test -- apps/renderer/src/canvas/SourceForegroundFailure.test.tsx apps/renderer/src/history/GenerationHistoryDrawer.test.tsx apps/renderer/src/canvas/LayeringFailurePresentation.test.tsx apps/renderer/src/canvas/ImageLayerNodeWorkbench.test.tsx --maxWorkers=1（29 项）；npm.cmd test -- apps/renderer/src/app/source-layer-document.test.ts apps/renderer/src/app/source-layer-pixels.test.ts apps/renderer/src/canvas/source-layer-preview.test.tsx --maxWorkers=1（18 项）；历史存储整文件 42 项；npm.cmd run typecheck 通过。第一次沙箱内 esbuild spawn EPERM，经过自动审批的沙箱外测试才实际执行。
+- 诊断脚本和当前检查点在 work/repair-181/checkpoint.md、work/diagnose-source-layers-181.mjs、work/check-layer-geometry-181.mjs。没有新增付费调用，没有修改真实项目；尚未全量回归、正式构建、安装或发布。设置简化、首次历史开窗实际性能、真实正确蒙版和 PSD 文件验收仍待完成。
+
 ## 2026-09-15 多供应商模型目录复核与 4D 漏项修复
 
 - 四供应商实现均已重新核对：Comfly、RelayMe、巨轮 API 和 4D AI 都在 provider contract、主进程注册、设置页卡片和 renderer 目录路由中；设置页按供应商独立加载，不会因为当前优先供应商而隐藏其他站点。巨轮只暴露 `openai-video` 视频模型，4D 只暴露已通过端点证据的生图、视觉反推和对话模型。

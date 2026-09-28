@@ -1,6 +1,12 @@
 import { writeFile } from 'node:fs/promises';
 import { test, expect } from './helpers/e2e-test';
 import type { CDPSession, Page } from '@playwright/test';
+
+// Playwright's per-action DOM snapshotter runs on the measured renderer thread.
+// On 300-node graphs it adds hundreds of milliseconds to pointer gestures.
+// Keep the same 250 ms gate, observer evidence, screenshots and opt-in CPU
+// profiles, without measuring trace-recording work as application latency.
+test.use({ trace: 'off' });
 import {
   captureLayoutScreenshot,
   e2eState,

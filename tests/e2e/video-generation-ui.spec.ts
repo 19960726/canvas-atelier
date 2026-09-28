@@ -239,7 +239,7 @@ for (const theme of ['dark', 'light'] as const) {
     });
 
     await expect(videoNode).toHaveClass(/is-selected/u);
-    await expect(videoNode).toHaveCSS('border-top-color', 'rgb(24, 169, 153)');
+    await expect(videoNode).toHaveCSS('border-top-color', theme === 'dark' ? 'rgb(142, 213, 190)' : 'rgb(22, 116, 103)');
     await expect(videoNode).toHaveCSS('border-top-style', 'solid');
     await expect(videoNode).toHaveCSS('outline-style', 'none');
     await expect(videoNode).toHaveCSS('box-shadow', 'none');

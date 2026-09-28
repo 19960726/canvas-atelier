@@ -32,6 +32,17 @@ import type { LayeringRouteEvidence } from './layering-route-evidence';
 import * as managedLayerPixels from './managed-layer-pixels';
 
 describe('project optimization memory', () => {
+  it('keeps an untouched generation draft clean when the editor supplies an empty color map', async () => {
+    const node = createCanvasModuleNode('unchanged-image-draft', 'image_generation', { x: 0, y: 0 });
+    const draft = { prompt: 'Confirmed draft', modelRoute: 'qa/zero-cost-image', aspectRatio: '1:1', resolution: '2K', outputCount: 1 };
+    node.data.config = { ...draft };
+    const project = { ...createStarterProject(), nodes: [node], edges: [] };
+    useAppStore.setState({ project, saveStatus: 'saved' });
+    await expect(useAppStore.getState().draftGenerationNodeConfig(node.id, { ...draft, imageColorCorrections: {} })).resolves.toBe(true);
+    expect(useAppStore.getState().project).toBe(project);
+    expect(useAppStore.getState().saveStatus).toBe('saved');
+    expect((useAppStore.getState().project.nodes[0] as CanvasModuleNode).data.config).not.toHaveProperty('imageColorCorrections');
+  });
   it('audit state: active provider task can lose a successful local refinement', async()=>{
     const sourceId='a'.repeat(16),newId='b'.repeat(16);
     const node=createCanvasModuleNode('audit-running-layer','image_layer',{x:0,y:0});

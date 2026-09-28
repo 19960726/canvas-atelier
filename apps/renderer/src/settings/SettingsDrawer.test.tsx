@@ -15,6 +15,21 @@ afterEach(() => {
 });
 
 describe('SettingsDrawer', () => {
+  it('audits history only on the storage tab and handles refresh failure with a retry', async () => {
+    const result = { activeBytes: 100, activeCount: 1, trashBytes: 0, trashCount: 0, missingOrCorruptCount: 0 };
+    const getCapacity = vi.fn().mockResolvedValueOnce(result).mockRejectedValueOnce(new Error('audit unavailable')).mockResolvedValue(result);
+    window.novusDesktop = { history: { getCapacity } } as unknown as typeof window.novusDesktop;
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    expect(getCapacity).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: '存储与备份' }));
+    await screen.findByText('1 个有效媒体项');
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('容量读取失败');
+    expect(screen.getByText('1 个有效媒体项')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(getCapacity).toHaveBeenCalledTimes(3);
+  });
   it('exposes the Canvas settings heading, close control, and navigation with readable Chinese labels', () => {
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 

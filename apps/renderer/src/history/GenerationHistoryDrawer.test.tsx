@@ -18,6 +18,16 @@ afterEach(() => {
 });
 
 describe('GenerationHistoryDrawer', () => {
+  it('does not restart the full capacity audit when filters change', async () => {
+    const list = vi.fn(async () => ({ nextCursor: null, records: [], revision: 1, total: 0 }));
+    const getCapacity = vi.fn(async () => ({ activeBytes: 0, activeCount: 0, missingOrCorruptCount: 0, trashBytes: 0, trashCount: 0 }));
+    installHistoryBridge({ list, getCapacity });
+    render(<GenerationHistoryDrawer onClose={vi.fn()} />);
+    await waitFor(() => expect(getCapacity).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByRole('combobox', { name: '媒体类型' }), { target: { value: 'image' } });
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    expect(getCapacity).toHaveBeenCalledTimes(1);
+  });
   it('shows the signed-in RelayMe task center beside local canvas history', async () => {
     const listTasks = vi.fn(async () => ({
       tasks: [

@@ -183,13 +183,13 @@ test('checks local AI layering stages without a provider submission', async ({ p
     localFixtureOnly: true,
   }, null, 2), 'utf8');
   await page.screenshot({ path: path.join(auditDirectory, 'layering-stage-2-edit.png'), fullPage: true });
-  await dialog.getByRole('button', { name: '下一步：确认生成' }).click();
-  await expect(dialog.getByRole('region', { name: '生成确认摘要' })).toBeVisible();
-  const confirmGeneration = dialog.getByRole('button', { name: '确认生成 6 层' });
-  await expect(confirmGeneration).toBeDisabled();
-  await confirmGeneration.scrollIntoViewIfNeeded();
-  await writeFile(path.join(auditDirectory, 'layering-stage-3.json'), JSON.stringify(await captureControls(dialog), null, 2), 'utf8');
-  await page.screenshot({ path: path.join(auditDirectory, 'layering-stage-3-blocked-review.png'), fullPage: true });
+  // This fixture deliberately omits sourceBounds. Source-pixel layering now
+  // blocks review until foreground placement is supplied, before submission.
+  const reviewGeneration = dialog.getByRole('button', { name: '下一步：确认生成' });
+  await expect(reviewGeneration).toBeDisabled();
+  await reviewGeneration.scrollIntoViewIfNeeded();
+  await writeFile(path.join(auditDirectory, 'layering-position-required.json'), JSON.stringify(await captureControls(dialog), null, 2), 'utf8');
+  await page.screenshot({ path: path.join(auditDirectory, 'layering-position-required.png'), fullPage: true });
   await dialog.getByRole('button', { name: '关闭 AI 图片分层' }).click();
   expect((await e2eState(page)).modelSubmissions).toHaveLength(0);
   expect(externalRequests).toEqual([]);

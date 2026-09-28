@@ -1,13 +1,24 @@
 /* The settings page owns one calm surface per task. Keep provider navigation
    and the model directory legible without repeating filled cards at each level. */
-html body .workspace--canvas-layout .settings-drawer .settings-provider-overview.settings-layer {
+:root[data-theme] body .workspace--canvas-layout .settings-drawer .settings-provider-overview.settings-layer {
   margin: 4px 0 18px !important;
-  padding: 0 0 18px !important;
-  background: transparent !important;
-  border: 0 !important;
-  border-bottom: 1px solid var(--settings-line) !important;
-  border-radius: 0 !important;
+  padding: 16px 18px !important;
+  background: var(--settings-field) !important;
+  border: 1px solid var(--settings-line) !important;
+  border-left: 3px solid var(--settings-accent) !important;
+  border-radius: 12px !important;
   box-shadow: none !important;
+}
+html body .workspace--canvas-layout .settings-drawer :is(input, select) {
+  font-family: inherit !important;
+}
+html body .workspace--canvas-layout .settings-drawer .settings-page-heading > span {
+  color: var(--settings-accent);
+  font-weight: 600;
+}
+html body .workspace--canvas-layout .settings-drawer .settings-page-heading h2 {
+  font-size: 28px;
+  letter-spacing: -.025em;
 }
 html body .workspace--canvas-layout .settings-drawer .settings-provider-overview > header {
   gap: 12px;

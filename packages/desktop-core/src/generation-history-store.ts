@@ -616,7 +616,17 @@ export class GenerationHistoryStore {
       }));
       const audited = await this.auditAvailabilityOutsideLock(snapshot.records);
       const committed = await this.withLockedIndex(async (current, currentRaw) => {
-        if (current.revision !== snapshot.revision) return null;
+        if (current.revision !== snapshot.revision) {
+          const prior = new Map(snapshot.records.map(record => [record.id, record]));
+          // Favorites and project references do not change the audited files.
+          // Keep their latest metadata without rereading every original.
+          const sameFiles = current.records.length === snapshot.records.length && current.records.every(record => {
+            const before = prior.get(record.id);
+            return before !== undefined && canonicalJson(before.output) === canonicalJson(record.output)
+              && canonicalJson(before.trash) === canonicalJson(record.trash);
+          });
+          if (!sameFiles) return null;
+        }
         let changed = false;
         const records = current.records.map((record) => {
           if (record.output === null) return record;

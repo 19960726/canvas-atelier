@@ -27,6 +27,8 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
   const [assetLoadFailed, setAssetLoadFailed] = useState(false);
   const [validationSaveFailed, setValidationSaveFailed] = useState(false);
   const [retryValidation, setRetryValidation] = useState(0);
+  const [extractionFailure, setExtractionFailure] = useState<{ key: string; error: string | null } | null>(null);
+  const extractionKey = JSON.stringify([asset?.displayUrl, sourceAsset?.displayUrl, config.sourceBounds, config.layerSelection, config.maskSpace]);
   const validatingAsset = useRef<string | null>(null);
   const onQualityResultRef = useRef(onQualityResult);
   onQualityResultRef.current = onQualityResult;
@@ -70,7 +72,9 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
     };
   }, [validatePixels, asset, sourceAsset, config.canvasHeight, config.canvasWidth, config.pixelMode, config.layerSelection, config.qualityReason, config.qualityValidationVersion, layerKind, qualityStatus, resultAssetId, retryValidation]);
 
-  const status = backgroundPreview.error ? 'blocked' : job?.status === 'failed' || job?.status === 'cancelled' ? job.status
+  const extractionError = !sourceDocumentInput && config.pixelMode === 'source' && config.pixelColorSpace !== 'foreground'
+    && extractionFailure?.key === extractionKey ? extractionFailure.error : null;
+  const status = backgroundPreview.error || extractionError ? 'blocked' : job?.status === 'failed' || job?.status === 'cancelled' ? job.status
     : qualityStatus === 'failed' ? 'failed'
       : qualityStatus === 'passed' ? 'completed'
         : job?.status === 'submitting' || job?.status === 'running' ? 'running'
@@ -99,6 +103,7 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
             : <span role="status">{backgroundPreview.error ?? (sourceDocumentInput ? '正在保留原图背景像素…' : '等待前景蒙版完成背景补全')}</span>
           : config.pixelMode === 'source' && config.pixelColorSpace !== 'foreground' && layerKind === 'transparent' && sourceAsset
           ? <SourceForegroundPreview sourceUrl={sourceAsset.displayUrl} maskUrl={asset.displayUrl} bounds={config.sourceBounds} selection={scope}
+            onError={error => setExtractionFailure({ key: extractionKey, error })}
             maskSpace={config.maskSpace === 'source' ? 'source' : 'bounds'}
             width={sourceAsset.width ?? Number(config.canvasWidth)} height={sourceAsset.height ?? Number(config.canvasHeight)} label={`${layerName}图层预览`} />
           : <LayerScopePreview url={asset.displayUrl} sourceUrl={sourceAsset?.displayUrl} selection={scope} background={layerKind === 'background'}

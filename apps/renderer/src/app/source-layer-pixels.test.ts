@@ -19,6 +19,15 @@ describe('original pixel cutouts', () => {
     expect(cut[(4 * 8 + 4) * 4 + 3]).toBe(0);
     expect(Array.from(cut).filter((value, i) => i % 4 === 3 && value)).toHaveLength(2);
   });
+  it('clips a mixed matte to the annotated search area without rescaling the in-scope pixels', () => {
+    const source = new Uint8Array(16 * 16 * 4).fill(255);
+    const mask = new Uint8Array(source.length);
+    mask[(4 * 16 + 4) * 4 + 3] = 255;
+    mask[(15 * 16 + 15) * 4 + 3] = 255;
+    const cut = extractOriginalLayer(source, mask, 16, 16, { x: .125, y: .125, width: .5, height: .5 }, 'source');
+    expect(cut[(4 * 16 + 4) * 4 + 3]).toBe(255);
+    expect(cut[(15 * 16 + 15) * 4 + 3]).toBe(0);
+  });
   it('removes soft halo and isolated mask speckles before extracting source pixels', () => {
     const mask = new Uint8Array(7 * 7 * 4);
     for (let y = 2; y <= 4; y++) for (let x = 2; x <= 4; x++) mask[(y * 7 + x) * 4 + 3] = 255;

@@ -7896,6 +7896,7 @@ html body .workspace--canvas-layout .settings-drawer {
   --settings-muted: #65716b;
   --settings-accent: #167467;
   --settings-selected: #e4eeea;
+  background: var(--settings-paper) !important;
   --gate-card: var(--settings-paper);
   --gate-card-muted: var(--settings-field);
   --gate-border: var(--settings-line);

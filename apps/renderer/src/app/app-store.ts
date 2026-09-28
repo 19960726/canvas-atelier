@@ -1918,7 +1918,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         imageOutputFormat: nextImageQuality === undefined ? undefined : normalizeImageOutputFormat(config.imageOutputFormat),
         imageBackground: nextImageQuality === undefined ? undefined : normalizeImageBackground(config.imageBackground),
         ...(config.colorCorrection === undefined ? {} : { colorCorrection: config.colorCorrection }),
-        ...(config.imageColorCorrections === undefined ? {} : { imageColorCorrections: config.imageColorCorrections }),
+        // Mounting the editor normalizes an absent correction map to {}.
+        // That is not an edit: avoid invalidating an open MCP confirmation
+        // by scheduling an otherwise empty project revision.
+        ...(config.imageColorCorrections === undefined
+          || (node.data.config.imageColorCorrections === undefined && Object.keys(config.imageColorCorrections).length === 0)
+          ? {} : { imageColorCorrections: config.imageColorCorrections }),
       } : {}),
       outputCount: normalizeImageOutputCount(typeof config.outputCount === 'number' ? config.outputCount : undefined, node.data.moduleType === 'image_generation') ?? 1,
       ...(node.data.moduleType === 'video_generation' ? {
