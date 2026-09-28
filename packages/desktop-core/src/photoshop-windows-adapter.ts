@@ -14,7 +14,9 @@ import { createPhotoshopPlacementPayload } from './photoshop-script.js';
 const execFileAsync = promisify(execFile);
 const MINIMUM_PHOTOSHOP_MAJOR_VERSION = 13;
 const MAX_CORRECTED_IMAGE_SIDE = 8_192;
-const MAX_CORRECTED_IMAGE_PIXELS = 10_000_000;
+// 4096-square is the largest standard generated image. Its BGRA bitmap is
+// 64 MiB; larger corrections remain bounded out before reading that bitmap.
+const MAX_CORRECTED_IMAGE_PIXELS = 4_096 * 4_096;
 const MAX_CORRECTED_PNG_BYTES = 48 * 1024 * 1024;
 const MAX_CORRECTED_PNG_DATA_URL_CHARS = Math.ceil(MAX_CORRECTED_PNG_BYTES * 4 / 3) + 64;
 const DECODE_WEBP_TO_PNG_SCRIPT = `(() => {
@@ -196,11 +198,15 @@ export async function createNodePhotoshopTemporaryFiles(
   try {
     const jsxPath = join(directory, basename(options.jsxResourcePath));
     const payloadPath = join(directory, 'payload.json');
-    const placementPath = input.colorCorrection === undefined
+    const hasCorrection = input.colorCorrection !== undefined
+      && (input.colorCorrection.temperature !== 0 || input.colorCorrection.tint !== 0
+        || input.colorCorrection.saturation !== 100 || input.colorCorrection.contrast !== 100
+        || input.colorCorrection.brightness !== 100);
+    const placementPath = !hasCorrection
       ? input.absolutePath
       : join(directory, 'corrected.png');
     await copyFile(options.jsxResourcePath, jsxPath);
-    if (input.colorCorrection !== undefined) {
+    if (hasCorrection) {
       const correctedPngBytes = await createCorrectedPngFromManagedImage(
         input.absolutePath,
         input.mediaType,

@@ -24,6 +24,39 @@ describe('Electron clipboard image adapter', () => {
     expect(writeImage).toHaveBeenCalledWith(nativeImage);
   });
 
+  it('copies a decoded image without synchronously encoding it to PNG first', async () => {
+    const png = createSolidPng();
+    const toPNG = vi.fn(() => { throw new Error('Unexpected costly re-encode'); });
+    const nativeImage = {
+      getSize: () => ({ width: 4096, height: 4096 }),
+      isEmpty: () => false,
+      toPNG,
+    };
+    const writeImage = vi.fn();
+    const adapter = createElectronClipboardImageAdapter({ readImage: () => nativeImage, writeImage }, {
+      createFromBuffer: () => nativeImage,
+    });
+
+    await expect(adapter.writeImage!(png)).resolves.toBe(true);
+    expect(writeImage).toHaveBeenCalledWith(nativeImage);
+    expect(toPNG).not.toHaveBeenCalled();
+  });
+
+  it.each([{ width: 8193, height: 1 }, { width: 8192, height: 8192 }])(
+    'rejects decoded clipboard writes beyond supported dimensions: %o', async ({ width, height }) => {
+      const png = createSolidPng();
+      const nativeImage = { getSize: () => ({ width, height }), isEmpty: () => false, toPNG: vi.fn(() => png) };
+      const writeImage = vi.fn();
+      const adapter = createElectronClipboardImageAdapter({ readImage: () => nativeImage, writeImage }, {
+        createFromBuffer: () => nativeImage,
+      });
+
+      await expect(adapter.writeImage!(png)).resolves.toBe(false);
+      expect(writeImage).not.toHaveBeenCalled();
+      expect(nativeImage.toPNG).not.toHaveBeenCalled();
+    },
+  );
+
   it('returns only trusted PNG bytes, dimensions, and a safe label', async () => {
     const png = createSolidPng();
     const adapter = createElectronClipboardImageAdapter({

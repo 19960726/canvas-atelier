@@ -46,17 +46,27 @@ export function GeneratedImageActionMenu({
   const [photoshopResult, setPhotoshopResult] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const [copyError, setCopyError] = useState(false);
   const [downloadError, setDownloadError] = useState(false);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [downloadBusy, setDownloadBusy] = useState(false);
   const photoshopAvailability = getPhotoshopImportAvailability(asset, getActiveProjectSessionId());
   const copyImage = async () => {
-    const copied = await copyProjectImageToClipboard(asset, colorCorrection);
-    if (copied) {
-      onClose();
-      return;
+    if (copyBusy || downloadBusy) return;
+    setCopyBusy(true);
+    setCopyError(false);
+    try {
+      const copied = await copyProjectImageToClipboard(asset, colorCorrection);
+      if (copied) {
+        onClose();
+        return;
+      }
+      setCopyError(true);
+      window.dispatchEvent(new CustomEvent('novus:clipboard-image-error'));
+    } finally {
+      setCopyBusy(false);
     }
-    setCopyError(true);
-    window.dispatchEvent(new CustomEvent('novus:clipboard-image-error'));
   };
   const downloadImage = async () => {
+    if (copyBusy || downloadBusy) return;
     if (colorCorrection.mode === 'original') {
       const link = document.createElement('a');
       link.href = asset.displayUrl;
@@ -65,6 +75,8 @@ export function GeneratedImageActionMenu({
       onClose();
       return;
     }
+    setDownloadBusy(true);
+    setDownloadError(false);
     try {
       const blob = await renderImageColorCorrectionBlob(asset.displayUrl, colorCorrection);
       const url = URL.createObjectURL(blob);
@@ -72,10 +84,14 @@ export function GeneratedImageActionMenu({
       link.href = url;
       link.download = `${asset.label || 'generated-image'}-corrected.png`;
       link.click();
-      URL.revokeObjectURL(url);
+      // Electron starts the download after the click returns. Keep the blob
+      // alive until Chromium has had time to consume its object URL.
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
       onClose();
     } catch {
       setDownloadError(true);
+    } finally {
+      setDownloadBusy(false);
     }
   };
   const importToPhotoshop = async () => {
@@ -115,8 +131,8 @@ export function GeneratedImageActionMenu({
         <ImageIcon aria-hidden="true" size={17} />
         {photoshopBusy ? '正在导入…' : '导入 Photoshop（智能对象）'}
       </button>
-      <button type="button" role="menuitem" onClick={() => { void copyImage(); }}><Copy aria-hidden="true" size={17} />复制图片</button>
-      <button type="button" role="menuitem" onClick={() => { void downloadImage(); }}><Download aria-hidden="true" size={17} />下载图片</button>
+      <button type="button" role="menuitem" disabled={copyBusy || downloadBusy} onClick={() => { void copyImage(); }}><Copy aria-hidden="true" size={17} />{copyBusy ? '正在复制…' : '复制图片'}</button>
+      <button type="button" role="menuitem" disabled={copyBusy || downloadBusy} onClick={() => { void downloadImage(); }}><Download aria-hidden="true" size={17} />{downloadBusy ? '正在准备下载…' : '下载图片'}</button>
       {photoshopResult !== null && (
         <p className={`generated-image-action-menu__notice is-${photoshopResult.kind}`} role={photoshopResult.kind === 'success' ? 'status' : 'alert'}>
           {photoshopResult.message}

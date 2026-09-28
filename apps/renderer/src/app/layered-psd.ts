@@ -2,7 +2,7 @@ import { writePsdUint8Array, type Layer, type Psd } from 'ag-psd';
 
 export interface LayeredPsdLayer {
   readonly id: string;
-  readonly kind: 'background' | 'transparent';
+  readonly kind: 'background' | 'transparent' | 'alternate-background';
   readonly name: string;
   readonly x: number;
   readonly y: number;
@@ -16,7 +16,7 @@ export interface LayeredPsdLayer {
 export interface LayeredPsdDocument {
   readonly width: number;
   readonly height: number;
-  /** Bottom to top, with one genuine background layer first. */
+  /** Bottom to top, with one genuine background layer first. A draft may include one alternate background. */
   readonly layers: readonly LayeredPsdLayer[];
 }
 
@@ -98,9 +98,11 @@ export function validateLayeredDocument(document: LayeredPsdDocument): void {
     || document.width * document.height * 4 > MAX_PIXEL_BYTES) {
     throw new Error('Layered PSD canvas dimensions are invalid');
   }
-  if (document.layers.length < 2 || document.layers.length > 17
+  const foregrounds = document.layers.slice(1).filter(layer => layer.kind === 'transparent');
+  const alternates = document.layers.slice(1).filter(layer => layer.kind === 'alternate-background');
+  if (foregrounds.length < 1 || foregrounds.length > 16 || alternates.length > 1
     || document.layers[0]?.kind !== 'background'
-    || document.layers.slice(1).some(layer => layer.kind !== 'transparent')) {
+    || document.layers.slice(1).some(layer => layer.kind !== 'transparent' && layer.kind !== 'alternate-background')) {
     throw new Error('Layered PSD requires one background and 1–16 transparent layers');
   }
   const seen = new Set<string>();
@@ -129,6 +131,10 @@ export function validateLayeredDocument(document: LayeredPsdDocument): void {
         if (layer.rgba[index] !== 255) { hasTransparency = true; break; }
       }
       if (!hasTransparency) throw new Error('Layered PSD transparent layer has no alpha');
+    }
+    if (layer.kind === 'alternate-background' && (layer.x !== 0 || layer.y !== 0
+      || layer.width !== document.width || layer.height !== document.height)) {
+      throw new Error('Layered PSD alternate background must cover the canvas');
     }
   }
 }

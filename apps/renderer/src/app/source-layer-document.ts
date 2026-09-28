@@ -166,3 +166,48 @@ export async function buildSourceLayerDocument(input: {
   foregrounds.sort((a,b)=>layers.findIndex(layer=>layer.id===a.id)-layers.findIndex(layer=>layer.id===b.id));
   return { width, height, layers: [{ ...layers[0]!, x: 0, y: 0, width, height, rgba: background }, ...foregrounds] };
 }
+
+/** An editable handoff for a failed provider matte. It never claims the masks compose correctly. */
+export async function buildDraftSourceLayerDocument(input: Parameters<typeof buildSourceLayerDocument>[0]): Promise<LayeredPsdDocument> {
+  const { width, height, source, layers, selection } = input;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 8192 || height > 8192
+    || source.length !== width * height * 4 || source.length > 128 * 1024 * 1024) throw new Error('原图尺寸超出当前分层处理范围');
+  if (layers.length < 2 || layers[0]?.kind !== 'background' || layers.slice(1).some(layer => layer.kind !== 'transparent'))
+    throw new Error('待修整 PSD 需要原图和至少一个前景返图');
+  for (let i = 3; i < source.length; i += 4) if (source[i] !== 255) throw new Error('待修整 PSD 需要不透明原图');
+  const existingIds = new Set(layers.map(layer => layer.id));
+  let originalId = 'source-original';
+  while (existingIds.has(originalId)) originalId += '-copy';
+  const background = await layers[0]!.load();
+  if (background.length !== source.length) throw new Error('补全背景尺寸与原图不一致');
+  const output: LayeredPsdLayer[] = [
+    { id: originalId, name: '原图对照（返图待修整）', kind: 'background',
+      x: 0, y: 0, width, height, visible: true, opacity: 1, rgba: source.slice() },
+    { id: layers[0]!.id, name: `${layers[0]!.name}（补全背景候选）`, kind: 'alternate-background',
+      x: 0, y: 0, width, height, visible: false, opacity: 1,
+      rgba: applyLayerSelection(background.slice(), width, height, selection, source) },
+  ];
+  let bytes = source.length + background.length;
+  if (bytes > 256 * 1024 * 1024) throw new Error('待修整 PSD 的图层像素总量超过 256 MiB');
+  for (const layer of layers.slice(1)) {
+    if (!layer.bounds) throw new Error(`图层“${layer.name}”缺少原图位置`);
+    const mask = await layer.load();
+    if (mask.length !== source.length) throw new Error(`图层“${layer.name}”像素尺寸与原图不一致`);
+    let rgba: Uint8Array;
+    if (layer.preparedRgb) rgba = mask.slice();
+    else if (layer.maskSpace === 'source') {
+      rgba = source.slice();
+      for (let i = 0; i < rgba.length; i += 4) {
+        rgba[i + 3] = Math.round(source[i + 3]! * mask[i + 3]! / 255);
+        if (!rgba[i + 3]) rgba.fill(0, i, i + 4);
+      }
+    } else rgba = extractOriginalLayer(source, mask, width, height, layer.bounds, layer.maskSpace);
+    rgba = applyLayerSelection(rgba, width, height, selection);
+    const trimmed = trimTransparentLayer({ ...layer, id: layer.id, name: `${layer.name}（待修整）`, kind: 'transparent',
+      x: 0, y: 0, width, height, visible: false, rgba });
+    bytes += trimmed.rgba.length;
+    if (bytes > 256 * 1024 * 1024) throw new Error('待修整 PSD 的图层像素总量超过 256 MiB');
+    output.push(trimmed);
+  }
+  return { width, height, layers: output };
+}

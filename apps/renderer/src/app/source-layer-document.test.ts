@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
-import { composeLayeredRgba } from './layered-psd';
-import { buildSourceLayerDocument } from './source-layer-document';
+import { composeLayeredRgba, encodeLayeredPsd } from './layered-psd';
+import { buildDraftSourceLayerDocument, buildSourceLayerDocument } from './source-layer-document';
 
 it('identifies the offending layer when its source-space mask exceeds its bounds', async () => {
   const width = 32, height = 32, source = new Uint8Array(width * height * 4).fill(255);
@@ -24,6 +24,62 @@ it('rejects source-space provider mattes that duplicate most of another independ
     { id: 'bg', name: '背景', kind: 'background', visible: true, opacity: 1, load: async () => source },
     make('cup', '杯身', first), make('hand', '握杯手部', second),
   ] })).rejects.toThrow(/杯身.*握杯手部.*内容重叠/);
+});
+
+it('preserves overlapping provider masks as hidden editable layers over the original in a draft PSD', async () => {
+  const width = 8, height = 8, source = new Uint8Array(width * height * 4);
+  const background = new Uint8Array(source.length);
+  const first = new Uint8Array(source.length), second = new Uint8Array(source.length);
+  for (let p = 0; p < width * height; p++) {
+    source.set([p + 10, 70, 90, 255], p * 4);
+    background.set([20, 30, 40, 255], p * 4);
+  }
+  for (let y = 2; y < 6; y++) for (let x = 2; x < 6; x++) {
+    first[(y * width + x) * 4 + 3] = 255;
+    second[(y * width + x) * 4 + 3] = 255;
+  }
+  const layers = [
+    { id: 'bg', name: '背景返图', kind: 'background' as const, visible: true, opacity: 1, load: async () => background },
+    { id: 'source-original', name: '杯身', kind: 'transparent' as const, visible: true, opacity: 1,
+      maskSpace: 'source' as const, bounds: { x: .25, y: .25, width: .5, height: .5 }, load: async () => first },
+    { id: 'hand', name: '握杯手部', kind: 'transparent' as const, visible: true, opacity: 1,
+      maskSpace: 'source' as const, bounds: { x: .25, y: .25, width: .5, height: .5 }, load: async () => second },
+  ];
+  await expect(buildSourceLayerDocument({ width, height, source, selection: { mode: 'whole' }, layers }))
+    .rejects.toThrow(/内容重叠/);
+  const draft = await buildDraftSourceLayerDocument({ width, height, source, selection: { mode: 'whole' }, layers });
+  expect(draft.layers.map(layer => [layer.id, layer.visible, layer.kind])).toEqual([
+    ['source-original-copy', true, 'background'], ['bg', false, 'alternate-background'],
+    ['source-original', false, 'transparent'], ['hand', false, 'transparent'],
+  ]);
+  expect([...composeLayeredRgba(draft)]).toEqual([...source]);
+  expect([...composeLayeredRgba({ ...draft, layers: draft.layers.map(layer => ({ ...layer,
+    visible: layer.kind === 'alternate-background' })) })]).toEqual([...background]);
+  expect(() => encodeLayeredPsd(draft)).not.toThrow();
+  for (const layer of draft.layers.slice(2)) {
+    expect(layer.name).toContain('待修整');
+    const pixel = (3 - layer.y) * layer.width + 3 - layer.x;
+    expect([...layer.rgba.slice(pixel * 4, pixel * 4 + 4)]).toEqual([...source.slice((3 * width + 3) * 4, (3 * width + 3) * 4 + 4)]);
+  }
+});
+
+it('keeps the original outside a selected region in the draft background candidate', async () => {
+  const width = 8, height = 8;
+  const source = new Uint8Array(width * height * 4), background = new Uint8Array(source.length), mask = new Uint8Array(source.length);
+  for (let pixel = 0; pixel < width * height; pixel++) {
+    source.set([20, 30, 40, 255], pixel * 4);
+    background.set([100, 110, 120, 255], pixel * 4);
+  }
+  mask.set([255, 255, 255, 255], (3 * width + 3) * 4);
+  const draft = await buildDraftSourceLayerDocument({ width, height, source,
+    selection: { mode: 'region', box: { x: .25, y: .25, width: .5, height: .5 } }, layers: [
+      { id: 'bg', name: '背景', kind: 'background', visible: true, opacity: 1, load: async () => background },
+      { id: 'object', name: '物体', kind: 'transparent', visible: true, opacity: 1,
+        maskSpace: 'source', bounds: { x: .25, y: .25, width: .5, height: .5 }, load: async () => mask },
+    ] });
+  const candidate = draft.layers[1]!.rgba;
+  expect([...candidate.slice(0, 4)]).toEqual([20, 30, 40, 255]);
+  expect([...candidate.slice((3 * width + 3) * 4, (3 * width + 3) * 4 + 4)]).toEqual([100, 110, 120, 255]);
 });
 
 it('reconstructs a shadow from original pixels after local object refinement instead of a redrawn provider shadow',async()=>{

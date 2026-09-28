@@ -19,6 +19,84 @@ const layers: LayeredImageRecord[] = [
 afterEach(cleanup);
 
 describe('image layering workbench', () => {
+  it.each([
+    { label: 'provider masks overlap', brokenBackground: false, issue: /图层内容重叠，暂不能正式合成或导出正式 PSD/ },
+    { label: 'returned background has a hole', brokenBackground: true, issue: /图片已返回，合成暂不可用/ },
+  ])('opens an editable draft PSD when $label', async ({ brokenBackground, issue }) => {
+    const width = 20, height = 20;
+    const sourcePixels = Uint8ClampedArray.from(Array.from({ length: width * height }, (_, i) => [i % 180 + 40, 70, 90, 255]).flat());
+    const backgroundPixels = sourcePixels.slice();
+    if (brokenBackground) backgroundPixels[3] = 0;
+    const maskPixels = Uint8ClampedArray.from(Array.from({ length: width * height }, (_, i) => {
+      const x = i % width, y = Math.floor(i / width);
+      return [255, 0, 0, x >= 4 && x < 16 && y >= 4 && y < 16 ? 255 : 0];
+    }).flat());
+    class TestImage { naturalWidth = width; naturalHeight = height; crossOrigin = ''; src = ''; decode() { return Promise.resolve(); } }
+    vi.stubGlobal('Image', TestImage);
+    const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function(this: HTMLCanvasElement) {
+      let url = '';
+      return { imageSmoothingEnabled: true, imageSmoothingQuality: 'high',
+        createImageData: (canvasWidth: number, canvasHeight: number) => ({ width: canvasWidth, height: canvasHeight,
+          data: new Uint8ClampedArray(canvasWidth * canvasHeight * 4) }), putImageData: () => {},
+        drawImage: (image: TestImage) => { url = image.src; },
+        getImageData: () => ({ data: url.includes(subject) || url.includes(glass) ? maskPixels
+          : url.includes(base) ? backgroundPixels : sourcePixels }),
+      } as never;
+    });
+    const open = vi.fn(async (_bytes: Uint8Array) => ({ ok: true as const }));
+    const previous = window.novusDesktop;
+    Object.defineProperty(window, 'novusDesktop', { configurable: true, value: { projectImages: { openLayeredPsdInPhotoshop: open } } });
+    try {
+      const planLayers = layers.map(record => ({ ...record }));
+      const nodes = planLayers.map(record => {
+        const node = createCanvasModuleNode(record.layerId, 'image_layer', { x: 0, y: 0 });
+        node.data.config = { ...node.data.config, layerId: record.layerId, resultAssetId: record.assetId,
+          qualityStatus: 'passed', ...(record.kind === 'transparent'
+            ? { maskSpace: 'source', sourceBounds: { x: .1, y: .1, width: .8, height: .8 } } : {}) };
+        return node;
+      });
+      render(<ImageLayeringWorkbench config={{ canvasWidth: width, canvasHeight: height, sourceAssetId: 'source',
+        planLayers, pixelMode: 'source', layerSelection: { mode: 'whole' },
+        backgroundMode: brokenBackground ? 'replace' : 'preserve' }}
+        assets={[...assets, { assetId: 'source', mediaType: 'image/png', displayUrl: 'source-url', width, height }]}
+        layerNodes={nodes} onLayersChange={() => {}} />);
+      await waitFor(() => expect(screen.getByText(issue)).toBeVisible());
+      expect(screen.getByRole('button', { name: '导出 PSD' })).toBeDisabled();
+      const draft = screen.getByRole('button', { name: '在 Photoshop 中打开待修整 PSD' });
+      expect(draft).toBeEnabled();
+      fireEvent.click(draft);
+      await waitFor(() => expect(open).toHaveBeenCalledOnce());
+      const psd = readPsd(open.mock.calls[0]![0], { useImageData: true });
+      expect(psd.children).toHaveLength(4);
+      expect(psd.children!.filter(layer => layer.hidden)).toHaveLength(3);
+      expect(psd.children!.some(layer => layer.name?.includes('补全背景候选'))).toBe(true);
+      expect([...psd.imageData!.data]).toEqual([...sourcePixels]);
+    } finally { context.mockRestore(); vi.unstubAllGlobals(); Object.defineProperty(window, 'novusDesktop', { configurable: true, value: previous }); }
+  });
+  it('does not offer a draft PSD when a returned foreground has no source position', async () => {
+    class TestImage { naturalWidth = 8; naturalHeight = 8; crossOrigin = ''; src = ''; decode() { return Promise.resolve(); } }
+    vi.stubGlobal('Image', TestImage);
+    const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage: () => {}, getImageData: () => ({ data: new Uint8ClampedArray(8 * 8 * 4).fill(255) }),
+    } as never);
+    try {
+      const planLayers = layers.slice(0, 2).map(record => ({ ...record }));
+      const nodes = planLayers.map(record => {
+        const node = createCanvasModuleNode(record.layerId, 'image_layer', { x: 0, y: 0 });
+        node.data.config = { ...node.data.config, layerId: record.layerId, resultAssetId: record.assetId,
+          qualityStatus: 'passed', ...(record.kind === 'transparent' ? { maskSpace: 'source' } : {}) };
+        return node;
+      });
+      render(<ImageLayeringWorkbench config={{ canvasWidth: 8, canvasHeight: 8, sourceAssetId: 'source',
+        planLayers, pixelMode: 'source', layerSelection: { mode: 'whole' } }}
+        assets={[...assets, { assetId: 'source', mediaType: 'image/png', displayUrl: 'source-url', width: 8, height: 8 }]}
+        layerNodes={nodes} onLayersChange={() => {}} />);
+      await waitFor(() => expect(screen.getByText(/分层结果无效|图层处理失败/u)).toBeVisible());
+      expect(screen.queryByRole('button', { name: '导出待修整 PSD' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '在 Photoshop 中打开待修整 PSD' })).not.toBeInTheDocument();
+      expect(screen.queryByText(/可导出待修整 PSD/u)).not.toBeInTheDocument();
+    } finally { context.mockRestore(); vi.unstubAllGlobals(); }
+  });
   it('saves the whole-image clean-background choice separately from the preview toggle', async () => {
     const onBackgroundModeChange = vi.fn(async () => {});
     render(<ImageLayeringWorkbench config={{ pixelMode: 'source', layerSelection: { mode: 'whole' }, sourceAssetId: base, layers: [] }}

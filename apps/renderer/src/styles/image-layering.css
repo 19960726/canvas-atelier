@@ -400,8 +400,27 @@ html body .workspace--canvas-layout .module-node.module-node--has-media:is([data
   background: color-mix(in srgb, var(--gate-card) 94%, transparent) !important;
   box-shadow: 0 4px 16px rgb(15 23 42 / 14%) !important;
   transform: translateX(-50%) !important;
-  pointer-events: auto !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  transition: opacity 140ms ease, visibility 0s linear 140ms;
   backdrop-filter: blur(12px);
+}
+
+html body .workspace--canvas-layout .module-node.module-node--has-media:is([data-module-type='image_input'], [data-module-type='upload_image']):is(:hover, :focus-within) > .module-node__material-toolbar {
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+  transition-delay: 0s;
+}
+
+html body .workspace--canvas-layout .module-node.module-node--has-media:is([data-module-type='image_input'], [data-module-type='upload_image']) > .module-node__material-toolbar::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 8px;
 }
 
 html body .workspace--canvas-layout .module-node.module-node--has-media:is([data-module-type='image_input'], [data-module-type='upload_image']) > .module-node__material-toolbar .image-layering__tool-icon {

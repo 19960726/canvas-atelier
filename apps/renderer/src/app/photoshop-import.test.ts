@@ -108,6 +108,19 @@ describe('Photoshop renderer import client', () => {
     expect(importToPhotoshop.mock.calls[0]?.[0]).not.toHaveProperty('correctedPngBytes');
   });
 
+  it('keeps a neutral automatic correction on the managed original path', async () => {
+    const importToPhotoshop = vi.fn().mockResolvedValue({ ok: true, layerName: 'Generated image' });
+    vi.mocked(resolveImageColorCorrection).mockResolvedValue(AUTO_IMAGE_COLOR_CORRECTION);
+    window.novusDesktop = desktopBridgeWithPhotoshop(importToPhotoshop);
+
+    await expect(importGeneratedImageToPhotoshop(generatedImage, 'session-1', AUTO_IMAGE_COLOR_CORRECTION))
+      .resolves.toEqual({ ok: true, layerName: 'Generated image' });
+    expect(importToPhotoshop).toHaveBeenCalledWith({
+      assetId: generatedImage.assetId,
+      sessionId: 'session-1',
+    });
+  });
+
   it('does not call the bridge when the asset is unavailable', async () => {
     const importToPhotoshop = vi.fn();
     window.novusDesktop = desktopBridgeWithPhotoshop(importToPhotoshop);

@@ -44,7 +44,10 @@ export function createElectronClipboardImageAdapter(
         const image = fileImages.createFromBuffer(bytes);
         if (image.isEmpty()) return false;
         const size = image.getSize();
-        if (trustedClipboardPng(image.toPNG(), size.width, size.height) === null) return false;
+        if (!isAllowedDimension(size.width) || !isAllowedDimension(size.height)
+          || size.width * size.height > MAX_CLIPBOARD_IMAGE_PIXELS) return false;
+        // The native image is already decoded. toPNG() re-encodes the whole
+        // bitmap synchronously on Electron's main thread before writeImage().
         clipboard.writeImage(image);
         return true;
       } catch {

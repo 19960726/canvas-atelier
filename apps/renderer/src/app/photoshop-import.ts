@@ -51,10 +51,14 @@ export async function importGeneratedImageToPhotoshop(
     const resolvedCorrection = colorCorrection === undefined || colorCorrection.mode === 'original'
       ? undefined
       : await resolveImageColorCorrection(asset.displayUrl, colorCorrection);
+    const hasCorrection = resolvedCorrection !== undefined
+      && (resolvedCorrection.temperature !== 0 || resolvedCorrection.tint !== 0
+        || resolvedCorrection.saturation !== 100 || resolvedCorrection.contrast !== 100
+        || resolvedCorrection.brightness !== 100);
     return await window.novusDesktop!.projectImages.importToPhotoshop({
       assetId: asset.assetId,
       sessionId: sessionId!,
-      ...(resolvedCorrection === undefined ? {} : {
+      ...(!hasCorrection ? {} : {
         colorCorrection: {
           temperature: resolvedCorrection.temperature,
           tint: resolvedCorrection.tint,

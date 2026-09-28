@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { buildSourceLayerDocument } from '../app/source-layer-document';
+import { buildDraftSourceLayerDocument, buildSourceLayerDocument } from '../app/source-layer-document';
 import { decodeLayerPixels, layerPixelsUrl } from '../app/managed-layer-pixels';
 import { boxSchema, readLayeringSelection } from '../app/layering-selection';
 import type { LayeredImageConfig } from '../app/layered-image-config';
@@ -51,6 +51,18 @@ export async function prepareSourceLayerDocument(input: SourceLayerInput) {
       visible: record.visible, opacity: record.opacity,
       ...(record.kind === 'transparent' ? { bounds: boxSchema.parse(bounds) } : {}),
       load: () => decodeLayerPixels(url, input.width, input.height) })),
+  });
+}
+
+export async function prepareDraftSourceLayerDocument(input: SourceLayerInput) {
+  return buildDraftSourceLayerDocument({ width: input.width, height: input.height,
+    source: await decodeLayerPixels(input.sourceUrl, input.width, input.height), selection: readLayeringSelection(input.selection),
+    layers: input.layers.map(({ record, url, bounds, maskSpace, preparedRgb, shadowOnly }) => ({
+      id: record.layerId, name: record.name, kind: record.kind, maskSpace, preparedRgb, shadowOnly,
+      visible: record.visible, opacity: record.opacity,
+      ...(record.kind === 'transparent' ? { bounds: boxSchema.parse(bounds) } : {}),
+      load: () => decodeLayerPixels(url, input.width, input.height),
+    })),
   });
 }
 

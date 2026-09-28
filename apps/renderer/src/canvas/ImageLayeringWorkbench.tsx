@@ -5,7 +5,7 @@ import { encodeLayeredPsd, trimTransparentLayer, type LayeredPsdDocument } from 
 import { parseLayeredImageConfig, type LayeredImageRecord } from '../app/layered-image-config';
 import { applyLayerSelection, compatibleLayerDimensions, layerSelectionClip, readLayeringSelection } from '../app/layering-selection';
 import { LayerScopePreview } from './LayerScopePreview';
-import { orderedLayerPlan, prepareSourceLayerDocument, useSourceLayerPreview, type SourceLayerInput } from './source-layer-preview';
+import { orderedLayerPlan, prepareDraftSourceLayerDocument, prepareSourceLayerDocument, useSourceLayerPreview, type SourceLayerInput } from './source-layer-preview';
 import { SourceLayerAlignment } from './SourceLayerAlignment';
 import { SourceLayerRefinement } from './SourceLayerRefinement';
 import type { MattingRegion } from '@agent-canvas/desktop-core/preload-api';
@@ -88,6 +88,16 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
   const sourcePreview = useSourceLayerPreview(sourceInput);
   const layered = config.pixelMode === 'source' ? sourcePreview.preview : parsed.document;
   const contentOverlap = typeof sourcePreview.error === 'string' && sourcePreview.error.includes('内容重叠');
+  const suggestedRefinementLayer = contentOverlap ? sourcePreview.error?.match(/图层“([^”]+)”与“[^”]+”的内容重叠/)?.[1] : undefined;
+  const draftStructureReady = sourceInput !== null
+    && Number.isInteger(sourceInput.width) && Number.isInteger(sourceInput.height)
+    && sourceInput.width > 0 && sourceInput.height > 0
+    && sourceInput.width <= 8192 && sourceInput.height <= 8192
+    && sourceInput.width * sourceInput.height * 4 <= 128 * 1024 * 1024
+    && sourceInput.layers.length >= 2 && sourceInput.layers.length <= 17
+    && sourceInput.layers[0]?.record.kind === 'background'
+    && sourceInput.layers.slice(1).every(layer => layer.record.kind === 'transparent' && boxSchema.safeParse(layer.bounds).success);
+  const draftAvailable = sourcePreview.error !== null && draftStructureReady;
   const overallStatus = contentOverlap ? '内容重叠 · 需精修' : config.pixelMode === 'source' && sourcePreview.error ? '图层处理失败'
     : failedCount > 0 ? '需复核'
       : generatedPlan.length > 0 && passedCount === generatedPlan.length
@@ -183,18 +193,22 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     };
     return encodeLayeredPsd(decoded);
   };
-  const exportPsd = async () => {
-    if (!layered || exporting) return;
+  const buildDraftPsdBytes = async (): Promise<Uint8Array> => {
+    if (!draftAvailable || !sourceInput) throw new Error('尚无可导出的待修整返图');
+    return encodeLayeredPsd(await prepareDraftSourceLayerDocument(sourceInput));
+  };
+  const exportPsd = async (draft = false) => {
+    if ((draft ? !draftAvailable : !layered) || exporting) return;
     setExportError(null);
     setExporting(true);
     try {
-      const bytes = await buildPsdBytes();
+      const bytes = draft ? await buildDraftPsdBytes() : await buildPsdBytes();
       const owned = new Uint8Array(bytes.byteLength);
       owned.set(bytes);
       const url = URL.createObjectURL(new Blob([owned.buffer], { type: 'image/vnd.adobe.photoshop' }));
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'canvas-atelier-layers.psd';
+      link.download = draft ? 'canvas-atelier-layers-to-repair.psd' : 'canvas-atelier-layers.psd';
       link.click();
       globalThis.setTimeout(() => URL.revokeObjectURL(url), 30_000);
     } catch (error) {
@@ -203,14 +217,14 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
       setExporting(false);
     }
   };
-  const openPsdInPhotoshop = async () => {
-    if (!layered || exporting) return;
+  const openPsdInPhotoshop = async (draft = false) => {
+    if ((draft ? !draftAvailable : !layered) || exporting) return;
     setExportError(null);
     setExporting(true);
     try {
       const open = window.novusDesktop?.projectImages?.openLayeredPsdInPhotoshop;
       if (!open) throw new Error('当前环境不支持在 Photoshop 中打开 PSD');
-      const result = await open(await buildPsdBytes());
+      const result = await open(draft ? await buildDraftPsdBytes() : await buildPsdBytes());
       if (!result.ok && result.code !== 'cancelled') {
         const messages = {
           invalid_psd: 'PSD 文件无效，请重新导出',
@@ -233,11 +247,12 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     <header><strong>图片自动分层</strong><span>透明图层与多图层 PSD</span></header>
     {parsed.error && <p role="alert">分层结果无效：{parsed.error}</p>}
     {selectionResult.error && <p role="alert">{selectionResult.error}</p>}
-    {sourcePreview.error && config.pixelMode === 'source' && <div className="image-layering__issue" role="alert"><strong>{contentOverlap ? '图层内容重叠，暂不能合成或导出 PSD' : '图片已返回，合成暂不可用'}</strong><p>{contentOverlap ? sourcePreview.error : '请检查问题图层的透明区域与背景；已有返图已保留。'}</p>{!contentOverlap && <details><summary>查看失败原因</summary><p>{sourcePreview.error}</p></details>}</div>}
+    {sourcePreview.error && config.pixelMode === 'source' && <div className="image-layering__issue" role="alert"><strong>{contentOverlap ? '图层内容重叠，暂不能正式合成或导出正式 PSD' : '图片已返回，合成暂不可用'}</strong><p>{contentOverlap ? sourcePreview.error : '请检查问题图层的透明区域与背景；已有返图已保留。'}</p>{draftAvailable && <p>可导出待修整 PSD：原图默认可见；补全背景候选和所有前景返图默认隐藏。请在 Photoshop 中逐层修整，正式合成仍需通过画布检查。</p>}{!contentOverlap && <details><summary>查看失败原因</summary><p>{sourcePreview.error}</p></details>}</div>}
     {config.pixelMode === 'source' && sourceInput && !sourcePreview.preview && !sourcePreview.error && <p role="status">正在提取原图像素…</p>}
     <div className="image-layering__repair-tools" role="group" aria-label="图层修整">
     {sourceAsset?.width && sourceAsset.height && onRefineLayer && <SourceLayerRefinement
       key={`${String(config.groupId)}:${sourceAsset.assetId}`} sourceUrl={sourceAsset.displayUrl} width={sourceAsset.width} height={sourceAsset.height}
+      suggestedLayerName={suggestedRefinementLayer}
       layers={layerNodes.filter(node => node.data.config.layerKind !== 'background' && !isShadowOnlyLayer(node.data.config) && boxSchema.safeParse(node.data.config.sourceBounds).success).map(node => ({
         nodeId: node.id, name: String(node.data.config.name ?? '图层'),
         resultAssetId: typeof node.data.config.resultAssetId === 'string' ? node.data.config.resultAssetId : undefined,
@@ -333,6 +348,8 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
       {generatedPlan.length > 0 && onRefreshJobs && <button type="button" disabled={refreshing} onClick={() => { void refreshJobs(); }}>{refreshing ? '正在同步…' : '同步任务状态'}</button>}
       <button type="button" disabled={!layered || !selection || exporting} onClick={() => { void exportPsd(); }}>{exporting ? '正在导出…' : '导出 PSD'}</button>
       <button type="button" disabled={!layered || !selection || exporting} onClick={() => { void openPsdInPhotoshop(); }}>在 Photoshop 中打开</button>
+      {draftAvailable && <><button type="button" disabled={exporting} onClick={() => { void exportPsd(true); }}>导出待修整 PSD</button>
+        <button type="button" disabled={exporting} onClick={() => { void openPsdInPhotoshop(true); }}>在 Photoshop 中打开待修整 PSD</button></>}
     </div>
     {exportError && <p role="alert">{exportError}</p>}
   </section>;

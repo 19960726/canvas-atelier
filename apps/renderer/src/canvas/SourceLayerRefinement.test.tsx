@@ -4,6 +4,13 @@ import { afterEach,expect,it,vi } from 'vitest';
 import { SourceLayerRefinement } from './SourceLayerRefinement';
 vi.mock('./LayeringSelectionEditor',()=>({LayeringSelectionEditor:({onChange}:any)=><button onClick={()=>onChange({x:.2,y:.2,width:.1,height:.1})}>draw box</button>}));
 afterEach(cleanup);
+it('opens on the layer named in a composition conflict',()=>{
+  render(<SourceLayerRefinement sourceUrl="source" width={100} height={100}
+    layers={[{nodeId:'background',name:'背景',regions:[]},{nodeId:'cup',name:'杯身',regions:[]}]}
+    suggestedLayerName="杯身" onApply={async()=>{}}/>);
+  fireEvent.click(screen.getByRole('button',{name:'本地抠图与边缘精修'}));
+  expect(screen.getByRole('combobox',{name:'精修图层'})).toHaveValue('cup');
+});
 it('reuses saved corrections for the selected original layer and shows failures without closing',async()=>{
   const regions=[{mode:'clear' as const,box:{x:.2,y:.2,width:.1,height:.1}}];
   const onApply=vi.fn(async()=>{throw new Error('精修保存失败');});
