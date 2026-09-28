@@ -13,6 +13,19 @@ it('identifies the offending layer when its source-space mask exceeds its bounds
   ] })).rejects.toThrow(/下方托握手部与手臂.*原图位置不符/);
 });
 
+it('rejects source-space provider mattes that duplicate most of another independent object', async () => {
+  const width = 20, height = 20, source = new Uint8Array(width * height * 4).fill(255);
+  const first = new Uint8Array(source.length), second = new Uint8Array(source.length);
+  for (let y = 4; y < 16; y++) for (let x = 4; x < 16; x++) first[(y * width + x) * 4 + 3] = 255;
+  for (let y = 5; y < 17; y++) for (let x = 5; x < 17; x++) second[(y * width + x) * 4 + 3] = 255;
+  const make = (id: string, name: string, mask: Uint8Array) => ({ id, name, kind: 'transparent' as const,
+    visible: true, opacity: 1, maskSpace: 'source' as const, bounds: { x: .1, y: .1, width: .8, height: .8 }, load: async () => mask });
+  await expect(buildSourceLayerDocument({ width, height, source, selection: { mode: 'whole' }, layers: [
+    { id: 'bg', name: '背景', kind: 'background', visible: true, opacity: 1, load: async () => source },
+    make('cup', '杯身', first), make('hand', '握杯手部', second),
+  ] })).rejects.toThrow(/杯身.*握杯手部.*内容重叠/);
+});
+
 it('reconstructs a shadow from original pixels after local object refinement instead of a redrawn provider shadow',async()=>{
   const width=48,height=48,source=new Uint8Array(width*height*4),background=new Uint8Array(source.length),object=new Uint8Array(source.length),wrongShadow=new Uint8Array(source.length);
   for(let p=0;p<width*height;p++){source.set([200,180,160,255],p*4);background.set([180,160,140,255],p*4);}
@@ -66,6 +79,25 @@ it('exports a locally refined foreground without applying source color extractio
   ]});
   const isolated=composeLayeredRgba({...doc,layers:doc.layers.map(layer=>({...layer,visible:layer.id==='object'}))});
   expect([...isolated.slice((1*4+2)*4,(1*4+2)*4+4)]).toEqual([30,60,90,128]);
+});
+
+it('keeps original background pixels outside local foreground coverage', async () => {
+  const width = 32, height = 32, source = new Uint8Array(width * height * 4), donor = new Uint8Array(source.length), object = new Uint8Array(source.length);
+  for (let pixel = 0; pixel < width * height; pixel++) {
+    source.set([180, 190, 200, 255], pixel * 4);
+    donor.set([20, 30, 40, 255], pixel * 4);
+  }
+  const center = (16 * width + 16) * 4;
+  source.set([220, 40, 20, 255], center); object.set([220, 40, 20, 255], center);
+  donor.set([255, 0, 255, 255], (16 * width + 17) * 4);
+  const doc = await buildSourceLayerDocument({ width, height, source, selection: { mode: 'whole' }, layers: [
+    { id: 'bg', name: '背景', kind: 'background', visible: true, opacity: 1, load: async () => donor },
+    { id: 'object', name: '主体', kind: 'transparent', visible: true, opacity: 1, preparedRgb: true,
+      maskSpace: 'source', bounds: { x: .4, y: .4, width: .2, height: .2 }, load: async () => object },
+  ] });
+  const composite = composeLayeredRgba(doc);
+  expect([...composite.slice((16 * width + 17) * 4, (16 * width + 17) * 4 + 4)])
+    .toEqual([...source.slice((16 * width + 17) * 4, (16 * width + 17) * 4 + 4)]);
 });
 
 it('keeps original edge pixels when source-space matte and generated background colors differ', async () => {

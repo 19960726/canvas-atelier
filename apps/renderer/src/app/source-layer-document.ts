@@ -28,6 +28,9 @@ export async function buildSourceLayerDocument(input: {
   const edgeFallback = new Uint8Array(width * height);
   const foregrounds: LayeredPsdLayer[] = [];
   const objects=layers.slice(1).filter(layer=>!layer.shadowOnly);
+  const providerMasks: { layer: SourcePixelLayer; pixels: number; index: number }[] = [];
+  const providerIntersections: Uint32Array[] = [];
+  let providerOwners: Uint32Array | undefined;
   // Provider source-space mattes must reconstruct original pixels when all
   // layers are visible. Use the donor only under actual foreground coverage;
   // applying donor feathering outside those mattes visibly changes the image.
@@ -51,6 +54,25 @@ export async function buildSourceLayerDocument(input: {
       throw new Error(`图层“${layer.name}”：${error instanceof Error ? error.message : '原图像素提取失败'}`);
     }
     if (!rgba.some((value, index) => index % 4 === 3 && value > 0)) throw new Error(`图层“${layer.name}”在所选范围内没有可见像素，请校正原图位置`);
+    if (!layer.preparedRgb && !layer.shadowOnly && layer.maskSpace === 'source') {
+      // Format and placement checks cannot tell whether two returned mattes
+      // contain the same object. Measure their original coverage before the
+      // export order removes duplicate pixels and hides the provider error.
+      const index = providerMasks.length;
+      if (index >= 31) throw new Error('独立图层数量超过内容重叠检查上限');
+      const owners = providerOwners ??= new Uint32Array(width * height);
+      const intersections = new Uint32Array(index);
+      let pixels = 0;
+      for (let pixel = 0; pixel < owners.length; pixel++) {
+        if (rgba[pixel * 4 + 3]! < 128) continue;
+        const previous = owners[pixel]!;
+        for (let prior = 0; prior < index; prior++) if (previous & (1 << prior)) intersections[prior]!++;
+        owners[pixel] = previous | (1 << index);
+        pixels++;
+      }
+      providerMasks.push({ layer, pixels, index });
+      providerIntersections.push(intersections);
+    }
     for (let i = 0; i < coverage.length; i++) {
       const offset = i * 4;
       if (!rgba[offset + 3]) continue;
@@ -83,6 +105,14 @@ export async function buildSourceLayerDocument(input: {
     if (totalBytes > 256 * 1024 * 1024) throw new Error('图层像素总量超过当前 PSD 导出内存上限（256 MiB）');
     foregrounds.unshift(trimmed);
   }
+  const orderedProviderMasks = providerMasks.sort((a, b) => objects.indexOf(a.layer) - objects.indexOf(b.layer));
+  for (let a = 0; a < orderedProviderMasks.length; a++) for (let b = a + 1; b < orderedProviderMasks.length; b++) {
+    const left = orderedProviderMasks[a]!, right = orderedProviderMasks[b]!, smaller = Math.min(left.pixels, right.pixels);
+    if (smaller < 16) continue;
+    const later = Math.max(left.index, right.index), earlier = Math.min(left.index, right.index);
+    const overlap = providerIntersections[later]![earlier]!;
+    if (overlap > smaller * .35) throw new Error(`图层“${left.layer.name}”与“${right.layer.name}”的内容重叠 ${Math.round(overlap / smaller * 100)}%；返图混入其他物体，请分别检查并本地精修后再合成`);
+  }
   let background:Uint8Array = source.slice();
   for (let i = 0; i < coverage.length; i++) {
     if (!coverage[i]) continue;
@@ -106,6 +136,11 @@ export async function buildSourceLayerDocument(input: {
     }
     for(let p=0;p<erased.length;p++)if(erased[p]&&generated[p*4+3]!==255)throw new Error('补全背景包含透明空洞，请重新检查背景层');
     background=repairLayerBackground(source,generated,width,height,erased);
+    // Donor feathering is useful beneath a removed object, but its correction
+    // field must not repaint nearby pixels that no foreground actually covers.
+    for (let pixel = 0; pixel < erased.length; pixel++) {
+      if (!erased[pixel]) background.set(source.subarray(pixel * 4, pixel * 4 + 4), pixel * 4);
+    }
     // At anti-aliased edges the foreground is original RGB with partial alpha.
     // Keep the original backdrop at those pixels so source + matte reconstructs
     // the original without baking the generated background into the edge.

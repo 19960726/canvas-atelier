@@ -1,5 +1,17 @@
 import { expect, it } from 'vitest';
-import { createSourceTrimap, parseLocalMattingRequest } from './local-matting.js';
+import { createLocalMattingPrompts, createSourceTrimap, parseLocalMattingRequest } from './local-matting.js';
+
+it('uses keep and glass corrections as foreground hints and clear corrections as background hints', () => {
+  const bounds = { x: .2, y: .2, width: .6, height: .6 };
+  expect(createLocalMattingPrompts(100, 200, bounds, [
+    { mode: 'keep', box: { x: .1, y: .05, width: .1, height: .1 } },
+    { mode: 'clear', box: { x: .4, y: .4, width: .2, height: .1 } },
+    { mode: 'glass', box: { x: .7, y: .2, width: .1, height: .1 } },
+  ])).toEqual({ points: [[15, 20], [75, 50], [50, 90]], labels: [1, 1, 0] });
+  expect(createLocalMattingPrompts(100, 200, bounds, [])).toEqual({ points: [[50, 100]], labels: [1] });
+  expect(createLocalMattingPrompts(1, 1, { x: 0, y: 0, width: 1, height: 1 }, []))
+    .toEqual({ points: [[0, 0]], labels: [1] });
+});
 
 it('rejects mismatched pixel buffers and out-of-frame refinement regions', () => {
   expect(() => parseLocalMattingRequest({width:8,height:8,rgba:new Uint8Array(12),bounds:{x:0,y:0,width:1,height:1},regions:[]})).toThrow();

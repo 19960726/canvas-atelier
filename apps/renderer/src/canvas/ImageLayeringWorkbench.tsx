@@ -85,7 +85,8 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
   } : null;
   const sourcePreview = useSourceLayerPreview(sourceInput);
   const layered = config.pixelMode === 'source' ? sourcePreview.preview : parsed.document;
-  const overallStatus = config.pixelMode === 'source' && sourcePreview.error ? '图层处理失败'
+  const contentOverlap = typeof sourcePreview.error === 'string' && sourcePreview.error.includes('内容重叠');
+  const overallStatus = contentOverlap ? '内容重叠 · 需精修' : config.pixelMode === 'source' && sourcePreview.error ? '图层处理失败'
     : failedCount > 0 ? '需复核'
       : generatedPlan.length > 0 && passedCount === generatedPlan.length
         ? layered ? '图层已返回 · 待检查边缘与背景' : '正在处理图层'
@@ -222,7 +223,7 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     <header><strong>图片自动分层</strong><span>透明图层与多图层 PSD</span></header>
     {parsed.error && <p role="alert">分层结果无效：{parsed.error}</p>}
     {selectionResult.error && <p role="alert">{selectionResult.error}</p>}
-    {sourcePreview.error && config.pixelMode === 'source' && <div className="image-layering__issue" role="alert"><strong>图片已返回，合成暂不可用</strong><p>请检查问题图层的透明区域与背景；已有返图已保留。</p><details><summary>查看失败原因</summary><p>{sourcePreview.error}</p></details></div>}
+    {sourcePreview.error && config.pixelMode === 'source' && <div className="image-layering__issue" role="alert"><strong>{contentOverlap ? '图层内容重叠，暂不能合成或导出 PSD' : '图片已返回，合成暂不可用'}</strong><p>{contentOverlap ? sourcePreview.error : '请检查问题图层的透明区域与背景；已有返图已保留。'}</p>{!contentOverlap && <details><summary>查看失败原因</summary><p>{sourcePreview.error}</p></details>}</div>}
     {config.pixelMode === 'source' && sourceInput && !sourcePreview.preview && !sourcePreview.error && <p role="status">正在提取原图像素…</p>}
     <div className="image-layering__repair-tools" role="group" aria-label="图层修整">
     {sourceAsset?.width && sourceAsset.height && onRefineLayer && <SourceLayerRefinement

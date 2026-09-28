@@ -19,6 +19,23 @@ export function parseLocalMattingRequest(value: unknown): LocalMattingRequest {
   return result;
 }
 
+/** Feed deliberate user corrections into the local segmentation model itself.
+ * The same regions still constrain the trimap after segmentation. */
+export function createLocalMattingPrompts(width: number, height: number, bounds: LocalMattingRequest['bounds'],
+  regions: readonly MattingRegion[]): { points: number[][]; labels: number[] } {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) throw new Error('精修提示点尺寸无效');
+  const validBounds = boxSchema.parse(bounds);
+  const validRegions = regions.map(region => regionSchema.parse(region));
+  const center = (box: LocalMattingRequest['bounds']): number[] => [
+    Math.min(width - 1, Math.round((box.x + box.width / 2) * width)),
+    Math.min(height - 1, Math.round((box.y + box.height / 2) * height)),
+  ];
+  const positives = validRegions.filter(region => region.mode !== 'clear').map(region => center(region.box));
+  const negatives = validRegions.filter(region => region.mode === 'clear').map(region => center(region.box));
+  const foreground = positives.length ? positives : [center(validBounds)];
+  return { points: [...foreground, ...negatives], labels: [...foreground.map(() => 1), ...negatives.map(() => 0)] };
+}
+
 /** Build a trimap at source coordinates; regions are ordered user corrections. */
 export function createSourceTrimap(mask: Uint8Array, width: number, height: number, radius: number, regions: readonly MattingRegion[]): Uint8Array {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width * height > 12_000_000

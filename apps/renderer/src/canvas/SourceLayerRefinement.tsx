@@ -21,7 +21,7 @@ export function SourceLayerRefinement({sourceUrl,width,height,layers,onApply}:{
   return <div className="image-layering__alignment">
     <button className="image-layering__repair-tool" type="button" aria-label="本地抠图与边缘精修" title="清除残留背景、保留主体或调整玻璃透明区域" disabled={busy||!layers.length} onClick={()=>{setSelected(layers[0]!.nodeId);setBox(null);setError(null);setOpen(true);}}><WandSparkles size={15} />边缘精修</button>
     {open&&layer&&<LayerCorrectionDialog title="边缘精修" busy={busy} onClose={()=>setOpen(false)}><div role="group" aria-label="原图蒙版精修">
-      <p>从原图提取，保持原大小和位置，不产生生成费用。可框选残留背景、需要保留的实体或玻璃；后添加的区域优先。</p>
+      <p>从原图提取，保持原大小和位置，不产生生成费用。在目标物上加“保留实体”小框，在误选物体上加“清除背景”小框；这些框会提示本地抠图模型，后添加的区域优先。</p>
       <select aria-label="精修图层" disabled={busy} value={selected} onChange={event=>{setSelected(event.target.value);setBox(null);setError(null);}}>
         {layers.map(item=><option key={item.nodeId} value={item.nodeId}>{item.name}</option>)}
       </select>
