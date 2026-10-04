@@ -4,6 +4,8 @@ import type { Node, NodeChange, XYPosition } from '@xyflow/react';
 
 export interface CanvasDraftOptions<TNode extends Node = Node> {
   nodes: readonly TNode[];
+  /** React Flow has already applied passive observer sizes to nodeLookup. */
+  keepPassiveMeasurementsInternal?: boolean;
   /** Changes when the durable project/session boundary changes. */
   resetKey?: string | number;
   onCommitPositions: (
@@ -13,12 +15,12 @@ export interface CanvasDraftOptions<TNode extends Node = Node> {
 
 export function useCanvasDraft<TNode extends Node = Node>({
   nodes: sourceNodes,
+  keepPassiveMeasurementsInternal = false,
   resetKey,
   onCommitPositions,
 }: CanvasDraftOptions<TNode>) {
   const [nodes, setNodes] = useState<TNode[]>(() => [...sourceNodes]);
-  const draftNodesRef = useRef<readonly TNode[]>(nodes);
-  draftNodesRef.current = nodes;
+  const draftNodesRef = useRef<TNode[]>(nodes);
   const latestSourceNodesRef = useRef(sourceNodes);
   latestSourceNodesRef.current = sourceNodes;
   const sourceNodesRef = useRef(sourceNodes);
@@ -52,12 +54,11 @@ export function useCanvasDraft<TNode extends Node = Node>({
         acknowledgedPositionRef.current.delete(nodeId);
       }
     }
-    setNodes((current) => {
-      const next = mergeDurableNodes(current, sourceNodes, activeDraggedNodeIds, pendingCommitNodeIds, acknowledgedPositionRef.current);
-      if (sameDraftNodeList(current, next)) return current;
-      draftNodesRef.current = next;
-      return next;
-    });
+    const current = draftNodesRef.current;
+    const next = mergeDurableNodes(current, sourceNodes, activeDraggedNodeIds, pendingCommitNodeIds, acknowledgedPositionRef.current);
+    if (sameDraftNodeList(current, next)) return;
+    draftNodesRef.current = next;
+    setNodes(next);
   }, [resetKey, sourceNodes]);
 
   const onNodesChange = useCallback((changes: NodeChange<TNode>[]) => {
@@ -65,18 +66,26 @@ export function useCanvasDraft<TNode extends Node = Node>({
     // change would race that transaction and reintroduce controlled-state loops.
     const interactionChanges = changes.filter((change) => change.type !== 'remove');
     if (interactionChanges.length === 0) return;
+    if (keepPassiveMeasurementsInternal && interactionChanges.every((change) => (
+      change.type === 'dimensions' && change.setAttributes === undefined && change.resizing === undefined
+    ))) {
+      // ResizeObserver has already updated React Flow's live measurements and
+      // handle bounds. Keep those sizes for the next edit without submitting
+      // the entire controlled graph a second time on each zoom visibility step.
+      draftNodesRef.current = applyNodeChanges(interactionChanges, draftNodesRef.current) as TNode[];
+      return;
+    }
     for (const change of interactionChanges) {
       if (change.type === 'position' && change.dragging === true) {
         activeDraggedNodeIdsRef.current.add(change.id);
       }
     }
-    setNodes((current) => {
-      const next = applyNodeChanges(interactionChanges, current) as TNode[];
-      if (sameDraftNodeList(current, next)) return current;
-      draftNodesRef.current = next;
-      return next;
-    });
-  }, []);
+    const current = draftNodesRef.current;
+    const next = applyNodeChanges(interactionChanges, current) as TNode[];
+    if (sameDraftNodeList(current, next)) return;
+    draftNodesRef.current = next;
+    setNodes(next);
+  }, [keepPassiveMeasurementsInternal]);
 
   const onNodeDragStop = useCallback(async (_event: unknown, node: TNode) => {
     const activeDraggedNodeIds = activeDraggedNodeIdsRef.current;
@@ -105,6 +114,9 @@ export function useCanvasDraft<TNode extends Node = Node>({
         const pendingCommit = pendingCommitRef.current.get(update.nodeId);
         if (pendingCommit?.token !== token) continue;
         pendingCommitRef.current.delete(update.nodeId);
+        // A new pointer drag can start while this commit waits for its ACK.
+        // Its live position belongs to the newer gesture, even on save failure.
+        if (activeDraggedNodeIdsRef.current.has(update.nodeId)) continue;
         const durableNode = latestSourceNodesRef.current.find((candidate) => candidate.id === update.nodeId);
         // Keep the user's final pointer position after both a successful ACK
         // and a retryable save failure. A failed persistence boundary keeps the
@@ -120,24 +132,22 @@ export function useCanvasDraft<TNode extends Node = Node>({
       }
       if (reconciledNodeIds.size > 0) {
         const durableNodesById = new Map(latestSourceNodesRef.current.map((sourceNode) => [sourceNode.id, sourceNode]));
-        setNodes((current) => {
-          const next = current.flatMap((currentNode) => {
-            if (!reconciledNodeIds.has(currentNode.id)) return [currentNode];
-            const durableNode = durableNodesById.get(currentNode.id);
-            return durableNode === undefined ? [] : [preserveReactFlowState(
-              durableNode,
-              currentNode,
-              updates.find((update) => update.nodeId === currentNode.id)?.position,
-            )];
-          });
-          draftNodesRef.current = next;
-          return next;
+        const next = draftNodesRef.current.flatMap((currentNode) => {
+          if (!reconciledNodeIds.has(currentNode.id)) return [currentNode];
+          const durableNode = durableNodesById.get(currentNode.id);
+          return durableNode === undefined ? [] : [preserveReactFlowState(
+            durableNode,
+            currentNode,
+            updates.find((update) => update.nodeId === currentNode.id)?.position,
+          )];
         });
+        draftNodesRef.current = next;
+        setNodes(next);
       }
     }
   }, [onCommitPositions]);
 
-  return { nodes, onNodesChange, onNodeDragStop };
+  return { get nodes() { return draftNodesRef.current; }, onNodesChange, onNodeDragStop };
 }
 
 function preserveReactFlowState<TNode extends Node>(durableNode: TNode, currentNode: TNode, committedPosition?: XYPosition): TNode {

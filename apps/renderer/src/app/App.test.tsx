@@ -614,6 +614,7 @@ describe('App persistence hydration', () => {
       providerDisplayName: '4dai',
       resolution: '1K',
     };
+    useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [image], edges: [] } });
     const profile = {
       provider: '4dai' as const,
       modelRoute: '4dai-gpt-image-1-5',
@@ -648,6 +649,7 @@ describe('App persistence hydration', () => {
       task: 'Analyze the reference.',
       ...(storedProvider === undefined ? {} : { providerDisplayName: storedProvider }),
     };
+    useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [reverse], edges: [] } });
     const profiles = {
       comfly: [{
         provider: 'comfly' as const,
@@ -691,6 +693,7 @@ describe('App persistence hydration', () => {
       role: 'Analyst',
       task: 'Analyze the reference.',
     };
+    useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [reverse], edges: [] } });
     const profile = {
       provider: '4dai' as const,
       modelRoute: '4dai-incomplete-reverse',
@@ -860,9 +863,10 @@ describe('App persistence hydration', () => {
     resetAppStoreForTests({ project: 'empty' });
     useAppStore.setState({
       project: { ...useAppStore.getState().project, nodes: [reverse], edges: [] },
-      runReverseAgentNode: vi.fn(() => {
+      runReverseAgentNode: vi.fn((_nodeId: string, _config: unknown, _route: unknown, onExecutionStarted?: () => void) => {
         const running = { ...reverse, data: { ...reverse.data, config: { ...reverse.data.config, reverseAgentRunId: 'reverse-run-1', reverseAgentRunState: 'running' } } };
         useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [running], edges: [] } } as never);
+        onExecutionStarted?.();
         return new Promise(() => undefined);
       }),
     } as never);
@@ -888,7 +892,7 @@ describe('App persistence hydration', () => {
     resetAppStoreForTests({ project: 'empty' });
     useAppStore.setState({
       project: { ...useAppStore.getState().project, nodes: [reverse], edges: [] },
-      runReverseAgentNode: vi.fn(() => {
+      runReverseAgentNode: vi.fn((_nodeId: string, _config: unknown, _route: unknown, onExecutionStarted?: () => void) => {
         setTimeout(() => {
           const running = {
             ...reverse,
@@ -902,6 +906,7 @@ describe('App persistence hydration', () => {
             },
           };
           useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [running], edges: [] } } as never);
+          onExecutionStarted?.();
         }, 35);
         return new Promise(() => undefined);
       }),
@@ -925,7 +930,7 @@ describe('App persistence hydration', () => {
     resetAppStoreForTests({ project: 'empty' });
     useAppStore.setState({
       project: { ...useAppStore.getState().project, nodes: [reverse], edges: [] },
-      runReverseAgentNode: vi.fn(async () => {
+      runReverseAgentNode: vi.fn(async (_nodeId: string, _config: unknown, _route: unknown, onExecutionStarted?: () => void) => {
         const completed = {
           ...reverse,
           data: {
@@ -938,6 +943,7 @@ describe('App persistence hydration', () => {
           },
         };
         useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [completed], edges: [] } } as never);
+        onExecutionStarted?.();
         return {} as never;
       }),
     } as never);

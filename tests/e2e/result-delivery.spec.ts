@@ -5,7 +5,7 @@ import { makeReferenceImage } from './helpers/fixtures';
 
 const zoomPreviewArtifact = path.join(process.cwd(), 'artifacts', 'CanvasAtelier-1.6.133-image-zoom', 'generated-image-zoom.png');
 
-test('reverse completion creates and fills a connected result node', async ({ page }) => {
+test('reverse completion creates and fills a connected result node', async ({ page }, testInfo) => {
   const externalRequests: string[] = [];
   page.on('request', (request) => {
     const url = new URL(request.url());
@@ -90,8 +90,55 @@ test('reverse completion creates and fills a connected result node', async ({ pa
     });
   });
   await positivePrompt.fill('Edited persisted reverse prompt');
-  await reverse.getByRole('button', { name: 'Copy reverse result' }).click();
-  await expect(reverse.getByRole('button', { name: 'Copy reverse result' })).toContainText('复制成功');
+  const copyButton = reverse.getByRole('button', { name: 'Copy reverse result' });
+  // React Flow intentionally undoes DOM container scrolling. Bring the real
+  // node actions into its transformed viewport before pointer input, instead
+  // of asking Playwright to auto-scroll a clipped canvas child.
+  await page.locator('.react-flow__controls-fitview').evaluate(button => (button as HTMLButtonElement).click());
+  await expect.poll(() => copyButton.evaluate(button => {
+    const rect = button.getBoundingClientRect();
+    const canvas = button.closest('[data-testid="rf__wrapper"]')!;
+    const canvasRect = canvas.getBoundingClientRect();
+    return canvas.scrollTop === 0 && rect.top >= canvasRect.top && rect.bottom <= canvasRect.bottom
+      && document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)?.closest('button') === button;
+  })).toBe(true);
+  await copyButton.evaluate((button) => {
+    const state = window as typeof window & { __reverseCopyDiagnostic?: Record<string, unknown> };
+    state.__reverseCopyDiagnostic = { events: [] };
+    for (const name of ['pointerdown', 'pointerup', 'click', 'focus', 'blur']) {
+      button.addEventListener(name, (event) => {
+        const rect = button.getBoundingClientRect();
+        const wrapper = button.closest('[data-testid="rf__wrapper"]');
+        const mouse = event as MouseEvent;
+        (state.__reverseCopyDiagnostic!.events as unknown[]).push({ name, trusted: event.isTrusted, time: performance.now(),
+          scrollTop: wrapper?.scrollTop, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          targetAtPointer: Number.isFinite(mouse.clientX) && Number.isFinite(mouse.clientY)
+            ? document.elementFromPoint(mouse.clientX, mouse.clientY)?.closest('button')?.getAttribute('aria-label') : null });
+      });
+    }
+    const observer = new MutationObserver(() => {
+      state.__reverseCopyDiagnostic!.originalButtonConnected = button.isConnected;
+      state.__reverseCopyDiagnostic!.currentText = document.querySelector('[aria-label="Copy reverse result"]')?.textContent;
+    });
+    observer.observe(button.closest('[data-module-type="reverse_agent"]')!, { subtree: true, childList: true, characterData: true });
+  });
+  try {
+    await copyButton.click({ delay: 50 });
+    await expect(copyButton).toContainText('复制成功');
+    expect(await page.evaluate(() => {
+      const state = window as typeof window & { __reverseCopyDiagnostic?: { events: Array<{ name: string; trusted: boolean; scrollTop: number; targetAtPointer: string }> } };
+      return state.__reverseCopyDiagnostic!.events.some(event => event.name === 'click' && event.trusted
+        && event.scrollTop === 0 && event.targetAtPointer === 'Copy reverse result');
+    }), 'The original button receives the trusted click without temporary DOM canvas scrolling').toBe(true);
+  } finally {
+    await testInfo.attach('reverse-copy-events', {
+      body: JSON.stringify(await page.evaluate(() => ({
+        ...(window as typeof window & { __reverseCopyDiagnostic?: Record<string, unknown> }).__reverseCopyDiagnostic,
+        copied: (window as typeof window & { __copiedReverse?: string }).__copiedReverse,
+      })).catch(error => ({ diagnosticUnavailable: String(error) })), null, 2),
+      contentType: 'application/json',
+    });
+  }
   await expect.poll(() => page.evaluate(() => (window as typeof window & { __copiedReverse?: string }).__copiedReverse ?? ''))
     .toContain('Edited persisted reverse prompt');
 

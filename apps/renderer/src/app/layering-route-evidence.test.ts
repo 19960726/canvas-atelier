@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
-import { eligibleForLayeringRoute, getLayeringRouteContract, type LayeringRouteEvidence } from './layering-route-evidence';
+import { eligibleForLayeringRoute, getLayeringRouteContract, supportsIndependentRgba, type LayeringRouteEvidence } from './layering-route-evidence';
 
 const profile = (overrides: Partial<ProviderBridgeProfile> = {}): ProviderBridgeProfile => ({
   provider: 'comfly', modelRoute: 'comfly-gpt-image-2', modelId: 'gpt-image-2', displayName: 'GPT Image 2',
@@ -33,5 +33,11 @@ describe('GPT layering route evidence', () => {
     expect(eligibleForLayeringRoute(profile({ capabilities: ['image_generation', 'image_edit'] }), [evidence])).toBe(false);
     expect(eligibleForLayeringRoute(profile({ modelRoute: 'other-route' }), [evidence])).toBe(true);
     expect(eligibleForLayeringRoute(profile({ provider: 'relayme' }), [evidence])).toBe(false);
+  });
+
+  it('does not treat transparent PNG evidence as independent foreground RGB evidence', () => {
+    expect(supportsIndependentRgba(profile(), [evidence])).toBe(false);
+    expect(supportsIndependentRgba(profile(), [{ ...evidence, independentRgba: true }])).toBe(true);
+    expect(supportsIndependentRgba(profile(), [{ ...evidence, independentRgba: true, resolutions: [] }])).toBe(false);
   });
 });

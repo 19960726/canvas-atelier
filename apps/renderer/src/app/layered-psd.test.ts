@@ -39,14 +39,15 @@ describe('layered PSD export', () => {
     expect(new DataView(bytes.buffer, bytes.byteOffset).getUint16(4)).toBe(1);
     const psd = readPsd(bytes, { useImageData: true, skipThumbnail: true });
     expect({ width: psd.width, height: psd.height, bitsPerChannel: psd.bitsPerChannel }).toEqual({ width: 2, height: 2, bitsPerChannel: 8 });
-    expect(psd.children?.map(layer => layer.name)).toEqual(['Hidden logo', 'Glass', 'Subject', 'Background']);
+    // ag-psd children are bottom to top; Photoshop presents the reverse order.
+    expect(psd.children?.map(layer => layer.name)).toEqual(['Background', 'Subject', 'Glass', 'Hidden logo']);
     expect(psd.children?.map(layer => [layer.left, layer.top, layer.right, layer.bottom, layer.hidden, layer.opacity])).toEqual([
-      [0, 1, 2, 2, true, 191 / 255],
-      [0, 0, 2, 1, false, 1],
-      [0, 0, 2, 1, false, 1],
       [0, 0, 2, 2, false, 1],
+      [0, 0, 2, 1, false, 1],
+      [0, 0, 2, 1, false, 1],
+      [0, 1, 2, 2, true, 191 / 255],
     ]);
-    expect(Array.from(psd.children![1]!.imageData!.data)).toEqual(Array.from(fourLayers.layers[2]!.rgba));
+    expect(Array.from(psd.children![2]!.imageData!.data)).toEqual(Array.from(fourLayers.layers[2]!.rgba));
     expect(Array.from(psd.imageData!.data.slice(0, 4))).toEqual([127, 0, 128, 255]);
     expect(Array.from(psd.imageData!.data.slice(4, 8))).toEqual([255, 255, 255, 255]);
   });

@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { assessCreativeGenerationPrompt, parseCreativePlan, recoverEmptyCreativePlan, creativePlanningInstructions, creativeWorkflowSteps, constrainCreativePlanKind } from './creative-plan';
+import { assessCreativeGenerationPrompt, buildCreativeExecutionPrompt, resolveCreativeGenerationReferences, parseCreativePlan, recoverEmptyCreativePlan, creativePlanningInstructions, creativeWorkflowSteps, constrainCreativePlanKind } from './creative-plan';
+
+it('maps an original high reference number to its actual selected generation input', () => {
+  const option = { id: 'faithful', title: '保留', reason: '保留原图', kind: 'image' as const,
+    prompt: '保留主体比例和原机位，窗光照明，高清金属材质。', referenceMentions: ['@图片8', '@图片3'] };
+  const requirements = { goal: '保留', mustKeep: ['@图片8 产品轮廓'], mustChange: [], mustAvoid: [], acceptanceCriteria: [] };
+  const refs = [{ assetId: 'product', mention: '@图片8' }, { assetId: 'light', mention: '@图片3' }];
+  const execution = buildCreativeExecutionPrompt(option, requirements, [], refs);
+  expect(execution).toContain('第1张输入：参考图片8');
+  expect(execution).toContain('第2张输入：参考图片3');
+  expect(execution).not.toContain('@图片');
+});
 import { defaultGenerationPreferences, generationProfiles, resolveGenerationPreference, readGenerationPreferences, writeGenerationPreferences } from './generation-preferences';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 
@@ -9,6 +20,76 @@ const profiles: ProviderBridgeProfile[] = [
   { provider: 'comfly', modelRoute: 'video', displayName: 'Video', modelId: 'veo3.1', capabilities: ['video_generation'], constraints: { video: { aspectRatios: ['16:9'], resolutions: ['720p'], outputCounts: [1], duration: { mode: 'options', options: [4, 8] } } } },
 ];
 describe('creative plan boundary', () => {
+  it('binds each option to its actual product and lighting inputs while keeping a negative example out of generation', () => {
+    const plan = parseCreativePlan(JSON.stringify({ summary: '多素材编辑', referenceDuties: [
+      { mention: '@图片8', role: 'product', inherit: ['外观比例'], doNotCopy: [] },
+      { mention: '@图片3', role: 'lighting', inherit: ['窗光方向'], doNotCopy: ['人物'] },
+      { mention: '@图片2', role: 'negative', inherit: [], doNotCopy: ['红色'] },
+    ], options: [{ id: 'a', title: '原位编辑', kind: 'image', reason: '保留产品', prompt: '产品原位构图，原背景自然窗光，真实材质与清晰轮廓。', referenceMentions: ['@图片8', '@图片3'] }] }))!;
+    const references = [
+      { assetId: 'product', mention: '@图片8', label: '产品' },
+      { assetId: 'light', mention: '@图片3', label: '光线' },
+      { assetId: 'negative', mention: '@图片2', label: '负例' },
+    ];
+    expect(resolveCreativeGenerationReferences(plan.options[0]!, references, plan.referenceDuties).map((reference) => reference.assetId))
+      .toEqual(['product', 'light']);
+    expect(plan.referenceDuties[1]).toMatchObject({ mention: '@图片3', role: 'lighting', doNotCopy: ['人物'] });
+    expect(resolveCreativeGenerationReferences({ ...plan.options[0]!, referenceMentions: ['@图片2'] }, references, plan.referenceDuties))
+      .toEqual([]);
+  });
+
+  it('blocks unknown option references rather than swapping in another image', () => {
+    const option = { id: 'a', title: '方案', kind: 'image' as const, reason: '编辑', prompt: '产品原位构图，原背景自然窗光与真实材质。', referenceMentions: ['@图片9'] };
+    expect(() => resolveCreativeGenerationReferences(option, [{ assetId: 'product', label: '产品', mention: '@图片8' }], []))
+      .toThrow(/参考素材/u);
+  });
+
+  it('keeps every supplied hard requirement in a complex plan instead of dropping the last items', () => {
+    const mustKeep = Array.from({ length: 14 }, (_, index) => `对象${index + 1}的原位置与比例`);
+    const plan = parseCreativePlan(JSON.stringify({
+      summary: '复杂场景局部编辑', requirements: { goal: '只改桌面材质', mustKeep },
+      options: [{ id: 'a', title: '原位编辑', kind: 'image', reason: '保留主体与构图', prompt: '产品原位构图，柔和侧光突出金属材质；只把桌面换成浅色石材，保留人物姿态和全部产品比例。' }],
+    }));
+    expect(plan?.requirements.mustKeep).toEqual(mustKeep);
+  });
+
+  it('collapses differently named choices with the same execution prompt while retaining a real alternative', () => {
+    const prompt = '产品原位构图，柔和侧光突出金属材质，保持人物与产品比例，厨房背景。';
+    const option = { id: 'a', title: '方案一', kind: 'image', reason: '原位编辑', prompt };
+    const plan = parseCreativePlan(JSON.stringify({ summary: '提供选择', options: [
+      option, { ...option, id: 'b', title: '方案二', prompt: ` ${prompt}\n` },
+      { ...option, id: 'c', title: '冷色场景', prompt: '产品原位构图，冷色窗光照亮金属材质，保持人物与产品比例，蓝灰色厨房背景。' },
+    ] }));
+    expect(plan?.options.map((item) => item.id)).toEqual(['a', 'c']);
+  });
+
+  it('carries the chosen plan hard constraints into the actual generation prompt', () => {
+    const plan = parseCreativePlan(JSON.stringify({
+      summary: '早餐场景编辑', requirements: {
+        goal: '按要求编辑家庭早餐图', mustKeep: ['保持原图机位与透视', '@图片1的产品位置和比例不变'],
+        mustChange: ['桌上恰好六个烧麦', '左侧女孩站立，右侧女模特坐下'],
+        mustAvoid: ['画面不得出现红色'], acceptanceCriteria: ['六个烧麦全部可数，产品轮廓完整'],
+      },
+      options: [{ id: 'a', title: '原场景编辑', kind: 'image', reason: '保持机位', prompt: '家庭早餐产品摄影，原位构图、自然窗光与真实金属材质，厨房环境，高清细节。' }],
+    }))!;
+    const execution = buildCreativeExecutionPrompt(plan.options[0]!, plan.requirements);
+    expect(execution).toContain(plan.options[0]!.prompt);
+    for (const requirement of [...plan.requirements.mustKeep, ...plan.requirements.mustChange,
+      ...plan.requirements.mustAvoid, ...plan.requirements.acceptanceCriteria]) {
+      expect(execution).toContain(requirement.replace(/@图片(\d+)/gu, '参考图片$1'));
+    }
+    expect(execution).not.toMatch(/@(?:图片|视频)\d+/u);
+  });
+
+  it('reads a complete executable plan inside prose and a JSON fence', () => {
+    const option = { id: 'a', title: '参考图编辑', kind: 'image', reason: '保留主体', prompt: '产品居中构图，柔和侧光突出金属材质，保持品牌标识，纯净暖灰背景。' };
+    expect(parseCreativePlan(`以下是可选方案：\n\n\`\`\`json\n${JSON.stringify({ summary: '按参考图制作', options: [option] })}\n\`\`\`\n请选择一个方案。`)?.options).toEqual([option]);
+  });
+
+  it('keeps analysis readable when the provider omits executable options', () => {
+    expect(recoverEmptyCreativePlan('```json\n{"summary":"早餐场景分析","requirements":{"goal":"根据参考图改造早餐场景"}}\n```', '制作早餐图片', defaultGenerationPreferences(), profiles))
+      .toMatchObject({ summary: '早餐场景分析', options: [] });
+  });
   it('rejects copied or underspecified generation prompts while allowing an executable rewrite', () => {
     expect(assessCreativeGenerationPrompt('根据你的要求，生成一张产品主图，请执行。', '生成一张产品主图'))
       .toEqual({ valid: false, reason: 'copied' });
@@ -119,6 +200,7 @@ describe('creative plan boundary', () => {
       1,
     )).toEqual({
       summary: '没有兼容的图片编辑路线',
+      referenceDuties: [],
       requirements: {
         goal: '精修产品，其他不要改变',
         mustKeep: ['其他不要改变'],

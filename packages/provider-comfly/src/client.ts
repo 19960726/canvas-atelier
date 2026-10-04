@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { redactProviderLog } from './redact';
+import { isComflyGptImageModel, mapComflyGptImageSize, mapComflyImageResolutionTier } from './image-size';
+export { isComflyGptImageModel, mapComflyGptImageExactSize, mapComflyImageResolutionTier } from './image-size';
 import type {
   ComflyAccessibleModelCatalog,
   ComflyCatalogModel,
@@ -322,55 +324,6 @@ type ComflyImageGenerationInput = {
   readonly [key: string]: unknown;
 };
 
-export function mapComflyImageResolutionTier(
-  tier: ComflyImageResolutionTier,
-  aspectRatio: ComflyImageAspectRatio = '1:1',
-): ComflyProviderImageSize {
-  if (tier === '4K') {
-    const error = new Error('Comfly image generation does not support native 4K output') as Error & {
-      code: 'CAPABILITY_UNSUPPORTED'; retryable: boolean;
-    };
-    error.code = 'CAPABILITY_UNSUPPORTED';
-    error.retryable = false;
-    throw error;
-  }
-  if (tier === '1K') return '1024x1024';
-  return aspectRatio === '3:4' || aspectRatio === '9:16' ? '1024x1536' : '1536x1024';
-}
-
-function roundTo16(value: number): number {
-  return Math.max(16, Math.round(value / 16) * 16);
-}
-
-function floorTo16(value: number): number {
-  return Math.max(16, Math.floor(value / 16) * 16);
-}
-
-export function mapComflyGptImageExactSize(
-  tier: ComflyImageResolutionTier,
-  aspectRatio: ComflyImageAspectRatio = '1:1',
-): string {
-  if (aspectRatio === '1:1') return tier === '1K' ? '1024x1024' : tier === '2K' ? '2048x2048' : '2880x2880';
-  if (tier === '2K') {
-    const [rw, rh] = aspectRatio.split(':').map(Number) as [number, number];
-    const shortEdge = roundTo16(2048 * Math.min(rw, rh) / Math.max(rw, rh));
-    return rw > rh ? `2048x${shortEdge}` : `${shortEdge}x2048`;
-  }
-  if (tier === '4K' && aspectRatio === '16:9') return '3840x2160';
-  if (tier === '4K' && aspectRatio === '9:16') return '2160x3840';
-
-  const [rw, rh] = aspectRatio.split(':').map(Number) as [number, number];
-  const targetArea = tier === '1K' ? 1_048_576 : 8_294_400;
-  let width = roundTo16(Math.sqrt(targetArea * rw / rh));
-  let height = roundTo16(width * rh / rw);
-  while (width > 3840 || height > 3840 || width * height > 8_294_400) {
-    const scale = Math.min(3840 / width, 3840 / height, Math.sqrt(8_294_400 / (width * height)));
-    width = floorTo16(width * scale);
-    height = floorTo16(height * scale);
-  }
-  return `${width}x${height}`;
-}
-
 function mapComflyImageGenerationInput(input: ComflyImageGenerationInput): Record<string, unknown> {
   const { async: _async, ...request } = input;
   if (input.model === 'nano-banana' || input.model === 'nano-banana-hd') {
@@ -400,32 +353,16 @@ function mapComflyImageGenerationInput(input: ComflyImageGenerationInput): Recor
     const { size, ...rest } = request;
     return { ...rest, image_size: size };
   }
-  if (isGptImageExactSizeModel(input.model)) {
-    const { aspect_ratio: _aspectRatio, ...rest } = request;
-    return { ...rest, size: mapComflyGptImageExactSize(input.size, input.aspect_ratio) };
-  }
   if (isComflyGptImageModel(input.model)) {
     // GPT Image 1/1.5 accept the three native sizes, not resolution tiers or
     // aspect_ratio. Keep square requests square even at the UI's default 2K.
-    const { aspect_ratio: ratio = '1:1', ...rest } = request;
-    if (input.size === '4K') return { ...rest, size: mapComflyImageResolutionTier(input.size, input.aspect_ratio) };
-    const [width, height] = String(ratio).split(':').map(Number);
-    return { ...rest, size: width === height ? '1024x1024' : width! > height! ? '1536x1024' : '1024x1536' };
+    const { aspect_ratio: _aspectRatio, ...rest } = request;
+    return { ...rest, size: mapComflyGptImageSize(input.model, input.size, input.aspect_ratio) };
   }
   // Seedream V5's documented unified request accepts the provider tier itself
   // (`size: "2K"`). Converting it to a generic pixel pair changes the contract.
   if (input.model === 'seedream-v5-pro') return request;
   return { ...request, size: mapComflyImageResolutionTier(input.size, input.aspect_ratio) };
-}
-
-function isGptImageExactSizeModel(model: string): boolean {
-  return /^gpt-image-2(?:-(?:all|2k|4k|vip)|\.5-(?:flare|sunburst)(?:-(?:2k|4k))?)?$/u
-    .test(model.trim().toLocaleLowerCase());
-}
-
-export function isComflyGptImageModel(model: string): boolean {
-  return isGptImageExactSizeModel(model)
-    || /^gpt-image-1(?:\.5|-mini)?(?:-\d{4}-\d{2}-\d{2})?$/u.test(model.trim().toLocaleLowerCase());
 }
 
 function isNanoBananaImageModel(model: string): boolean {

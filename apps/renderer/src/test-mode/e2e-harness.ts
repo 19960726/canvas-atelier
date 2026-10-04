@@ -440,6 +440,7 @@ export function installRendererE2EHarness(): void {
           conversationId: job.conversationId,
           id: job.id,
           modelRoute: job.modelRoute,
+          providerTaskId: job.providerTaskId,
           retryCount: job.retryCount,
           status: job.status,
         })),
@@ -1227,7 +1228,11 @@ function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClien
           byteSize: file.size,
           label: sanitizeE2EMediaLabel(file.name, 'Imported video'),
           mediaType: 'video/mp4',
-          displayUrl: await readManualAcceptanceFileUrl(file),
+          // Keep imported video previews on the owned E2E asset route. A
+          // data:video URL is intentionally rejected by the production
+          // managed-video guard and would make a valid local import render as
+          // an empty completed result in the UI fixture.
+          displayUrl: undefined,
         });
       }
       return importE2EProjectVideo(runtime, nodeId);
@@ -1665,7 +1670,7 @@ declare global {
           moduleType: CanvasModuleType;
           position: { x: number; y: number };
         }>;
-        modelJobs: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount' | 'status'>>;
+        modelJobs: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'providerTaskId' | 'retryCount' | 'status'>>;
         modelSubmissions: Array<Pick<ModelJob, 'aspectRatio' | 'conversationId' | 'id' | 'imageQuality' | 'modelRoute' | 'outputCount' | 'provider' | 'resolution' | 'retryCount'>>;
         projectAssetIds: string[];
         projectImages: Array<Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'label'>>;

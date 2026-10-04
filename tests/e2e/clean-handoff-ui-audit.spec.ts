@@ -159,13 +159,21 @@ test('checks local AI layering stages without a provider submission', async ({ p
   await writeFile(path.join(auditDirectory, 'layering-stage-1.json'), JSON.stringify(await captureControls(dialog), null, 2), 'utf8');
   await page.screenshot({ path: path.join(auditDirectory, 'layering-stage-1-analysis.png'), fullPage: true });
   await page.evaluate(() => window.__NOVUS_E2E__!.queueLayeringAnalysisReply(JSON.stringify({ layers: [
-    { layerId: 'background', kind: 'background', name: '浅色墙面与台面', description: '墙面和台面作为连续背景；不包含产品、摆件及投影像素。', included: true },
-    { layerId: 'coffee-machine', kind: 'transparent', name: '咖啡机主体', description: '保留咖啡机外壳、玻璃壶和按钮；不包含接触阴影。', included: true },
-    { layerId: 'machine-shadow', kind: 'transparent', name: '咖啡机接触阴影', description: '单独保留机器底部落在台面上的接触阴影，不包含机器像素。', included: true },
-    { layerId: 'ceramic-cup', kind: 'transparent', name: '左侧陶瓷杯', description: '只保留咖啡机左侧的陶瓷杯，保持杯口和把手完整。', included: true },
-    { layerId: 'cup-shadow', kind: 'transparent', name: '陶瓷杯投影', description: '单独保留陶瓷杯在台面上的投影，不包含杯体像素。', included: true },
-    { layerId: 'wood-tray', kind: 'transparent', name: '右侧木质托盘与咖啡豆', description: '保留托盘和其中咖啡豆；与背景、投影分开。', included: true },
-    { layerId: 'tray-shadow', kind: 'transparent', name: '托盘投影', description: '单独保留托盘下方投影，不包含托盘和咖啡豆像素。', included: true },
+    { layerId: 'background', kind: 'background', name: '浅色墙面与台面', description: '墙面和台面作为连续背景；不包含产品、摆件及投影像素。', included: true, elementIds: ['background'] },
+    { layerId: 'coffee-machine', kind: 'transparent', name: '咖啡机主体', description: '保留咖啡机外壳、玻璃壶和按钮；不包含接触阴影。', included: true, elementIds: ['coffee-machine'] },
+    { layerId: 'machine-shadow', kind: 'transparent', name: '咖啡机接触阴影', description: '单独保留机器底部落在台面上的接触阴影，不包含机器像素。', included: true, elementIds: ['machine-shadow'] },
+    { layerId: 'ceramic-cup', kind: 'transparent', name: '左侧陶瓷杯', description: '只保留咖啡机左侧的陶瓷杯，保持杯口和把手完整。', included: true, elementIds: ['ceramic-cup'] },
+    { layerId: 'cup-shadow', kind: 'transparent', name: '陶瓷杯投影', description: '单独保留陶瓷杯在台面上的投影，不包含杯体像素。', included: true, elementIds: ['cup-shadow'] },
+    { layerId: 'wood-tray', kind: 'transparent', name: '右侧木质托盘与咖啡豆', description: '保留托盘和其中咖啡豆；与背景、投影分开。', included: true, elementIds: ['wood-tray'] },
+    { layerId: 'tray-shadow', kind: 'transparent', name: '托盘投影', description: '单独保留托盘下方投影，不包含托盘和咖啡豆像素。', included: true, elementIds: ['tray-shadow'] },
+  ], elements: [
+    { elementId: 'background', name: '浅色墙面与台面', layerId: 'background', kind: 'object' },
+    { elementId: 'coffee-machine', name: '咖啡机主体', layerId: 'coffee-machine', kind: 'object' },
+    { elementId: 'machine-shadow', name: '咖啡机接触阴影', layerId: 'machine-shadow', kind: 'shadow', carrierElementId: 'coffee-machine' },
+    { elementId: 'ceramic-cup', name: '左侧陶瓷杯', layerId: 'ceramic-cup', kind: 'object' },
+    { elementId: 'cup-shadow', name: '陶瓷杯投影', layerId: 'cup-shadow', kind: 'shadow', carrierElementId: 'ceramic-cup' },
+    { elementId: 'wood-tray', name: '右侧木质托盘与咖啡豆', layerId: 'wood-tray', kind: 'object' },
+    { elementId: 'tray-shadow', name: '托盘投影', layerId: 'tray-shadow', kind: 'shadow', carrierElementId: 'wood-tray' },
   ] })));
   await dialog.getByRole('button', { name: '分析图片' }).click();
   const layerList = dialog.getByRole('list', { name: '可编辑分层方案' });

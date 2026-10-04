@@ -10,6 +10,41 @@ import {
 import type { LayeringConfirmation, LayeringPlan } from './layering-plan';
 import { canvasLayoutNodeSize, layeringBundleGeometry } from '../canvas/auto-layout';
 
+/** A newly confirmed request cannot reuse a differently confirmed planned graph. */
+export function isLayeringPlanBoundToGroup(project: CanvasProject, plan: LayeringPlan, confirmation: LayeringConfirmation, groupId: string): boolean {
+  const group = project.nodes.find((node): node is CanvasModuleNode => node.type === 'module'
+    && node.data.moduleType === 'image_layering' && node.data.config.groupId === groupId);
+  const children = project.nodes.filter((node): node is CanvasModuleNode => node.type === 'module'
+    && node.data.moduleType === 'image_layer' && node.data.config.groupId === groupId);
+  const included = plan.layers.filter(layer => layer.included);
+  if (!group || group.data.config.status !== 'planned' || group.data.config.needsReconfirm === true
+    || group.data.config.sourceAssetId !== plan.sourceAssetId
+    || group.data.config.layeringConfirmationDigest !== confirmation.digest
+    || group.data.config.foregroundOutputContract !== plan.foregroundOutputContract || children.length !== included.length) return false;
+  if (plan.elements !== undefined) {
+    if (!sameJson(group.data.config.planElements, plan.elements)) return false;
+    const ownershipLayers = plan.layers.map((layer, order) => ({ layerId: layer.layerId, kind: layer.kind, name: layer.name,
+      description: layer.description, included: layer.included, order, ...(layer.sourceBounds ? { sourceBounds: layer.sourceBounds } : {}),
+      ...(layer.elementIds ? { elementIds: layer.elementIds } : {}) }));
+    if (!sameJson(group.data.config.planOwnershipLayers, ownershipLayers)) return false;
+  }
+  return included.every(layer => {
+    const matches = children.filter(child => child.data.config.layerId === layer.layerId);
+    const child = matches[0];
+    return matches.length === 1 && child !== undefined && child.data.config.status === 'planned'
+      && child.data.config.needsReconfirm !== true && child.data.config.sourceAssetId === plan.sourceAssetId
+      && child.data.config.layeringConfirmationDigest === confirmation.digest
+      && (layer.elementIds === undefined || sameJson(child.data.config.elementIds, layer.elementIds))
+      && (child.data.config.layeringOutputContract === undefined ? plan.foregroundOutputContract === undefined
+        : child.data.config.layeringOutputContract === (layer.kind === 'background' ? 'opaque-background-v2'
+          : plan.foregroundOutputContract ?? 'source-alpha-matte-v1'));
+  });
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 export function buildLayeringGraphTransaction(
   project: CanvasProject,
   plan: LayeringPlan,
@@ -57,7 +92,10 @@ export function buildLayeringGraphTransaction(
       canvasWidth: plan.canvasWidth,
       canvasHeight: plan.canvasHeight,
       ...(plan.pixelMode ? { pixelMode: plan.pixelMode, maskSpace: 'source' } : {}),
+      ...(plan.foregroundOutputContract ? { layeringOutputContract: layer.kind === 'background'
+        ? 'opaque-background-v2' : plan.foregroundOutputContract } : {}),
       ...(layer.sourceBounds ? { sourceBounds: layer.sourceBounds } : {}),
+      ...(layer.elementIds ? { elementIds: layer.elementIds } : {}),
       ...(plan.selection ? { layerSelection: plan.selection } : {}),
       name: layer.name,
       description: layer.description,
@@ -67,6 +105,7 @@ export function buildLayeringGraphTransaction(
       provider: confirmation.provider,
       resolution: confirmation.resolution,
       confirmationDigest: confirmation.digest,
+      layeringConfirmationDigest: confirmation.digest,
     };
     return node;
   });
@@ -81,10 +120,12 @@ export function buildLayeringGraphTransaction(
     sourceNodeId: sourceNode.id,
     sourceAssetId: plan.sourceAssetId,
     analysisId: groupId,
-    planVersion: 1,
+    layeringConfirmationDigest: confirmation.digest,
+    planVersion: plan.elements ? 2 : 1,
     canvasWidth: plan.canvasWidth,
     canvasHeight: plan.canvasHeight,
     ...(plan.pixelMode ? { pixelMode: plan.pixelMode, maskSpace: 'source' } : {}),
+    ...(plan.foregroundOutputContract ? { foregroundOutputContract: plan.foregroundOutputContract } : {}),
     ...(plan.selection ? { layerSelection: plan.selection } : {}),
     planLayers: includedLayers.map((layer, order) => ({
       layerId: layer.layerId,
@@ -94,6 +135,15 @@ export function buildLayeringGraphTransaction(
       ...(layer.sourceBounds ? { sourceBounds: layer.sourceBounds } : {}),
       order,
     })),
+    ...(plan.elements ? {
+      planOwnershipLayers: plan.layers.map((layer, order) => ({
+        layerId: layer.layerId, kind: layer.kind, name: layer.name, description: layer.description,
+        included: layer.included, order,
+        ...(layer.sourceBounds ? { sourceBounds: layer.sourceBounds } : {}),
+        ...(layer.elementIds ? { elementIds: layer.elementIds } : {}),
+      })),
+      planElements: plan.elements.map(element => ({ ...element })),
+    } : {}),
     resultState: 'empty',
     status: 'planned',
   };

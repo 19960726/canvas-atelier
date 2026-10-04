@@ -857,6 +857,8 @@ describe('public domain API', () => {
       'getRuntimeProfile',
       'hasVerifiedComflyVideoSubmissionContract',
       'imageAspectRatioSchema',
+      'layeringOutputContractSchema',
+      'layeringResultRepresentationSchema',
       'modelJobSchema',
       'modelJobStatusSchema',
       'normalizeImageBackground',

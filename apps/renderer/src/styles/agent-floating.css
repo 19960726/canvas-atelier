@@ -1075,6 +1075,8 @@ html body .workspace--canvas-layout .agent-panel.agent-panel--skill-chat .skill-
   background-color: var(--surface);
 }
 .codex-reasoning__popover[data-density='compact'] .codex-reasoning__track {
+  flex: 0 0 16px !important;
+  min-height: 16px !important;
   height: 16px !important;
 }
 .codex-reasoning__popover[data-density='compact'] .codex-reasoning__track input[type='range'] {
@@ -1190,7 +1192,7 @@ html body .agent-panel.agent-panel--skill-chat.agent-panel--floating .skill-chat
   overflow-y: auto !important;
   overscroll-behavior: contain !important;
 }
-.workspace--canvas-layout .module-node:is([data-module-type='image_generation'], [data-module-type='image_layering']) > .module-node__ports .react-flow__handle.module-node__port-alias {
+.workspace--canvas-layout .module-node:is([data-module-type='image_generation'], [data-module-type='video_generation'], [data-module-type='reverse_agent'], [data-module-type='image_layering']) > .module-node__ports .react-flow__handle.module-node__port-alias {
   opacity: 0 !important;
   pointer-events: none !important;
   transition: none !important;
@@ -1373,4 +1375,232 @@ html body .workspace--canvas-layout .agent-panel.agent-panel--skill-chat.agent-p
   flex: 0 0 auto !important;
   max-height: min(210px, 38%) !important;
   overflow-y: auto !important;
+}
+
+/* Floating conversation hierarchy: the content reads as one page; only a
+   selectable proposal and its confirmation need their own surface. */
+html body .workspace--canvas-layout .agent-panel.agent-panel--skill-chat.agent-panel--floating {
+  & .skill-chat-workbench__message--assistant:not(.skill-chat-workbench__confirmation) {
+    padding: 14px 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: var(--surface) !important;
+    box-shadow: none !important;
+  }
+
+  & .skill-chat-workbench__message > span {
+    display: block !important;
+    margin-bottom: 7px !important;
+    color: var(--text-secondary) !important;
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    line-height: 18px !important;
+  }
+
+  & .skill-chat-workbench__message > p,
+  & .creative-plan > div:not(.creative-plan__option) > p {
+    margin: 0 !important;
+    color: var(--text) !important;
+    font-size: 13px !important;
+    line-height: 1.75 !important;
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere !important;
+  }
+
+  & .creative-plan {
+    gap: 18px !important;
+    margin-top: 18px !important;
+  }
+
+  & .creative-plan > div:not(.creative-plan__option) > strong {
+    display: block !important;
+    margin-bottom: 5px !important;
+    color: var(--text) !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+  }
+
+  & .creative-plan__requirements {
+    gap: 10px !important;
+    padding: 14px 0 0 !important;
+    border: 0 !important;
+    border-top: 1px solid var(--border-subtle) !important;
+    border-radius: 0 !important;
+    background: var(--surface) !important;
+    box-shadow: none !important;
+  }
+
+  & .creative-plan__requirements > header {
+    flex-wrap: wrap !important;
+    gap: 4px 12px !important;
+  }
+
+  & .creative-plan__requirements > header strong {
+    font-size: 13px !important;
+    font-weight: 600 !important;
+  }
+
+  & .creative-plan__requirements > header span {
+    color: var(--text-secondary) !important;
+    font-size: 10px !important;
+  }
+
+  & .creative-plan__requirements dl {
+    gap: 0 !important;
+  }
+
+  & .creative-plan__requirements dl > div {
+    grid-template-columns: 64px minmax(0, 1fr) !important;
+    gap: 12px !important;
+    padding: 9px 0 !important;
+    border-bottom: 1px solid var(--border-subtle) !important;
+  }
+
+  & .creative-plan__requirements dl > div:last-child {
+    border-bottom: 0 !important;
+    padding-bottom: 0 !important;
+  }
+
+  & .creative-plan__requirements dt {
+    color: var(--text-secondary) !important;
+    font-weight: 500 !important;
+    line-height: 1.7 !important;
+  }
+
+  & .creative-plan__requirements dd {
+    color: var(--text) !important;
+    line-height: 1.7 !important;
+  }
+
+  & .creative-plan__option {
+    margin-top: 0 !important;
+    padding: 14px !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+    background: var(--surface) !important;
+    box-shadow: none !important;
+  }
+
+  & .creative-plan__option:has(.creative-plan__select[aria-pressed='true']) {
+    border-color: var(--agent-action-border) !important;
+    box-shadow: inset 3px 0 0 var(--accent) !important;
+  }
+
+  & .creative-plan__kind {
+    margin: 0 0 7px !important;
+    padding: 0 !important;
+    color: var(--accent) !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    font-size: 10px !important;
+    font-weight: 500 !important;
+  }
+
+  & .creative-plan__option > strong {
+    display: block !important;
+    color: var(--text) !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    line-height: 21px !important;
+  }
+
+  & .creative-plan__option > p {
+    margin: 7px 0 0 !important;
+    color: var(--text-secondary) !important;
+    font-size: 12px !important;
+    line-height: 1.7 !important;
+  }
+
+  & .creative-plan__workflow {
+    margin: 13px 0 !important;
+    padding: 12px 0 0 !important;
+    border: 0 !important;
+    border-top: 1px solid var(--border-subtle) !important;
+    border-radius: 0 !important;
+    background: var(--surface) !important;
+  }
+
+  & .creative-plan__workflow > b {
+    font-weight: 500 !important;
+    color: var(--text-secondary) !important;
+  }
+
+  & .creative-plan__workflow ol {
+    gap: 12px !important;
+  }
+
+  & .creative-plan__workflow li > span {
+    border-radius: 6px !important;
+    color: var(--agent-action-text) !important;
+    background: var(--agent-action-soft) !important;
+    font-weight: 500 !important;
+  }
+
+  & .creative-plan__workflow li strong {
+    font-weight: 500 !important;
+  }
+
+  & .skill-chat-workbench__message details {
+    color: var(--text-secondary) !important;
+    font-size: 11px !important;
+    line-height: 1.7 !important;
+  }
+
+  & .skill-chat-workbench__message details > summary {
+    padding: 5px 0 !important;
+    cursor: pointer !important;
+  }
+
+  & .skill-chat-workbench__message details > p {
+    color: var(--text) !important;
+    line-height: 1.7 !important;
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere !important;
+  }
+
+  & .creative-plan__select {
+    border-radius: 8px !important;
+    box-shadow: none !important;
+    transform: none !important;
+  }
+
+  & .skill-chat-workbench__confirmation {
+    padding: 14px !important;
+    border: 1px solid var(--agent-action-border) !important;
+    border-radius: 12px !important;
+    background: var(--surface) !important;
+    box-shadow: inset 3px 0 0 var(--accent) !important;
+  }
+
+  & .skill-chat-workbench__confirmation > span {
+    color: var(--accent) !important;
+    font-weight: 600 !important;
+  }
+
+  & .skill-chat-workbench__confirmation-card {
+    border: 0 !important;
+    border-top: 1px solid var(--border-subtle) !important;
+    border-radius: 0 !important;
+    padding-top: 12px !important;
+    margin-top: 12px !important;
+    background: transparent !important;
+  }
+
+  & .skill-chat-workbench__confirmation-actions > button {
+    border-radius: 8px !important;
+    box-shadow: none !important;
+  }
+
+  & :is(.creative-plan__select, .skill-chat-workbench__confirmation-actions > button,
+      .skill-chat-workbench__message details > summary):focus-visible {
+    outline: 2px solid var(--accent) !important;
+    outline-offset: 3px !important;
+  }
+
+  & .creative-plan__option > [role='alert'] {
+    color: var(--danger) !important;
+    background: color-mix(in srgb, var(--danger) 8%, var(--surface)) !important;
+    border-left: 2px solid var(--danger) !important;
+    padding: 8px 10px !important;
+  }
 }

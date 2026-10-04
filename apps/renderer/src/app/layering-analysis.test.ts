@@ -8,14 +8,34 @@ const profile: ProviderBridgeProfile = {
   capabilities: ['chat', 'vision'], capabilityStatus: 'complete', enabled: true,
 };
 const planReply = JSON.stringify({ layers: [
-  { layerId: 'background', kind: 'background', name: '背景', description: '补全背景', included: true },
-  { layerId: 'product-main', kind: 'transparent', name: '产品本体', description: '保留产品外形、材质和原图位置，不包含阴影。', included: true },
-  { layerId: 'prop-vase', kind: 'transparent', name: '左侧玻璃花瓶', description: '仅花瓶像素，位于产品后方。', included: true },
-  { layerId: 'shadow-product', kind: 'transparent', name: '产品接触阴影', description: '仅产品与台面接触处的阴影，不包含产品像素。', included: true },
-  { layerId: 'shadow-vase', kind: 'transparent', name: '花瓶投影', description: '仅花瓶投在背景上的投影，不包含花瓶像素。', included: true },
+  { layerId: 'background', kind: 'background', name: '背景', description: '补全背景', included: true, elementIds: ['scene'] },
+  { layerId: 'product-main', kind: 'transparent', name: '产品本体', description: '保留产品外形、材质和原图位置，不包含阴影。', included: true, elementIds: ['product'] },
+  { layerId: 'prop-vase', kind: 'transparent', name: '左侧玻璃花瓶', description: '仅花瓶像素，位于产品后方。', included: true, elementIds: ['vase'] },
+  { layerId: 'shadow-product', kind: 'transparent', name: '产品接触阴影', description: '仅产品与台面接触处的阴影，不包含产品像素。', included: true, elementIds: ['product-shadow'] },
+  { layerId: 'shadow-vase', kind: 'transparent', name: '花瓶投影', description: '仅花瓶投在背景上的投影，不包含花瓶像素。', included: true, elementIds: ['vase-shadow'] },
+], elements: [
+  { elementId: 'scene', name: '厨房背景', layerId: 'background', kind: 'object' },
+  { elementId: 'product', name: '产品本体', layerId: 'product-main', kind: 'object' },
+  { elementId: 'vase', name: '玻璃花瓶', layerId: 'prop-vase', kind: 'object' },
+  { elementId: 'product-shadow', name: '产品接触阴影', layerId: 'shadow-product', kind: 'shadow', carrierElementId: 'product' },
+  { elementId: 'vase-shadow', name: '花瓶投影', layerId: 'shadow-vase', kind: 'shadow', carrierElementId: 'vase' },
 ] });
 
 describe('analyzeImageLayering', () => {
+  it('asks analysis to assign visible held objects and effects without transferring ownership', async () => {
+    const chatSkill = vi.fn(async (_request: SkillChatRequest): Promise<ChatSkillBridgeResult> => ({
+      message: planReply, modelRoute: 'vision-route', sources: [],
+    }));
+    await analyzeImageLayering({ sourceAssetId: 'source', width: 2196, height: 2196, profile }, chatSkill);
+    const prompt = chatSkill.mock.calls[0]![0].messages[0]!.content;
+    expect(prompt).toContain('握持、接触或遮挡不改变对象归属');
+    expect(prompt).toContain('手部层不包含所持杯身或杯盖');
+    expect(prompt).toContain('前景只提取原图可见部分');
+    expect(prompt).toContain('不能按其他图层的矩形范围整块挖空');
+    expect(prompt).toContain('不复制承载物体的实体轮廓');
+    expect(chatSkill).toHaveBeenCalledOnce();
+  });
+
   it('carries a selected object and its bounds into analysis and the editable plan', async () => {
     const selection = { mode: 'objects' as const, box: { x: .25, y: .5, width: .25, height: .25 }, target: '红色料理机' };
     const chatSkill = vi.fn(async (_request: SkillChatRequest): Promise<ChatSkillBridgeResult> => ({ message: planReply, modelRoute: 'vision-route', sources: [] }));
@@ -41,6 +61,8 @@ describe('analyzeImageLayering', () => {
       messages: [expect.objectContaining({ role: 'user', content: expect.stringContaining('JSON') })],
     }));
     expect(plan.sourceAssetId).toBe('asset-source');
+    expect(plan.foregroundOutputContract).toBe('source-independent-rgba-v2');
+    expect(plan.elements?.map((element) => element.elementId)).toEqual(['scene', 'product', 'vase', 'product-shadow', 'vase-shadow']);
     expect(plan.layers.map((layer) => layer.layerId)).toEqual(['background', 'product-main', 'prop-vase', 'shadow-product', 'shadow-vase']);
     const instruction = chatSkill.mock.calls[0]?.[0].messages[0]?.content ?? '';
     expect(instruction).toContain('每件清晰可辨的摆件、道具和装饰物各自单独成层');
@@ -74,6 +96,14 @@ describe('analyzeImageLayering', () => {
     await expect(analyzeImageLayering({ sourceAssetId: 'asset-source', width: 1024, height: 768, profile }, failed))
       .rejects.toThrow('provider offline');
     expect(failed).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an analysis that omits the explicit ownership inventory', async () => {
+    const legacy = vi.fn(async (): Promise<ChatSkillBridgeResult> => ({
+      message: JSON.stringify({ layers: JSON.parse(planReply).layers }), modelRoute: 'vision-route', sources: [],
+    }));
+    await expect(analyzeImageLayering({ sourceAssetId: 'asset-source', width: 1024, height: 768, profile }, legacy))
+      .rejects.toThrow(/element ownership inventory/u);
   });
 
   it('requests an exact custom layer count and rejects a mismatched analysis reply', async () => {

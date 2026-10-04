@@ -48,7 +48,9 @@ export function trimTransparentLayer(layer: LayeredPsdLayer): LayeredPsdLayer {
 export function encodeLayeredPsd(document: LayeredPsdDocument): Uint8Array {
   validateLayeredDocument(document);
   const composite = composeLayeredRgba(document);
-  const children: Layer[] = [...document.layers].reverse().map(layer => ({
+  // ag-psd consumes bottom-to-top children, just like our document. Reversing
+  // here puts the opaque background on top when Photoshop recomposites layers.
+  const children: Layer[] = document.layers.map(layer => ({
     name: layer.name,
     left: layer.x,
     top: layer.y,

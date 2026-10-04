@@ -45,7 +45,7 @@ test(`${moduleType}: twenty five inputs retain thumbnails, scroll and reorder`, 
   const visibleCount = (count: number) => moduleType === 'reverse_agent' ? count : Math.min(20, count);
   const inputCount = 25;
   for (let index=1; index<=inputCount; index++) {
-    await page.locator('.react-flow__pane').click({ position: { x: 1400, y: 60 } });
+    await page.locator('.react-flow__pane').click({ position: { x: 1400, y: 160 } });
     await page.evaluate(() => window.__NOVUS_E2E__!.createModule('image_input', { x: 160, y: 100 }));
     const input = page.locator('[data-module-type="image_input"]').last();
     await queueProjectImageImport(page, makeReferenceImage(`Reference ${index}.png`, [index*10,100,130,255]));

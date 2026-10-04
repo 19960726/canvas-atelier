@@ -20,12 +20,14 @@ interface ElectronClipboardLike {
   availableFormats?(): string[];
   readBuffer?(format: string): Uint8Array;
   readImage(): ElectronNativeImageLike;
+  writeBuffer?(format: string, buffer: Buffer, type?: 'selection' | 'clipboard'): void;
   writeImage?(image: ElectronNativeImageLike): void;
 }
 
 interface ElectronNativeImageLike {
   getSize(): { readonly height: number; readonly width: number };
   isEmpty(): boolean;
+  toBitmap?(): Uint8Array;
   toPNG(): Uint8Array;
 }
 
@@ -49,6 +51,15 @@ export function createElectronClipboardImageAdapter(
         // The native image is already decoded. toPNG() re-encodes the whole
         // bitmap synchronously on Electron's main thread before writeImage().
         clipboard.writeImage(image);
+        // Electron exposes the PNG clipboard format consistently, but Windows
+        // editors such as Photoshop paste raster data through CF_DIB. Publish
+        // the same decoded pixels as a top-down 32-bit DIB when the runtime
+        // exposes writeBuffer, while keeping the native image write above for
+        // browsers and other consumers.
+        if (clipboard.writeBuffer !== undefined && image.toBitmap !== undefined) {
+          const dib = createDeviceIndependentBitmap(image.toBitmap(), size.width, size.height);
+          clipboard.writeBuffer('DeviceIndependentBitmap', dib, 'clipboard');
+        }
         return true;
       } catch {
         return false;
@@ -84,6 +95,27 @@ export function createElectronClipboardImageAdapter(
       }
     },
   };
+}
+
+function createDeviceIndependentBitmap(pixels: Uint8Array, width: number, height: number): Buffer {
+  const rowBytes = width * 4;
+  if (pixels.byteLength !== rowBytes * height) throw new Error('Invalid native bitmap size');
+  const headerBytes = 40;
+  const dib = Buffer.allocUnsafe(headerBytes + pixels.byteLength);
+  dib.writeUInt32LE(headerBytes, 0);
+  dib.writeInt32LE(width, 4);
+  // Negative height stores rows top-down, matching Electron NativeImage.toBitmap().
+  dib.writeInt32LE(-height, 8);
+  dib.writeUInt16LE(1, 12);
+  dib.writeUInt16LE(32, 14);
+  dib.writeUInt32LE(0, 16); // BI_RGB
+  dib.writeUInt32LE(pixels.byteLength, 20);
+  dib.writeInt32LE(0, 24);
+  dib.writeInt32LE(0, 28);
+  dib.writeUInt32LE(0, 32);
+  dib.writeUInt32LE(0, 36);
+  Buffer.from(pixels).copy(dib, headerBytes);
+  return dib;
 }
 
 function readExplorerImagePath(clipboard: ElectronClipboardLike, formats: readonly string[]): string | null {

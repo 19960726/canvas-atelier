@@ -14,9 +14,10 @@ import { installExternalLinkPolicy } from './external-link-policy.js';
 import { parseAssetByteRange } from './asset-byte-range.js';
 import { acquireRelayMeWebToken } from './relayme-web-login.js';
 import { createRecoveryWorkerScanner } from './recovery-worker-runner.js';
-import { saveAndOpenLayeredPsdInPhotoshop } from './layered-psd-open.js';
+import { saveAndOpenLayeredPsdInPhotoshop, createLayeredPsdSaveHandler } from './layered-psd-open.js';
 import { createLocalMattingService } from './local-matting-service.js';
 import { withPreparedLayerFile } from './prepared-layer-file.js';
+import { inspectPreparedLayerPng, validatePreparedLayerImportRequest } from './prepared-layer-import.js';
 
 import {
   BRIDGE_CHANNELS,
@@ -71,9 +72,7 @@ import {
   registerMcpClientConfigIpc,
   registerProviderBridgeHandlers,
   readPinnedReverseKnowledge,
-  resolveLegacyUserDataRoots,
   resolveCodexCliExecutablePath,
-  resolveStableUserDataRoot,
   startApprovedSnapshotOutboxDrain,
   startConfiguredKnowledgeRefresh,
   shutdownDesktopServices,
@@ -93,7 +92,7 @@ import {
 } from '@agent-canvas/desktop-core';
 import { createElectronUpdaterDriver } from './electron-updater-adapter';
 import { resolveRendererHtmlPath } from './renderer-path';
-import { resolveQaUserDataRoot, shouldShowQaWindow } from './qa-user-data-root';
+import { resolveDesktopDataRoots, shouldShowQaWindow } from './qa-user-data-root';
 import { installBrokenPipeExceptionCapture, installBrokenPipeGuard } from './broken-pipe-guard';
 
 installBrokenPipeGuard([process.stdout, process.stderr]);
@@ -151,13 +150,9 @@ const photoshopSmartObjectAdapter = createNodeWindowsPhotoshopSmartObjectAdapter
   runnerResourcePath: join(photoshopResourceRoot, 'photoshop-windows-runner.js'),
 });
 const diagnosticsChannel = 'novus-desktop:safe-mode-failure';
-const discoveredUserDataRoot = app.getPath('userData');
-const discoveredAppDataRoot = app.getPath('appData');
-const qaUserDataRoot = resolveQaUserDataRoot(process.env);
-const stableUserDataRoot = qaUserDataRoot ?? resolveStableUserDataRoot(discoveredAppDataRoot);
-const legacyUserDataRoots = qaUserDataRoot === null
-  ? resolveLegacyUserDataRoots(discoveredAppDataRoot, discoveredUserDataRoot)
-  : [];
+const { qaUserDataRoot, stableUserDataRoot, legacyUserDataRoots } = resolveDesktopDataRoots(
+  process.env, (name) => app.getPath(name),
+);
 if (qaUserDataRoot !== null) app.setPath('appData', qaUserDataRoot);
 app.setPath('userData', stableUserDataRoot);
 
@@ -305,6 +300,7 @@ app.whenReady().then(async () => {
     unsubscribePullSyncStatus();
   };
   desktopHandlers = createDesktopBridgeHandlers({
+    inspectPreparedLayerPng,
     appDataRoot: app.getPath('userData'),
     recoveryScanner: createRecoveryWorkerScanner(join(currentDir, 'recovery-worker-entry.cjs'), appDataRoot),
     captureProjectPreview: async () => {
@@ -346,14 +342,12 @@ app.whenReady().then(async () => {
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
   ipcMain.handle(BRIDGE_CHANNELS.importPreparedLayer, async (event, input: unknown) => {
     if(event.sender!==mainWindow?.webContents||!desktopHandlers)throw new Error('无法从此窗口保存精修图层');
-    const request=input as {sessionId?:unknown;bytes?:unknown}|null;
-    if(typeof request?.sessionId!=='string'||!(request.bytes instanceof Uint8Array)||request.bytes.length<24||request.bytes.length>40*1024*1024)throw new Error('无效的精修图片');
+    const request=validatePreparedLayerImportRequest(input);
     const png=Buffer.from(request.bytes);
-    const width=png.readUInt32BE(16),height=png.readUInt32BE(20);
-    if(!png.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))||!width||!height||width>8192||height>8192||width*height>12_000_000)throw new Error('精修图片尺寸无效');
     const handlers=desktopHandlers;
     return withPreparedLayerFile(app.getPath('temp'),png,sourcePath=>handlers.importDroppedProjectMedia(event,
-      {request:{sessionId:request.sessionId,target:{kind:'agent_reference',operationId:`dropped_media_${globalThis.crypto.randomUUID()}`}},sourcePath}));
+      {request:{sessionId:request.sessionId,target:{kind:'agent_reference',operationId:`dropped_media_${globalThis.crypto.randomUUID()}`}},sourcePath,
+        ...(request.layerTarget ? {preparedLayerTarget:request.layerTarget} : {})}));
   });
   const refineLocalLayer = createLocalMattingService((request) => new Worker(join(__dirname, 'local-matting-worker-entry.cjs'), {
     workerData: { request, runtimeDirectory: join(process.resourcesPath, 'local-matting-runtime') },
@@ -389,6 +383,13 @@ app.whenReady().then(async () => {
       }),
     });
   });
+  ipcMain.handle(BRIDGE_CHANNELS.saveLayeredPsd, createLayeredPsdSaveHandler(() => mainWindow?.webContents, {
+      async chooseDestination() {
+        const result = await dialog.showSaveDialog({ title: '导出正式多图层 PSD', defaultPath: 'canvas-atelier-layers.psd', filters: [{ name: 'Photoshop PSD', extensions: ['psd'] }] });
+        return result.canceled ? null : result.filePath ?? null;
+      },
+      writePsd: (path, psdBytes) => writeFile(path, psdBytes),
+  }));
   ipcMain.handle(BRIDGE_CHANNELS.storage.getCacheDirectory, () => cacheDirectoryService.getCacheDirectory());
   ipcMain.handle(BRIDGE_CHANNELS.storage.chooseCacheDirectory, () => cacheDirectoryService.chooseCacheDirectory());
   ipcMain.handle(BRIDGE_CHANNELS.storage.resetCacheDirectory, () => cacheDirectoryService.resetCacheDirectory());
@@ -455,6 +456,7 @@ app.whenReady().then(async () => {
   });
   const julunProviderService = createNewApiProviderService({
     provider: 'julun',
+    appDataRoot: join(appDataRoot, 'providers', 'julun'),
     credentialStore: julunCredentialStore,
     configurationStore: createProviderConfigurationStore({ appDataRoot, provider: 'julun', fileSystem }),
     fetch: providerFetch,
@@ -465,10 +467,14 @@ app.whenReady().then(async () => {
     }),
     historySink: generationHistorySink,
     readReferenceImage: readNewApiReferenceImage,
+    bindGenerationProject: providerDesktopHandlers.bindGenerationProject,
+    storeGeneratedImageForProject: providerDesktopHandlers.storeGeneratedImageForProject,
+    storeGeneratedVideoForProject: providerDesktopHandlers.storeGeneratedVideoForProject,
     storeGeneratedVideo: providerDesktopHandlers.storeGeneratedVideo,
   });
   const fourDAiProviderService = createNewApiProviderService({
     provider: '4dai',
+    appDataRoot: join(appDataRoot, 'providers', '4dai'),
     credentialStore: fourDAiCredentialStore,
     configurationStore: createProviderConfigurationStore({ appDataRoot, provider: '4dai', fileSystem }),
     fetch: providerFetch,
@@ -484,6 +490,9 @@ app.whenReady().then(async () => {
     resolveResultHost: async (hostname) => (await lookup(hostname, { all: true, verbatim: true }))
       .map((entry) => entry.address),
     storeGeneratedImage: providerDesktopHandlers.storeGeneratedImage,
+    bindGenerationProject: providerDesktopHandlers.bindGenerationProject,
+    storeGeneratedImageForProject: providerDesktopHandlers.storeGeneratedImageForProject,
+    storeGeneratedVideoForProject: providerDesktopHandlers.storeGeneratedVideoForProject,
   });
   const providerActiveStore = createProviderActiveStore({ appDataRoot: app.getPath('userData') });
   registerProviderBridgeHandlers(ipcMain, createProviderBridgeHandlers(createProviderRegistry({
@@ -505,6 +514,9 @@ app.whenReady().then(async () => {
       readManagedSkillChatImages: desktopHandlers.readManagedSkillChatImages,
       storeGeneratedImage: desktopHandlers.storeGeneratedImage,
       storeGeneratedVideo: desktopHandlers.storeGeneratedVideo,
+      bindGenerationProject: desktopHandlers.bindGenerationProject,
+      storeGeneratedImageForProject: desktopHandlers.storeGeneratedImageForProject,
+      storeGeneratedVideoForProject: desktopHandlers.storeGeneratedVideoForProject,
     }),
     relayme: createRelayMeProviderService({
       appDataRoot: app.getPath('userData'),
@@ -527,6 +539,9 @@ app.whenReady().then(async () => {
       readManagedSkillChatImages: desktopHandlers.readManagedSkillChatImages,
       storeGeneratedImage: desktopHandlers.storeGeneratedImage,
       storeGeneratedVideo: desktopHandlers.storeGeneratedVideo,
+      bindGenerationProject: desktopHandlers.bindGenerationProject,
+      storeGeneratedImageForProject: desktopHandlers.storeGeneratedImageForProject,
+      storeGeneratedVideoForProject: desktopHandlers.storeGeneratedVideoForProject,
     }),
     julun: julunProviderService,
     '4dai': fourDAiProviderService,

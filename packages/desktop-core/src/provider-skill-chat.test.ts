@@ -189,7 +189,7 @@ describe('executeSkillChat', () => {
     expect(generateGeminiContent).toHaveBeenCalledWith(expect.objectContaining({
       model: 'gemini-3.1-pro-preview-customtools',
       generationConfig: { maxOutputTokens: 4_096 },
-      systemInstruction: { parts: [expect.objectContaining({ text: expect.stringContaining('中文提示词') })] },
+      systemInstruction: { parts: [expect.objectContaining({ text: expect.stringContaining('JSON 方案合同') })] },
       contents: [expect.objectContaining({
         role: 'user',
         parts: expect.arrayContaining([

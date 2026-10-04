@@ -248,6 +248,55 @@ describe('model job domain contract', () => {
     })).toThrow();
   });
 
+  it('binds a v2 independent-RGBA contract to an image layer and digest', () => {
+    const job = createConfirmedModelJob({
+      id: 'layer-contract-v2', promptNodeId: 'layer-node', confirmedAt,
+      provider: 'comfly', modelRoute: 'comfly-layer', displayName: 'Layer model', modelId: 'layer-model',
+      conversationId: 'layer-conversation', referenceAssetIds: ['source'],
+      layeringGroupId: 'group-a', layeringLayerId: 'subject',
+      layeringOutputContract: 'source-independent-rgba-v2',
+      layeringConfirmationDigest: 'a'.repeat(64),
+    });
+    expect(job).toMatchObject({
+      layeringOutputContract: 'source-independent-rgba-v2',
+      layeringConfirmationDigest: 'a'.repeat(64),
+    });
+    expect(modelJobSchema.parse(JSON.parse(JSON.stringify(job)))).toMatchObject(job);
+  });
+
+  it.each([
+    [{ layeringOutputContract: 'source-independent-rgba-v2' }, 'contract without digest'],
+    [{ layeringConfirmationDigest: 'a'.repeat(64) }, 'digest without contract'],
+    [{ layeringOutputContract: 'source-independent-rgba-v2', layeringConfirmationDigest: 'a'.repeat(64) }, 'contract without layer ownership'],
+  ])('rejects an incomplete or generic layering contract (%s)', (fields, _label) => {
+    expect(() => modelJobSchema.parse({
+      id: 'invalid-layer-contract', modelId: 'model', status: 'queued', promptNodeId: 'prompt', retryCount: 0,
+      ...fields,
+    })).toThrow();
+  });
+
+  it('does not allow a layering contract on a video job', () => {
+    expect(() => createConfirmedModelJob({
+      id: 'video-layer-contract', promptNodeId: 'video-node', confirmedAt, kind: 'video',
+      provider: 'comfly', modelRoute: 'video', displayName: 'Video', modelId: 'video',
+      conversationId: 'video-conversation', referenceAssetIds: [],
+      layeringGroupId: 'group-a', layeringLayerId: 'subject',
+      layeringOutputContract: 'source-independent-rgba-v2', layeringConfirmationDigest: 'b'.repeat(64),
+    })).toThrow();
+  });
+
+  it('keeps the confirmed layering binding immutable across lifecycle transitions', () => {
+    const job = createConfirmedModelJob({
+      id: 'immutable-layer-contract', promptNodeId: 'layer-node', confirmedAt,
+      provider: 'comfly', modelRoute: 'layer', displayName: 'Layer', modelId: 'layer',
+      conversationId: 'layer-conversation', referenceAssetIds: [], layeringGroupId: 'group-a',
+      layeringLayerId: 'subject', layeringOutputContract: 'source-independent-rgba-v2', layeringConfirmationDigest: 'c'.repeat(64),
+    });
+    expect(() => transitionModelJob(job, 'submitting', { layeringOutputContract: 'source-alpha-matte-v1' })).toThrow(/immutable/i);
+    const submitting = transitionModelJob(job, 'submitting');
+    expect(() => transitionModelJob(submitting, 'running', { layeringConfirmationDigest: 'd'.repeat(64) })).toThrow(/immutable/i);
+  });
+
   it('persists provider terminal ACK state for crash recovery', () => {
     expect(modelJobSchema.parse({
       id: 'terminal-job',

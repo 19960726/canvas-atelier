@@ -1,0 +1,266 @@
+/* Keep canvas actions compact. Project management lives beside Save. */
+.workspace--canvas-layout .topbar {
+  display: flex !important;
+  gap: 6px !important;
+  width: max-content !important;
+  max-width: calc(100vw - 24px) !important;
+  height: 60px !important;
+  min-height: 60px !important;
+  padding: 8px 12px !important;
+  background: color-mix(in srgb, var(--gate-card, var(--surface)) 96%, transparent) !important;
+  box-shadow: 0 12px 32px color-mix(in srgb, #000 16%, transparent) !important;
+}
+
+.workspace--canvas-layout .topbar__identity {
+  display: none !important;
+  width: auto !important;
+  min-width: 0 !important;
+  flex: 0 1 auto !important;
+  gap: 10px !important;
+  overflow: visible !important;
+}
+
+.workspace--canvas-layout .product-mark {
+  display: flex !important;
+  width: auto !important;
+  flex: 0 0 auto !important;
+  color: var(--gate-text, var(--text)) !important;
+  font-size: 15px !important;
+  letter-spacing: -.02em !important;
+}
+.workspace--canvas-layout .product-mark strong { font-weight: 760 !important; }
+
+.workspace--canvas-layout .project-menu { max-width: 150px !important; }
+.workspace--canvas-layout .project-button {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  width: 150px !important;
+  max-width: 150px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  justify-content: space-between !important;
+  gap: 6px !important;
+  padding: 0 10px !important;
+  color: var(--gate-text, var(--text)) !important;
+  background: var(--gate-card-muted, var(--surface-muted)) !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 10px !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+}
+.workspace--canvas-layout .project-button__name {
+  width: auto !important;
+  max-width: 118px !important;
+  text-align: left !important;
+}
+.workspace--canvas-layout .project-button > svg { flex: 0 0 auto; }
+.workspace--canvas-layout .project-button:hover { border-color: var(--accent) !important; }
+.workspace--canvas-layout .project-menu__popover {
+  z-index: 170 !important;
+  display: grid !important;
+  width: 220px !important;
+  padding: 6px !important;
+  background: var(--gate-card, var(--surface)) !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 10px !important;
+}
+.workspace--canvas-layout .project-menu__popover button {
+  min-height: 40px !important;
+  border-radius: 7px !important;
+}
+
+.workspace--canvas-layout .topbar__canvas-actions {
+  height: 40px !important;
+  justify-self: center !important;
+  gap: 6px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+.workspace--canvas-layout .save-project-control {
+  grid-template-columns: 94px 40px !important;
+  width: 134px !important;
+  min-width: 134px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+}
+.workspace--canvas-layout .save-project-control__main {
+  width: 94px !important;
+  min-width: 94px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+}
+.workspace--canvas-layout .save-project-control__toggle {
+  width: 40px !important;
+  min-width: 40px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+}
+.workspace--canvas-layout .topbar-canvas-action:not(.topbar-canvas-action--history) {
+  min-width: 100px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+}
+
+.workspace--canvas-layout .topbar__actions {
+  width: auto !important;
+  height: 40px !important;
+  justify-self: end !important;
+  gap: 6px !important;
+}
+.workspace--canvas-layout .topbar-agent-entry {
+  min-width: 92px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  color: var(--gate-text, var(--text)) !important;
+  background: var(--gate-card-muted, var(--surface-muted)) !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 10px !important;
+  box-shadow: none !important;
+}
+.workspace--canvas-layout .topbar-agent-entry:is(:hover, :focus-visible, .is-active) {
+  color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+  border-color: var(--accent-soft-border) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+.workspace--canvas-layout .topbar__actions .theme-control--compact {
+  width: 104px !important;
+  height: 40px !important;
+  flex-basis: 104px !important;
+  background: var(--gate-card-muted, var(--surface-muted)) !important;
+}
+.workspace--canvas-layout .topbar-close-action {
+  display: inline-grid !important;
+  width: 40px !important;
+  min-width: 40px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+}
+.workspace--canvas-layout .topbar :is(button, select):focus-visible,
+.workspace--canvas-layout .topbar .theme-control:focus-within {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px !important;
+}
+
+/* The rail retains its compact width while dividing editing, workspaces,
+   and app controls. Every icon has the same hit area and a visible label. */
+.workspace--canvas-layout .toolrail--floating {
+  gap: 0 !important;
+  padding: 14px 9px !important;
+}
+.workspace--canvas-layout .toolrail__group {
+  display: flex;
+  width: 40px;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.workspace--canvas-layout .toolrail__group + .toolrail__group {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--gate-border, var(--border));
+}
+.workspace--canvas-layout .toolrail__group .tool-button {
+  position: relative;
+  box-sizing: border-box !important;
+  display: grid !important;
+  flex: 0 0 40px !important;
+  width: 40px !important;
+  min-width: 40px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  color: var(--gate-muted, var(--muted)) !important;
+  background: var(--gate-rail-surface, var(--surface)) !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 11px !important;
+}
+.workspace--canvas-layout .toolrail__group .tool-button::before { display: none !important; }
+.workspace--canvas-layout .toolrail__group .tool-button--legacy-hidden { display: none !important; }
+.workspace--canvas-layout .toolrail__group .tool-button:is(:hover, .is-active, [aria-pressed='true']) {
+  color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+  border-color: var(--accent-soft-border) !important;
+}
+.workspace--canvas-layout .toolrail__group .tool-button:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px !important;
+}
+.workspace--canvas-layout .toolrail__glyph svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+.workspace--canvas-layout .toolrail__glyph[data-rail-icon='agent'] {
+  width: 22px !important;
+  height: 22px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
+.workspace--canvas-layout .toolrail__glyph .canvas-ai-orb--rail {
+  box-sizing: border-box;
+  place-self: center;
+  animation: none;
+}
+.workspace--canvas-layout .tool-button__hint {
+  position: absolute;
+  z-index: 190;
+  top: 50%;
+  left: calc(100% + 12px);
+  width: max-content;
+  max-width: 160px;
+  padding: 7px 10px;
+  transform: translateY(-50%);
+  color: var(--gate-text, var(--text));
+  background: var(--gate-card, var(--surface));
+  border: 1px solid var(--gate-border, var(--border));
+  border-radius: 8px;
+  box-shadow: 0 8px 20px color-mix(in srgb, #000 15%, transparent);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.workspace--canvas-layout .toolrail__group .tool-button:is(:hover, :focus-visible) .tool-button__hint {
+  opacity: 1;
+  visibility: visible;
+}
+
+.workspace--canvas-layout[data-agent-collapsed='false'] .topbar {
+  width: max-content !important;
+}
+@media (max-width: 1280px) {
+  .workspace--canvas-layout[data-agent-collapsed='false'] .topbar {
+    gap: 6px !important;
+  }
+  .workspace--canvas-layout[data-agent-collapsed='false'] .product-mark { display: none !important; }
+  .workspace--canvas-layout[data-agent-collapsed='false'] .project-button { width: 105px !important; }
+  .workspace--canvas-layout[data-agent-collapsed='false'] .project-button__name { max-width: 75px !important; }
+  .workspace--canvas-layout[data-agent-collapsed='false'] .topbar__actions .theme-control--compact {
+    width: 80px !important;
+    flex-basis: 80px !important;
+  }
+}
+@media (max-width: 1060px) {
+  .workspace--canvas-layout[data-agent-collapsed='false'] .topbar__actions .theme-control--compact { display: none !important; }
+}
+@media (max-width: 820px) {
+  .workspace--canvas-layout .topbar {
+    gap: 6px !important;
+    width: max-content !important;
+  }
+  .workspace--canvas-layout .product-mark { display: none !important; }
+  .workspace--canvas-layout .project-button { width: 110px !important; }
+  .workspace--canvas-layout .topbar__actions .theme-control--compact { display: none !important; }
+}
+@media (max-width: 600px) {
+  .workspace--canvas-layout .topbar__identity { display: none !important; }
+}

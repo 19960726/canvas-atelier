@@ -11,7 +11,7 @@ interface PlacementGeometry {
   readonly canvasHeight: number;
 }
 
-async function runEmbeddedPlacement(input: PlacementGeometry) {
+async function runEmbeddedPlacement(input: PlacementGeometry, failResize = false) {
   const scriptPath = fileURLToPath(new URL('./photoshop-place-smart-object.jsx', import.meta.url));
   const source = (await readFile(scriptPath, 'utf8'))
     .replace(/^#target photoshop\s*/u, '')
@@ -36,6 +36,7 @@ async function runEmbeddedPlacement(input: PlacementGeometry) {
       return [unit(bounds.left), unit(bounds.top), unit(bounds.right), unit(bounds.bottom)];
     },
     resize(horizontal: number, vertical: number, anchor: string) {
+      if (failResize) throw new Error('resize unavailable');
       resizeCalls.push({ horizontal, vertical, anchor });
       const centerX = (bounds.left + bounds.right) / 2;
       const centerY = (bounds.top + bounds.bottom) / 2;
@@ -61,6 +62,8 @@ async function runEmbeddedPlacement(input: PlacementGeometry) {
     width: unit(input.canvasWidth),
     height: unit(input.canvasHeight),
     activeLayer: layer,
+    get activeHistoryState() { return layers.slice(); },
+    set activeHistoryState(state: unknown[]) { layers.splice(0, layers.length, ...state); },
   };
   class FakeFile {
     exists = true;
@@ -74,7 +77,8 @@ async function runEmbeddedPlacement(input: PlacementGeometry) {
     putPath() {}
     putEnumerated() {}
   }
-  runInNewContext(source, {
+  let error: unknown;
+  try { runInNewContext(source, {
     ActionDescriptor: FakeActionDescriptor,
     AnchorPosition: { MIDDLECENTER: 'middle-center' },
     DialogModes: { NO: 0 },
@@ -93,8 +97,9 @@ async function runEmbeddedPlacement(input: PlacementGeometry) {
     isFinite,
     Math,
     stringIDToTypeID: (value: string) => value,
-  });
+  }); } catch (caught) { error = caught; }
   return {
+    error,
     bounds,
     layerCount: layers.length,
     resizeCalls,
@@ -102,6 +107,36 @@ async function runEmbeddedPlacement(input: PlacementGeometry) {
 }
 
 describe('Photoshop placement script contract', () => {
+  it('rolls back a partially placed layer when fitting fails', async () => {
+    const result = await runEmbeddedPlacement({ layerWidth: 120, layerHeight: 60, canvasWidth: 240, canvasHeight: 240 }, true);
+    expect(result.error).toBeDefined();
+    expect(result.layerCount).toBe(0);
+  });
+
+  it.each([false, true])('does not place a second image after the JSX attempt (lost acknowledgement: %s)', async (lostAcknowledgement) => {
+    const runnerPath = fileURLToPath(new URL('./photoshop-windows-runner.js', import.meta.url));
+    const source = (await readFile(runnerPath, 'utf8')).replace(/WScript\.Quit\(0\);/gu, 'return;');
+    const payload = createPhotoshopPlacementPayload({ absolutePath: 'E:/image.png', layerName: 'Placed image' });
+    let layerCount = 0;
+    const output: string[] = [];
+    const application = {
+      version: '27.0', documents: { Count: 1 },
+      activeDocument: { activeLayer: { get name() { throw new Error('stale COM layer proxy'); } } },
+      DoJavaScript: () => {
+        layerCount += 1;
+        if (lostAcknowledgement) throw new Error('COM response unavailable after placement');
+        return 'canvas-placed:Placed image';
+      },
+      open: () => ({ activeLayer: { duplicate: () => { layerCount += 1; return { name: 'duplicate' }; } }, close: () => undefined }),
+    };
+    runInNewContext(source, {
+      GetObject: () => application,
+      ActiveXObject: function () { return { OpenTextFile: (path: string) => ({ ReadAll: () => path === 'payload.json' ? payload : 'jsx', Close: () => undefined }) }; },
+      WScript: { Arguments: { length: 2, Item: (index: number) => index === 0 ? 'place.jsx' : 'payload.json' }, StdOut: { Write: (value: string) => output.push(value) } },
+    });
+    expect(layerCount).toBe(1);
+    expect(JSON.parse(output[0]!)).toMatchObject({ kind: lostAcknowledgement ? 'placement_failed' : 'success' });
+  });
   it('encodes paths and layer names as data instead of executable source', () => {
     const payload = createPhotoshopPlacementPayload({
       absolutePath: 'E:/image/quote";app.activeDocument.save();//.png',

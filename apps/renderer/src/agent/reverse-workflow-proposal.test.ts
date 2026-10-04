@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createStarterProject } from '../app/app-store';
-import { applyTransaction } from '@agent-canvas/domain';
+import { applyTransaction, createCanvasModuleNode } from '@agent-canvas/domain';
 import { buildReverseAgentCanvasPlan, buildReverseWorkflowProposal } from './reverse-workflow-proposal';
 import type { ReverseAnalysisResult } from './reverse-workflow-contract';
 
@@ -20,6 +20,79 @@ const analysis: ReverseAnalysisResult = {
 };
 
 describe('reverse workflow proposal', () => {
+  it('keeps new reverse materials clear of an existing expanded generation and each other at full portrait ratio', () => {
+    const existing = createCanvasModuleNode('existing-expanded', 'image_generation', { x: 120, y: 160 });
+    const assets = ['a', 'b'].map(character => ({ assetId: character.repeat(16), mediaType: 'image/png' as const, byteSize: 10, extension: 'png' as const, height: 1280, width: 720, origin: 'imported' as const, sha256: character.repeat(64), label: 'Portrait material' }));
+    const project = { ...createStarterProject(), nodes: [existing], edges: [], assets };
+    const before = structuredClone(project);
+    const plan = buildReverseAgentCanvasPlan({ project, persistenceGeneration: 1, modelRoute: 'vision',
+      references: assets.map((asset, index) => ({ assetId: asset.assetId, mention: `@图片${index + 1}`, label: asset.label })), analysis });
+    const references = plan.transaction.operations.flatMap(operation => operation.kind === 'create_node' && operation.node.type === 'module' && operation.node.data.moduleType === 'image_input' ? [operation.node] : []);
+    expect(references).toHaveLength(2);
+    for (const reference of references) expect.soft(reference.position.x).toBeGreaterThan(existing.position.x + 704);
+    expect.soft(references[1]!.position.y).toBeGreaterThan(references[0]!.position.y + 272 * 1280 / 720 + 77);
+    expect(project).toEqual(before);
+  });
+
+  it('separates the full analysis result from editable variants and leaves room for portrait generation frames', () => {
+    const project = { ...createStarterProject(), nodes: [], edges: [], assets: [] };
+    const plan = buildReverseAgentCanvasPlan({ project, persistenceGeneration: 1, modelRoute: 'vision',
+      generation: { kind: 'image', parameters: { aspectRatio: '9:16' } }, references: [], analysis });
+    const nodes = plan.transaction.operations.flatMap(operation => operation.kind === 'create_node' && operation.node.type === 'module' ? [operation.node] : []);
+    const result = nodes.find(node => node.data.moduleType === 'reverse_result')!;
+    const prompts = nodes.filter(node => node.data.moduleType === 'text_prompt');
+    const first = prompts[0]!;
+    const separated = result.position.x + 520 <= first.position.x || first.position.x + 218 <= result.position.x
+      || result.position.y + 648 <= first.position.y || first.position.y + 307.5 <= result.position.y;
+    expect.soft(separated).toBe(true);
+    expect.soft(prompts[1]!.position.y - first.position.y).toBeGreaterThan(676 * 16 / 9 + 464);
+  });
+
+  it('keeps every approved reference boundary and delivery check in the connected executable prompt', () => {
+    const project = { ...createStarterProject(), id: 'reverse-boundaries' };
+    const reference = { assetId: 'a'.repeat(16), mention: '@图片8', label: '原始产品' };
+    const detailed: ReverseAnalysisResult = {
+      ...analysis,
+      referenceDuties: [{ ...reference, responsibility: '产品几何', inherit: ['原机位和物体大小比例'],
+        replace: ['仅去除产品主体'], doNotCopy: ['不要复制橙色挂环到新背景'] }],
+      prompts: { ...analysis.prompts, negative: ['禁止增加第二只杯子', '禁止水印'] },
+      checklist: [{ id: 'check-scale', label: '位置及大小与原图一致', state: 'pending' }],
+      variants: [analysis.variants[0]!],
+    };
+    const plan = buildReverseAgentCanvasPlan({ project, persistenceGeneration: 1, modelRoute: 'vision',
+      references: [reference], analysis: detailed, generation: { kind: 'image', modelRoute: 'image' } });
+    const prompts = plan.transaction.operations.flatMap(operation => operation.kind === 'create_node'
+      && operation.node.type === 'module' && ['text_prompt', 'image_generation'].includes(operation.node.data.moduleType)
+      ? [String(operation.node.data.config.prompt)] : []);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toBe(prompts[1]);
+    for (const prompt of prompts) {
+      expect(prompt.startsWith('A')).toBe(true);
+      for (const constraint of ['参考图片8', '原机位和物体大小比例', '仅去除产品主体',
+        '不要复制橙色挂环到新背景', '禁止增加第二只杯子', '禁止水印', '位置及大小与原图一致']) {
+        expect(prompt).toContain(constraint);
+      }
+      expect(prompt).not.toContain('@图片');
+    }
+  });
+
+  it.each(['image', 'video'] as const)('connects a real %s output to each separate reverse variant', kind => {
+    const project = { ...createStarterProject(), id: `reverse-output-${kind}` };
+    const plan = buildReverseAgentCanvasPlan({ project, persistenceGeneration: 1, modelRoute: 'vision',
+      references: [], analysis, generation: { kind, modelRoute: 'generation' } });
+    const applied = applyTransaction(project, plan.transaction).project;
+    const generations = applied.nodes.filter(node => node.type === 'module' && node.data.moduleType === `${kind}_generation`);
+    const outputs = applied.nodes.filter(node => node.type === 'module' && node.data.moduleType === (kind === 'image' ? 'result_output' : 'video_result'));
+    expect(generations).toHaveLength(3);
+    expect(outputs).toHaveLength(3);
+    for (const generation of generations) {
+      const outputEdges = applied.edges.filter(edge => edge.source === generation.id && edge.sourcePortId === 'result');
+      expect(outputEdges).toHaveLength(1);
+      expect(outputEdges[0]!.targetPortId).toBe(kind === 'image' ? 'result' : 'video');
+      expect(outputs.some(output => output.id === outputEdges[0]!.target)).toBe(true);
+    }
+  });
+
   it('creates deterministic reverse and variant nodes without touching durable state', () => {
     const input = {
       projectId: 'project-1',
@@ -78,10 +151,13 @@ describe('reverse workflow proposal', () => {
       'reverse_result',
       'text_prompt',
       'image_generation',
+      'result_output',
       'text_prompt',
       'image_generation',
+      'result_output',
       'text_prompt',
       'image_generation',
+      'result_output',
     ]);
     const reverseNode = createdNodes.find((node) => node.type === 'module' && node.data.moduleType === 'reverse_agent');
     expect(reverseNode?.type === 'module' ? reverseNode.data.config : null).toMatchObject({
@@ -100,10 +176,22 @@ describe('reverse workflow proposal', () => {
         ? [node.data.config.prompt]
         : []
     ));
-    expect(generationPrompts).toEqual(['A', 'B', 'C']);
+    expect(generationPrompts.map(prompt => String(prompt).split('\n')[0])).toEqual(['A', 'B', 'C']);
+    expect(generationPrompts.every(prompt => String(prompt).includes('禁止事项：\n- 水印'))).toBe(true);
     expect(createdNodes.filter((node) => node.type === 'module' && node.data.moduleType === 'image_generation').every((node) => node.type === 'module' && node.data.config.modelRoute === 'image/chosen')).toBe(true);
     const applied = applyTransaction(project, plan.transaction);
     expect(applied.project.nodes.filter((node) => node.type === 'module' && node.data.moduleType === 'reverse_agent')).toHaveLength(1);
-    expect(applied.project.edges.filter((edge) => edge.targetPortId === 'references').map((edge) => edge.order)).toEqual([0, 1]);
+    expect(applied.project.edges.filter((edge) => edge.targetPortId === 'references' && edge.target === reverseNode?.id).map((edge) => edge.order)).toEqual([0, 1]);
+    const generationNodes = applied.project.nodes.filter((node) => node.type === 'module' && node.data.moduleType === 'image_generation');
+    for (const generationNode of generationNodes) {
+      const edges = applied.project.edges.filter((edge) => edge.target === generationNode.id && edge.targetPortId === 'references');
+      expect(edges).toHaveLength(2);
+      expect(edges.map((edge) => {
+        const sourceNode = applied.project.nodes.find((node) => node.id === edge.source);
+        return sourceNode?.type === 'module' ? sourceNode.data.config.assetId : undefined;
+      }))
+        .toEqual(['a'.repeat(16), 'b'.repeat(16)]);
+      expect(edges.map((edge) => edge.order)).toEqual([0, 1]);
+    }
   });
 });

@@ -1,6 +1,26 @@
 import { posix, win32, type PlatformPath } from 'node:path';
+import { resolveLegacyUserDataRoots, resolveStableUserDataRoot } from '@agent-canvas/desktop-core';
 
 type QaEnvironment = Readonly<Record<string, string | undefined>>;
+
+export function resolveDesktopDataRoots(
+  env: QaEnvironment,
+  getPath: (name: 'appData' | 'userData') => string,
+) {
+  const qaUserDataRoot = resolveQaUserDataRoot(env);
+  // An isolated launch already supplies its directory. Windows default profile
+  // discovery can fail in that environment and must not precede this override.
+  if (qaUserDataRoot !== null) {
+    return { qaUserDataRoot, stableUserDataRoot: qaUserDataRoot, legacyUserDataRoots: [] as string[] };
+  }
+  const discoveredUserDataRoot = getPath('userData');
+  const discoveredAppDataRoot = getPath('appData');
+  return {
+    qaUserDataRoot,
+    stableUserDataRoot: resolveStableUserDataRoot(discoveredAppDataRoot),
+    legacyUserDataRoots: resolveLegacyUserDataRoots(discoveredAppDataRoot, discoveredUserDataRoot),
+  };
+}
 
 export function resolveQaUserDataRoot(
   env: QaEnvironment,

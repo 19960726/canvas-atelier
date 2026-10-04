@@ -1,4 +1,5 @@
 import { expect, test } from './helpers/e2e-test';
+import type { Locator } from '@playwright/test';
 import {
   captureLayoutScreenshot,
   e2eState,
@@ -13,6 +14,32 @@ const viewports = [
   { name: '1440x900', width: 1440, height: 900 },
   { name: '1920x1080', width: 1920, height: 1080 },
 ];
+
+async function assertVideoMediaAliases(generation: Locator): Promise<void> {
+  const aliases = generation.locator('.react-flow__handle[data-port-direction="input"][data-visual-alias="true"]');
+  const metrics = await aliases.evaluateAll(elements => elements.map(element => {
+    const main = element.closest('.module-node__port-row')?.querySelector('.react-flow__handle:not([data-visual-alias="true"])');
+    const box = element.getBoundingClientRect(), mainBox = main?.getBoundingClientRect(), style = getComputedStyle(element);
+    return { id: element.getAttribute('data-port-id'), opacity: style.opacity, pointerEvents: style.pointerEvents,
+      ariaHidden: element.getAttribute('aria-hidden'), width: box.width, height: box.height, mainPresent: Boolean(mainBox),
+      dx: mainBox ? Math.abs(box.x + box.width / 2 - mainBox.x - mainBox.width / 2) : null,
+      dy: mainBox ? Math.abs(box.y + box.height / 2 - mainBox.y - mainBox.height / 2) : null };
+  }));
+  expect(metrics.map(alias => alias.id).sort()).toEqual(['firstFrame', 'lastFrame', 'prompt', 'sourceVideo']);
+  for (const alias of metrics) {
+    expect(alias.opacity, alias.id ?? '').toBe('0'); expect(alias.pointerEvents, alias.id ?? '').toBe('none');
+    expect(alias.ariaHidden, alias.id ?? '').toBe('true'); expect(alias.mainPresent, alias.id ?? '').toBe(true);
+    expect(alias.width).toBeGreaterThan(0); expect(alias.height).toBeGreaterThan(0);
+    expect(alias.dx, `${alias.id} shares the media socket x`).toBeLessThanOrEqual(1);
+    expect(alias.dy, `${alias.id} shares the media socket y`).toBeLessThanOrEqual(1);
+  }
+}
+
+async function assertRealVideoInputEdge(page: Parameters<typeof openEmptyApp>[0]): Promise<void> {
+  const path = page.locator('.react-flow__edge .react-flow__edge-path');
+  await expect(path).toHaveCount(1); await expect(path).toBeVisible(); await expect(path).toHaveAttribute('d', /^M/u);
+  expect(await path.evaluate(element => (element as SVGPathElement).getTotalLength())).toBeGreaterThan(0);
+}
 
 for (const viewport of viewports) {
 for (const theme of ['dark', 'light'] as const) {
@@ -29,7 +56,8 @@ for (const theme of ['dark', 'light'] as const) {
     const source = page.locator('[data-module-type="image_input"] [data-port-id="image"].react-flow__handle');
     const target = generation.locator('[data-port-id="media"].react-flow__handle');
     const result = generation.locator('[data-port-id="result"].react-flow__handle');
-    await expect(generation.locator('[data-port-direction="input"] .react-flow__handle')).toHaveCount(1);
+    await expect(generation.locator('[data-port-direction="input"] .react-flow__handle:not([data-visual-alias="true"])')).toHaveCount(1);
+    await assertVideoMediaAliases(generation);
     const [generationBox, targetBox, resultBox] = await Promise.all([
       generation.boundingBox(),
       target.boundingBox(),
@@ -49,6 +77,7 @@ for (const theme of ['dark', 'light'] as const) {
     ).toBeLessThanOrEqual(14);
     await source.dragTo(target);
     await expect.poll(async () => (await e2eState(page)).edgeCount).toBe(1);
+    await assertRealVideoInputEdge(page);
     const mediaTray = generation.getByLabel('Connected video media');
     await expect(mediaTray).toBeVisible();
     await expect(mediaTray).toHaveCSS('width', '614px');
@@ -76,9 +105,11 @@ for (const theme of ['dark', 'light'] as const) {
     const generation = page.locator('[data-module-type="video_generation"]');
     const source = page.locator('[data-module-type="video_input"] [data-port-id="video"].react-flow__handle');
     const target = generation.locator('[data-port-id="media"].react-flow__handle');
-    await expect(generation.locator('[data-port-direction="input"] .react-flow__handle')).toHaveCount(1);
+    await expect(generation.locator('[data-port-direction="input"] .react-flow__handle:not([data-visual-alias="true"])')).toHaveCount(1);
+    await assertVideoMediaAliases(generation);
     await source.dragTo(target);
     await expect.poll(async () => (await e2eState(page)).edgeCount).toBe(1);
+    await assertRealVideoInputEdge(page);
     await captureLayoutScreenshot(page, testInfo, `video-media-video-${theme}-${viewport.name}`);
   });
 

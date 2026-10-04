@@ -848,7 +848,7 @@ describe('provider generation history production sink', () => {
       prompt: 'private prompt retry',
       conversationId: 'conversation-provider-history-deleted-tombstone-retry',
       referenceAssetIds: [],
-    })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE', message: expect.stringContaining('勿新建付费任务') });
     expect(retryFetch).not.toHaveBeenCalled();
   });
 

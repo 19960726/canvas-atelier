@@ -47,3 +47,15 @@ export function isRenderableManagedImageUrl(
     && e2eMatch !== null
     && (expectedAssetId === undefined || e2eMatch[1] === expectedAssetId);
 }
+
+export function isRenderableManagedVideoUrl(value: string | undefined, expectedAssetId: string): value is string {
+  if (value === undefined || !assetIdPattern.test(expectedAssetId)) return false;
+  if (value.startsWith('novus-asset:') || value.startsWith('blob:')) return isRenderableManagedImageUrl(value, expectedAssetId);
+  try {
+    const base = new URL(globalThis.location?.href ?? 'http://localhost/');
+    const parsed = new URL(value, base);
+    return (base.protocol === 'http:' || base.protocol === 'https:') && parsed.origin === base.origin
+      && parsed.username === '' && parsed.password === '' && parsed.search === '' && parsed.hash === ''
+      && parsed.pathname === `/__novus_e2e_asset/${expectedAssetId}.mp4`;
+  } catch { return false; }
+}

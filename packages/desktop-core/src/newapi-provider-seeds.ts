@@ -1,9 +1,14 @@
 import type { NewApiModelProfile, NewApiProviderId } from './newapi-model-catalog.js';
+import { getJulunVideoModelSpec } from './julun-video-model-spec.js';
 
-const incompleteVideo = (modelId: string, modelRoute: string): NewApiModelProfile => ({
-  provider: 'julun', modelRoute, displayName: modelId, modelId,
-  capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'incomplete',
-});
+const incompleteVideo = (modelId: string, modelRoute: string): NewApiModelProfile => {
+  const spec = getJulunVideoModelSpec(modelId);
+  return {
+    provider: 'julun', modelRoute, displayName: modelId, modelId,
+    capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'incomplete',
+    ...(spec === undefined ? {} : { constraints: { video: spec.constraints } }),
+  };
+};
 const incompleteImage = (modelId: string, modelRoute: string): NewApiModelProfile => ({
   provider: '4dai', modelRoute, displayName: modelId, modelId,
   capabilities: ['image_generation'], capabilityStatus: 'incomplete',
@@ -26,6 +31,23 @@ export const NEW_API_PROVIDER_SEEDS: Readonly<Record<NewApiProviderId, readonly 
     incompleteVideo('minimax_h3', 'julun-minimax-h3'),
     incompleteVideo('sd2.5', 'julun-sd2-5'),
     incompleteVideo('seedance-2.0-deal', 'julun-seedance-2-0-deal'),
+    incompleteVideo('seedance-2.5-720p', 'julun-seedance-2-5-720p'),
+    incompleteVideo('seedance-2.5-pro-480', 'julun-seedance-2-5-pro-480'),
+    incompleteVideo('seedance-2.5-pro-720', 'julun-seedance-2-5-pro-720'),
+    incompleteVideo('Q10-SD2.5 全参', 'julun-q10-sd2-5-full'),
+    incompleteVideo('wan-3.0-c2', 'julun-wan-3-0-c2'),
+    incompleteVideo('video-editing', 'julun-video-editing'),
+    incompleteVideo('MINIMAX-H3-768p-933', 'julun-minimax-h3-768p-933'),
+    incompleteVideo('MINIMAX-H3-2.0采样-933', 'julun-minimax-h3-2-0-sampling-933'),
+    incompleteVideo('sd2.5_30', 'julun-sd2-5-30'),
+    incompleteVideo('SD 2.5', 'julun-sd-2-5-alias'),
+    incompleteVideo('SD 2.0', 'julun-sd-2-0'),
+    incompleteVideo('SD 2.0-933', 'julun-sd-2-0-933'),
+    incompleteVideo('sd2.0-933-720p-fast-x5-15s', 'julun-sd2-0-933-720p-fast-x5-15s'),
+    incompleteVideo('seedance-2.0-c2', 'julun-seedance-2-0-c2'),
+    incompleteVideo('seedance-2.0-fast-c2', 'julun-seedance-2-0-fast-c2'),
+    incompleteVideo('seedance-2.0-fast-15s', 'julun-seedance-2-0-fast-15s'),
+    incompleteVideo('Seedance-933', 'julun-seedance-933'),
   ],
   '4dai': [
     incompleteImage('gpt-image-1', '4dai-gpt-image-1'),
@@ -48,3 +70,7 @@ export const NEW_API_PROVIDER_SEEDS: Readonly<Record<NewApiProviderId, readonly 
     incompleteVision('grok-4.6', '4dai-grok-4-6'),
   ],
 };
+
+// These routes were already stored before the 2026-10-03 public additions.
+// Newly seeded IDs preserve any previously stored dynamic route first.
+export const JULUN_HISTORICAL_SEED_MODEL_IDS: ReadonlySet<string> = new Set(NEW_API_PROVIDER_SEEDS.julun.slice(0, 11).map(profile => profile.modelId));

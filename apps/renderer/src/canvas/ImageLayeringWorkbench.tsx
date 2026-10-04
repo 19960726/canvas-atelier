@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ProjectImageAssetSummary } from '@agent-canvas/desktop-core';
 import type { CanvasModuleNode, ModelJob } from '@agent-canvas/domain';
 import { encodeLayeredPsd, trimTransparentLayer, type LayeredPsdDocument } from '../app/layered-psd';
@@ -13,10 +13,13 @@ import { boxSchema } from '../app/layering-selection';
 import type { LayeringBox } from '../app/layering-selection';
 import { decodeImageWithTimeout } from '../app/decode-image-timeout';
 import {isShadowOnlyLayer} from '../app/shadow-layer-role';
+import { buildLayeringReviewDigest } from '../app/layering-proof';
+import { LayeringLocalReview, type LocalLayeringReview } from './LayeringLocalReview';
+import { getLayerPixelRepresentation } from '../app/layer-pixel-representation';
 
-type ManagedImage = Pick<ProjectImageAssetSummary, 'assetId' | 'mediaType' | 'displayUrl'> & Partial<Pick<ProjectImageAssetSummary, 'width' | 'height'>>;
+type ManagedImage = Pick<ProjectImageAssetSummary, 'assetId' | 'mediaType' | 'displayUrl'> & Partial<Pick<ProjectImageAssetSummary, 'width' | 'height' | 'sha256'>>;
 
-export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs = [], onLayersChange, onBackgroundModeChange, onRefreshJobs, onRetryJob, canRetryJob, onApplySourceBounds, onRecheckLayer, onRefineLayer }: {
+export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs = [], onLayersChange, onBackgroundModeChange, onRefreshJobs, onRetryJob, canRetryJob, onApplySourceBounds, onRecheckLayer, onRefineLayer, onReviewLayers }: {
   config: Readonly<Record<string, unknown>>;
   assets: readonly ManagedImage[];
   layerNodes?: readonly CanvasModuleNode[];
@@ -29,6 +32,7 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
   onApplySourceBounds?: (bounds: Record<string, LayeringBox>) => Promise<void>;
   onRecheckLayer?: (nodeId: string, assetId: string) => Promise<void>;
   onRefineLayer?: (nodeId: string, regions: MattingRegion[]) => Promise<void>;
+  onReviewLayers?: (review: LocalLayeringReview) => Promise<void>;
 }) {
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState<'original' | 'composite'>('composite');
@@ -38,13 +42,19 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
   const [switchingBackground, setSwitchingBackground] = useState(false);
   const [retryCandidateId, setRetryCandidateId] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [localReview, setLocalReview] = useState<{ digest: string; config: Readonly<Record<string, unknown>>; nodes: readonly CanvasModuleNode[] } | null>(null);
+  const exportIdentity = JSON.stringify([config, layerNodes, assets]);
+  const latestExportIdentity = useRef(exportIdentity);
+  latestExportIdentity.current = exportIdentity;
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const generatedConfig = useMemo(() => {
     if (!Array.isArray(config.planLayers)) return config;
     const nodesByLayer = new Map(layerNodes.map((node) => [node.data.config.layerId, node]));
     const orderedPlan = orderedLayerPlan(config,layerNodes);
     const records = orderedPlan.map((layer, index) => {
       const node = nodesByLayer.get(layer.layerId);
-      if (!node || typeof node.data.config.resultAssetId !== 'string' || node.data.config.qualityStatus !== 'passed') return null;
+      if (!node || typeof node.data.config.resultAssetId !== 'string' || !hasFormatProof(node.data.config)) return null;
       const width = config.canvasWidth;
       const height = config.canvasHeight;
       if (typeof width !== 'number' || typeof height !== 'number') return null;
@@ -70,7 +80,23 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
   const selection = selectionResult.selection;
   const selectionClip = selection ? layerSelectionClip(selection) : undefined;
   const jobsById = new Map(jobs.map((job) => [job.id, job]));
-  const passedCount = generatedPlan.filter((layer) => layerStatusById.get(layer.layerId)?.qualityStatus === 'passed').length;
+  const passedCount = generatedPlan.filter((layer) => hasFormatProof(layerStatusById.get(layer.layerId) ?? {})).length;
+  const reviewRequired = config.needsReconfirm === true || layerNodes.some(node => node.data.config.resultRepresentation === 'independent-rgba-candidate'
+    && node.data.config.semanticReviewAccepted !== true);
+  const reviewReady = generatedPlan.length >= 2 && generatedPlan.every(layer => {
+    const current = layerStatusById.get(layer.layerId);
+    return current?.qualityStatus !== 'failed' && current?.formatQualityStatus === 'passed'
+      && typeof current.resultAssetId === 'string' && current.qualityFormatCheckedAssetId === current.resultAssetId
+      && current.qualityValidationVersion === 2;
+  }) && sourceAsset !== undefined
+    && !jobs.some(job => job.status === 'queued' || job.status === 'submitting' || job.status === 'running');
+  const openLocalReview = async () => {
+    try {
+      const snapshotConfig = structuredClone(config), snapshotNodes = structuredClone(layerNodes);
+      const digest = await buildLayeringReviewDigest(snapshotConfig, snapshotNodes);
+      setLocalReview({ digest, config: snapshotConfig, nodes: [...snapshotNodes].sort((a, b) => Number(a.data.config.order ?? 0) - Number(b.data.config.order ?? 0)) });
+    } catch (error) { setExportError(error instanceof Error ? error.message : '无法读取当前图层检查状态'); }
+  };
   const failedCount = generatedPlan.filter((layer) => {
     const layerConfig = layerStatusById.get(layer.layerId);
     const job = typeof layerConfig?.jobId === 'string' ? jobsById.get(layerConfig.jobId) : undefined;
@@ -78,17 +104,40 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
   }).length;
   const sourceInput: SourceLayerInput | null = config.pixelMode === 'source' && parsed.document && sourceAsset && selection ? {
     sourceUrl: sourceAsset.displayUrl, width: sourceAsset.width ?? parsed.document.canvasWidth, height: sourceAsset.height ?? parsed.document.canvasHeight,
-    selection, backgroundMode: config.backgroundMode === 'replace' ? 'replace' : 'preserve', layers: parsed.document.layers.map(layer => {
+    selection, backgroundMode: config.backgroundMode === 'replace' ? 'replace' : 'preserve',
+    ...(typeof config.assemblyConfirmationDigest === 'string' ? { groupConfirmationDigest: config.assemblyConfirmationDigest } :
+      typeof config.layeringConfirmationDigest === 'string' ? { groupConfirmationDigest: config.layeringConfirmationDigest } :
+      typeof config.confirmationDigest === 'string' ? { groupConfirmationDigest: config.confirmationDigest } : {}),
+    needsReconfirm: config.needsReconfirm === true,
+    layers: parsed.document.layers.map(layer => {
       const layerConfig = layerNodes.find(node => node.data.config.layerId === layer.record.layerId)?.data.config;
+      const outputContract = layerConfig?.layeringOutputContract;
+      const representation = getLayerPixelRepresentation(layerConfig ?? {}, sourceAsset, layer.asset);
+      const layeringConfirmationDigest = typeof layerConfig?.assemblyConfirmationDigest === 'string' ? layerConfig.assemblyConfirmationDigest
+        : typeof layerConfig?.layeringConfirmationDigest === 'string'
+        ? layerConfig.layeringConfirmationDigest
+        : typeof layerConfig?.confirmationDigest === 'string' ? layerConfig.confirmationDigest : undefined;
       return { record: layer.record, url: layer.asset.displayUrl, bounds: layerConfig?.sourceBounds,
-        preparedRgb: layerConfig?.pixelColorSpace === 'foreground',shadowOnly:isShadowOnlyLayer(layerConfig??{}),
+        preparedRgb: representation.preparedRgb, independentRgbaCandidate: representation.independentRgbaCandidate,
+        ...(representation.rgbaCandidateOrigin ? { rgbaCandidateOrigin: representation.rgbaCandidateOrigin } : {}),
+        ...(representation.error ? { representationError: representation.error } : {}),
+        ...(typeof layerConfig?.semanticReviewAccepted === 'boolean' ? { semanticReviewAccepted: layerConfig.semanticReviewAccepted } : {}),
+        ...(typeof layerConfig?.semanticReviewDigest === 'string' ? { semanticReviewDigest: layerConfig.semanticReviewDigest } : {}),
+        ...(layeringConfirmationDigest ? { layeringConfirmationDigest } : {}),
+        shadowOnly:isShadowOnlyLayer(layerConfig??{}), outputContract:
+          outputContract === 'source-alpha-matte-v1' || outputContract === 'source-independent-rgba-v2' || outputContract === 'opaque-background-v2' ? outputContract : undefined,
         maskSpace: layerConfig?.maskSpace === 'source' ? 'source' as const : 'bounds' as const };
     }),
   } : null;
   const sourcePreview = useSourceLayerPreview(sourceInput);
   const layered = config.pixelMode === 'source' ? sourcePreview.preview : parsed.document;
   const contentOverlap = typeof sourcePreview.error === 'string' && sourcePreview.error.includes('内容重叠');
-  const suggestedRefinementLayer = contentOverlap ? sourcePreview.error?.match(/图层“([^”]+)”与“[^”]+”的内容重叠/)?.[1] : undefined;
+  const unresolvedTransparency = typeof sourcePreview.error === 'string'
+    && (sourcePreview.error.includes('透明贡献叠加') || sourcePreview.error.includes('透明蒙版与补全背景不匹配'));
+  const needsRefinement = contentOverlap || unresolvedTransparency;
+  const suggestedRefinementLayer = contentOverlap ? (sourcePreview.error?.match(/图层“([^”]+)”与“[^”]+”的内容重叠/)?.[1]
+    ?? sourcePreview.error?.match(/^图层“([^”]+)”内容重叠，导出后已被其他图层完全覆盖，没有独立可见像素/u)?.[1])
+    : unresolvedTransparency ? sourcePreview.error?.match(/请先本地精修图层“([^”]+)”/u)?.[1] : undefined;
   const draftStructureReady = sourceInput !== null
     && Number.isInteger(sourceInput.width) && Number.isInteger(sourceInput.height)
     && sourceInput.width > 0 && sourceInput.height > 0
@@ -97,8 +146,9 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     && sourceInput.layers.length >= 2 && sourceInput.layers.length <= 17
     && sourceInput.layers[0]?.record.kind === 'background'
     && sourceInput.layers.slice(1).every(layer => layer.record.kind === 'transparent' && boxSchema.safeParse(layer.bounds).success);
-  const draftAvailable = sourcePreview.error !== null && draftStructureReady;
-  const overallStatus = contentOverlap ? '内容重叠 · 需精修' : config.pixelMode === 'source' && sourcePreview.error ? '图层处理失败'
+  const draftAvailable = (sourcePreview.error !== null || reviewRequired) && draftStructureReady;
+  const overallStatus = config.needsReconfirm === true ? '方案已变更 · 需重新确认' : contentOverlap ? '内容重叠 · 需精修' : unresolvedTransparency ? '透明图层 · 需精修'
+    : config.pixelMode === 'source' && sourcePreview.error ? '图层处理失败'
     : failedCount > 0 ? '需复核'
       : generatedPlan.length > 0 && passedCount === generatedPlan.length
         ? layered ? '图层已返回 · 待检查边缘与背景' : '正在处理图层'
@@ -155,9 +205,14 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
   const buildPsdBytes = async (): Promise<Uint8Array> => {
     if (!layered) throw new Error('尚无可导出的分层结果');
     if (!selection) throw new Error(selectionResult.error!);
+    if (reviewRequired) throw new Error('请完成当前图层的本地检查后再导出 PSD');
+    if (typeof config.assemblyConfirmationDigest === 'string'
+      && await buildLayeringReviewDigest(config, layerNodes) !== config.assemblyConfirmationDigest) {
+      throw new Error('图层检查结果已过期，请重新检查当前图层');
+    }
     if (config.pixelMode === 'source') {
       if (!sourceInput) throw new Error('原图或图层位置记录不完整');
-      return encodeLayeredPsd(await prepareSourceLayerDocument(sourceInput));
+      return encodeLayeredPsd(await prepareSourceLayerDocument(sourceInput, 'strict'));
     }
     // Generated layers use source coordinates in durable records; export at the returned pixel resolution.
     let exportWidth = layered.canvasWidth, exportHeight = layered.canvasHeight;
@@ -201,8 +256,10 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     if ((draft ? !draftAvailable : !layered) || exporting) return;
     setExportError(null);
     setExporting(true);
+    const snapshotIdentity = exportIdentity;
     try {
       const bytes = draft ? await buildDraftPsdBytes() : await buildPsdBytes();
+      if (!mounted.current || latestExportIdentity.current !== snapshotIdentity) throw new Error('图层已变更，请检查当前结果后重新导出');
       const owned = new Uint8Array(bytes.byteLength);
       owned.set(bytes);
       const url = URL.createObjectURL(new Blob([owned.buffer], { type: 'image/vnd.adobe.photoshop' }));
@@ -221,10 +278,13 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     if ((draft ? !draftAvailable : !layered) || exporting) return;
     setExportError(null);
     setExporting(true);
+    const snapshotIdentity = exportIdentity;
     try {
       const open = window.novusDesktop?.projectImages?.openLayeredPsdInPhotoshop;
       if (!open) throw new Error('当前环境不支持在 Photoshop 中打开 PSD');
-      const result = await open(draft ? await buildDraftPsdBytes() : await buildPsdBytes());
+      const bytes = draft ? await buildDraftPsdBytes() : await buildPsdBytes();
+      if (!mounted.current || latestExportIdentity.current !== snapshotIdentity) throw new Error('图层已变更，请检查当前结果后重新导出');
+      const result = await open(bytes);
       if (!result.ok && result.code !== 'cancelled') {
         const messages = {
           invalid_psd: 'PSD 文件无效，请重新导出',
@@ -243,36 +303,59 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     }
   };
 
-  return <section className="image-layering nodrag nowheel" aria-label="图片自动分层工作台">
-    <header><strong>图片自动分层</strong><span>透明图层与多图层 PSD</span></header>
-    {parsed.error && <p role="alert">分层结果无效：{parsed.error}</p>}
-    {selectionResult.error && <p role="alert">{selectionResult.error}</p>}
-    {sourcePreview.error && config.pixelMode === 'source' && <div className="image-layering__issue" role="alert"><strong>{contentOverlap ? '图层内容重叠，暂不能正式合成或导出正式 PSD' : '图片已返回，合成暂不可用'}</strong><p>{contentOverlap ? sourcePreview.error : '请检查问题图层的透明区域与背景；已有返图已保留。'}</p>{draftAvailable && <p>可导出待修整 PSD：原图默认可见；补全背景候选和所有前景返图默认隐藏。请在 Photoshop 中逐层修整，正式合成仍需通过画布检查。</p>}{!contentOverlap && <details><summary>查看失败原因</summary><p>{sourcePreview.error}</p></details>}</div>}
-    {config.pixelMode === 'source' && sourceInput && !sourcePreview.preview && !sourcePreview.error && <p role="status">正在提取原图像素…</p>}
-    <div className="image-layering__repair-tools" role="group" aria-label="图层修整">
+  const repairTools = <div className="image-layering__repair-tools" role="group" aria-label="图层修整">
     {sourceAsset?.width && sourceAsset.height && onRefineLayer && <SourceLayerRefinement
       key={`${String(config.groupId)}:${sourceAsset.assetId}`} sourceUrl={sourceAsset.displayUrl} width={sourceAsset.width} height={sourceAsset.height}
       suggestedLayerName={suggestedRefinementLayer}
-      layers={layerNodes.filter(node => node.data.config.layerKind !== 'background' && !isShadowOnlyLayer(node.data.config) && boxSchema.safeParse(node.data.config.sourceBounds).success).map(node => ({
+      layers={layerNodes.filter(node => node.data.config.layerKind !== 'background' && !isShadowOnlyLayer(node.data.config) && boxSchema.safeParse(node.data.config.sourceBounds).success).map(node => {
+        const representation = getLayerPixelRepresentation(node.data.config, sourceAsset,
+          assets.find(asset => asset.assetId === node.data.config.resultAssetId));
+        const provenance = node.data.config.foregroundProvenance;
+        const history = provenance && typeof provenance === 'object' && !Array.isArray(provenance)
+          ? (provenance as Record<string, unknown>).localClear : undefined;
+        const baselineRegions = history && typeof history === 'object' && !Array.isArray(history)
+          ? (history as Record<string, unknown>).baselineRegions : undefined;
+        const regions = (Array.isArray(node.data.config.mattingRegions) ? node.data.config.mattingRegions : []).filter((region): region is MattingRegion =>
+          region !== null && typeof region === 'object' && ['keep','clear','glass'].includes(region.mode) && boxSchema.safeParse(region.box).success);
+        const clearOnly = representation.independentRgbaCandidate || history !== undefined;
+        return {
         nodeId: node.id, name: String(node.data.config.name ?? '图层'),
+        clearOnly,
+        fixedRegionCount: Array.isArray(baselineRegions) ? baselineRegions.length : clearOnly ? regions.length : 0,
         resultAssetId: typeof node.data.config.resultAssetId === 'string' ? node.data.config.resultAssetId : undefined,
-        regions: (Array.isArray(node.data.config.mattingRegions) ? node.data.config.mattingRegions : []).filter((region): region is MattingRegion =>
-          region !== null && typeof region === 'object' && ['keep','clear','glass'].includes(region.mode) && boxSchema.safeParse(region.box).success),
-      }))} onApply={onRefineLayer} />}
+        regions,
+      }; })} onApply={onRefineLayer} />}
     {sourceAsset && generatedPlan.length > 1 && onApplySourceBounds && <SourceLayerAlignment
       sourceUrl={sourceAsset.displayUrl} width={sourceAsset.width ?? Number(config.canvasWidth)} height={sourceAsset.height ?? Number(config.canvasHeight)}
       layers={generatedPlan.filter(layer => layer.kind !== 'background').map(layer => ({ layerId: String(layer.layerId), name: String(layer.name), bounds: layerStatusById.get(layer.layerId)?.sourceBounds }))}
       onApply={onApplySourceBounds} />}
-    </div>
+    </div>;
+
+  return <section className="image-layering nodrag nowheel" aria-label="图片自动分层工作台">
+    <div className="image-layering__body">
+    {parsed.error && <p role="alert">分层结果无效：{parsed.error}</p>}
+    {selectionResult.error && <p role="alert">{selectionResult.error}</p>}
+    {config.needsReconfirm === true && <div className="image-layering__issue" role="alert"><strong>分层方案已变更，需重新确认后才能正式合成或导出 PSD</strong><p>原有返图仍保留用于检查；请重新确认图层顺序、名称和原图位置。</p></div>}
+    {sourcePreview.error && config.pixelMode === 'source' && <div className="image-layering__issue" role="alert"><strong>{contentOverlap ? '图层内容重叠，暂不能正式合成或导出正式 PSD'
+      : unresolvedTransparency ? '透明图层需要本地精修，暂不能正式合成或导出正式 PSD' : '图片已返回，合成暂不可用'}</strong><p>{needsRefinement ? sourcePreview.error : '请检查问题图层的透明区域与背景；已有返图已保留。'}</p>{draftAvailable && <p>可导出待修整 PSD：原图默认可见；补全背景候选和所有前景返图默认隐藏。请在 Photoshop 中逐层修整，正式合成仍需通过画布检查。</p>}{!needsRefinement && <details><summary>查看失败原因</summary><p>{sourcePreview.error}</p></details>}</div>}
+    {config.pixelMode === 'source' && sourceInput && !sourcePreview.preview && !sourcePreview.error && <p role="status">正在提取原图像素…</p>}
     {generatedPlan.length > 0 && <details className="image-layering__analysis-details"><summary>查看分层分析详情</summary>
       <ol aria-label="已保存的分层分析">{generatedPlan.map(layer => <li key={String(layer.layerId)}><strong>{String(layer.name ?? '图层')}</strong><p>{String(layer.description ?? '')}</p></li>)}</ol>
     </details>}
     {generatedPlan.length > 0 && <div className="image-layering__progress-heading" role="status" title="格式检查只确认图片可读取、画幅与透明通道，不代表合成和边缘质量通过。"><strong>格式检查 {passedCount} / {generatedPlan.length} 层</strong><span data-state={sourcePreview.error ? 'error' : 'pending'}>{overallStatus}</span></div>}
+    <div className="image-layering__toolbar">
     {sourceAsset && <div className="image-layering__view-controls" role="group" aria-label="分层预览模式">
       <button type="button" aria-pressed={previewMode === 'original' || layered === null} onClick={() => setPreviewMode('original')}>原图</button>
       <button type="button" aria-pressed={previewMode === 'composite' && layered !== null} disabled={layered === null} onClick={() => setPreviewMode('composite')}>合成图</button>
     </div>}
-    {config.pixelMode === 'source' && selection?.mode === 'whole' && onBackgroundModeChange && <div className="image-layering__background-choice">
+    {repairTools}
+    {reviewRequired && onReviewLayers && <button className="image-layering__repair-tool" type="button" disabled={!reviewReady}
+      onClick={() => { void openLocalReview(); }}>检查并确认图层</button>}
+    {generatedPlan.length > 0 && onRefreshJobs && <button className="image-layering__sync" type="button" disabled={refreshing} onClick={() => { void refreshJobs(); }}>{refreshing ? '正在同步…' : '同步任务状态'}</button>}
+    </div>
+    {config.pixelMode === 'source' && selection?.mode === 'whole' && onBackgroundModeChange && <details className="image-layering__background-details">
+      <summary><span>背景处理</span><small>{config.backgroundMode === 'replace' ? '完整补全背景' : '保留原图背景'}</small></summary>
+      <div className="image-layering__background-choice">
       <div className="image-layering__view-controls" role="group" aria-label="背景合成方式">
         <button type="button" aria-pressed={config.backgroundMode !== 'replace'} disabled={switchingBackground || exporting}
           onClick={() => { void changeBackgroundMode('preserve'); }}>保留原图背景</button>
@@ -281,7 +364,7 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
       </div>
       <p>{config.backgroundMode === 'replace' ? '整张使用补全背景；厨房场景可能与原图不同。前景保持原图坐标和尺寸。'
         : '保留未被前景覆盖的原图背景；蒙版漏抠处可能留下残影。'}</p>
-    </div>}
+    </div></details>}
     {layered === null ? <div className="image-layering__empty">
       {sourceAsset && <img className="image-layering__source-preview" src={sourceAsset.displayUrl} alt="原图预览" draggable={false} />}
       <span>{generatedPlan.length > 0 ? '每层返回后立即显示在对应图片节点。全部图层可用后即可合成和导出 PSD。' : '连接一张图片，或从图片工具栏使用 AI 分层。'}</span>
@@ -316,7 +399,8 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
       </div>}
       {generatedPlan.length === 0 && <p>AI 分层仅使用已通过验证的 GPT Image 透明背景路由；未验证时不会提交生成任务。</p>}
     </div> : <>
-      <div className="image-layering__preview" role="img" aria-label={previewMode === 'original' && sourceAsset ? '原图预览区域' : '合成预览'} style={{ aspectRatio: `${layered.canvasWidth} / ${layered.canvasHeight}` }}>
+      <div className="image-layering__preview-stage">
+      <div className="image-layering__preview" role="img" aria-label={previewMode === 'original' && sourceAsset ? '原图预览区域' : '合成预览'} style={{ aspectRatio: `${layered.canvasWidth} / ${layered.canvasHeight}`, width: `min(100%, ${Math.min(388, 210 * layered.canvasWidth / layered.canvasHeight)}px)` }}>
         {previewMode === 'original' && sourceAsset ? <img src={sourceAsset.displayUrl} alt="原图预览" draggable={false} style={{ inset: 0, width: '100%', height: '100%' }} />
           : <>{config.pixelMode !== 'source' && selectionClip && sourceAsset && layered.layers[0]?.record.visible && <img src={sourceAsset.displayUrl} alt="选区外保留的原图" style={{ inset: 0, width: '100%', height: '100%' }} />}
           {layered.layers.filter(layer => layer.record.visible).map(({ record, asset }) => <img
@@ -328,12 +412,14 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
             width: `${record.width / layered.canvasWidth * 100}%`, height: `${record.height / layered.canvasHeight * 100}%`, opacity: record.opacity, clipPath: config.pixelMode === 'source' ? undefined : selectionClip }}
         />)}</>}
       </div>
+      </div>
+      <div className="image-layering__list-heading"><strong>图层</strong><span>{layered.layers.length} 层 · 调整可见性与顺序</span></div>
       <ol className="image-layering__list" aria-label="分层图层">
-        {layered.layers.map(({ record, asset }, index) => <li key={record.layerId}>
-          <button type="button" className="image-layering__thumbnail" aria-label={`预览图层 ${record.name}`} onClick={() => setSelectedLayerId(record.layerId)}>
+        {layered.layers.map(({ record, asset }, index) => <li key={record.layerId} data-selected={selectedLayerId === record.layerId} data-visible={record.visible}>
+          <button type="button" className="image-layering__thumbnail" aria-pressed={selectedLayerId === record.layerId} aria-label={`预览图层 ${record.name}`} onClick={() => setSelectedLayerId(record.layerId)}>
             {selection && <LayerScopePreview url={asset.displayUrl} sourceUrl={sourceAsset?.displayUrl} selection={config.pixelMode === 'source' ? { mode: 'whole' } : selection} background={record.kind === 'background'} width={record.width} height={record.height} label="" />}
           </button>
-          <span className="image-layering__name">{index + 1}. {record.name}</span>
+          <span className="image-layering__name" title={record.name}>{index + 1}. {record.name}</span>
           <button type="button" aria-label={`${record.visible ? '隐藏' : '显示'}图层 ${record.name}`} onClick={() => changeLayers(layered.layers.map((layer, layerIndex) => layerIndex === index
             ? { ...layer.record, visible: !layer.record.visible } : layer.record))}>{record.visible ? '可见' : '隐藏'}</button>
           <button type="button" aria-label={`下移图层 ${record.name}`} disabled={index <= 1} onClick={() => moveLayer(index, -1)}>↓</button>
@@ -344,15 +430,22 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
         {selection && <LayerScopePreview url={selected.asset.displayUrl} sourceUrl={sourceAsset?.displayUrl} selection={config.pixelMode === 'source' ? { mode: 'whole' } : selection} background={selected.record.kind === 'background'} width={selected.record.width} height={selected.record.height} label={`透明图层 ${selected.record.name}`} />}
       </div>}
     </>}
+    </div>
     <div className="image-layering__actions">
-      {generatedPlan.length > 0 && onRefreshJobs && <button type="button" disabled={refreshing} onClick={() => { void refreshJobs(); }}>{refreshing ? '正在同步…' : '同步任务状态'}</button>}
-      <button type="button" disabled={!layered || !selection || exporting} onClick={() => { void exportPsd(); }}>{exporting ? '正在导出…' : '导出 PSD'}</button>
-      <button type="button" disabled={!layered || !selection || exporting} onClick={() => { void openPsdInPhotoshop(); }}>在 Photoshop 中打开</button>
-      {draftAvailable && <><button type="button" disabled={exporting} onClick={() => { void exportPsd(true); }}>导出待修整 PSD</button>
-        <button type="button" disabled={exporting} onClick={() => { void openPsdInPhotoshop(true); }}>在 Photoshop 中打开待修整 PSD</button></>}
+      <button className="image-layering__export" type="button" disabled={!layered || !selection || reviewRequired || exporting} onClick={() => { void exportPsd(); }}>{exporting ? '正在导出…' : '导出 PSD'}</button>
+      <button type="button" aria-label="在 Photoshop 中打开" disabled={!layered || !selection || reviewRequired || exporting} onClick={() => { void openPsdInPhotoshop(); }}>打开 Photoshop</button>
+      {draftAvailable && <><button type="button" aria-label="导出待修整 PSD" title="导出待修整 PSD" disabled={exporting} onClick={() => { void exportPsd(true); }}>导出待修整</button>
+        <button type="button" aria-label="在 Photoshop 中打开待修整 PSD" title="在 Photoshop 中打开待修整 PSD" disabled={exporting} onClick={() => { void openPsdInPhotoshop(true); }}>打开待修整</button></>}
     </div>
     {exportError && <p role="alert">{exportError}</p>}
+    {localReview && onReviewLayers && <LayeringLocalReview snapshotDigest={localReview.digest} config={localReview.config}
+      nodes={localReview.nodes} assets={assets} onComplete={onReviewLayers} onClose={() => setLocalReview(null)} />}
   </section>;
+}
+
+function hasFormatProof(config: Readonly<Record<string, unknown>>): boolean {
+  return config.qualityStatus === 'passed' || (config.formatQualityStatus === 'passed'
+    && config.qualityFormatCheckedAssetId === config.resultAssetId);
 }
 
 async function decodeManagedLayer(asset: ManagedImage, record: Pick<LayeredImageRecord, 'name' | 'width' | 'height'>): Promise<Uint8Array> {

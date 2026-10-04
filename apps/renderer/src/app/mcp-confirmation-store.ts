@@ -28,6 +28,11 @@ export interface PaidJobConfirmationSubject {
   readonly requestHash: string;
 }
 
+export interface LayeringPaidConfirmationSubject extends WorkflowConfirmationSubject {
+  readonly operation: 'analyze_layering' | 'start_layering';
+  readonly outputCount: number;
+}
+
 export interface McpConfirmationGrant {
   readonly token: string;
   readonly expiresAt: number;
@@ -38,6 +43,8 @@ export interface McpConfirmationStore {
   consumeWorkflow(subject: WorkflowConfirmationSubject & { readonly token: string }): McpConfirmationConsumeResult;
   issuePaidJob(subject: PaidJobConfirmationSubject): McpConfirmationGrant;
   consumePaidJob(subject: PaidJobConfirmationSubject & { readonly token: string }): McpConfirmationConsumeResult;
+  issueLayeringPaid(subject: LayeringPaidConfirmationSubject): McpConfirmationGrant;
+  consumeLayeringPaid(subject: LayeringPaidConfirmationSubject & { readonly token: string }): McpConfirmationConsumeResult;
   invalidateProject(projectId: string): void;
 }
 
@@ -59,6 +66,7 @@ export function createMcpConfirmationStore(options: McpConfirmationStoreOptions 
   const createToken = options.createToken ?? defaultCreateToken;
   const workflowGrants = new Map<string, StoredGrant<WorkflowConfirmationSubject>>();
   const paidJobGrants = new Map<string, StoredGrant<PaidJobConfirmationSubject>>();
+  const layeringPaidGrants = new Map<string, StoredGrant<LayeringPaidConfirmationSubject>>();
   const consumedTokens = new Set<string>();
 
   return {
@@ -76,9 +84,18 @@ export function createMcpConfirmationStore(options: McpConfirmationStoreOptions 
       const { token, ...subject } = input;
       return consume(paidJobGrants, consumedTokens, token, subject, now());
     },
+    issueLayeringPaid(subject) {
+      if (!Number.isInteger(subject.outputCount) || subject.outputCount < 1 || subject.outputCount > 12) throw new Error('INVALID_LAYERING_OUTPUT_COUNT');
+      return issue(layeringPaidGrants, subject, PAID_JOB_TTL_MS, now, createToken);
+    },
+    consumeLayeringPaid(input) {
+      const { token, ...subject } = input;
+      return consume(layeringPaidGrants, consumedTokens, token, subject, now());
+    },
     invalidateProject(projectId) {
       removeProjectGrants(workflowGrants, projectId);
       removeProjectGrants(paidJobGrants, projectId);
+      removeProjectGrants(layeringPaidGrants, projectId);
     },
   };
 }

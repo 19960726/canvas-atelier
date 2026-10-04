@@ -76,7 +76,7 @@
   color: var(--text) !important;
   border-color: var(--border) !important;
 }
-:root[data-theme] :is(.image-layering__actions button:last-child, .image-layering-dialog__button--primary) {
+:root[data-theme] :is(.image-layering__actions .image-layering__export, .image-layering-dialog__button--primary) {
   color: var(--on-accent);
 }
 

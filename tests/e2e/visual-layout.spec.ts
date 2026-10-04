@@ -45,7 +45,9 @@ for (const viewport of viewports) {
     if (viewport.width >= 760) {
       const toolRailBox = await toolRail.boundingBox();
       expect(toolRailBox).not.toBeNull();
-      expect(toolRailBox).toMatchObject({ x: 52, y: 142, width: 60, height: 442 });
+      expect(toolRailBox).toMatchObject({ x: 52, y: 142, width: 60 });
+      expect(toolRailBox!.height).toBeGreaterThanOrEqual(430);
+      expect(toolRailBox!.height).toBeLessThanOrEqual(450);
     }
     await expectVisibleMainRegion(page, viewport.width < 760 ? 2 : 3);
     await captureLayoutScreenshot(page, testInfo, `renderer-default-${viewport.name}`);

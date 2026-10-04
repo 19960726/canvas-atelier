@@ -379,6 +379,7 @@ export type {
   CancelImageJobBridgeRequest,
   CancelImageJobBridgeResult,
   ConfigureProviderBridgeRequest,
+  LayeringOutputContract,
   PollImageJobBridgeRequest,
   PollImageJobBridgeResult,
   ProviderBridgeBlockedReason,

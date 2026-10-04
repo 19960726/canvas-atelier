@@ -10,6 +10,47 @@ import {
 } from './provider-contracts';
 
 describe('provider profile bridge contract', () => {
+  it.each(['source-alpha-matte-v1', 'source-independent-rgba-v2', 'opaque-background-v2'] as const)(
+    'accepts the %s paired typed layering output contract only on layering image jobs', (layeringOutputContract) => {
+    const request = {
+      jobId: 'job-layer-contract', provider: 'comfly', modelRoute: 'gpt-image', prompt: 'isolate the subject',
+      conversationId: 'conversation-layer-contract', referenceAssetIds: [], imagePurpose: 'layering' as const,
+      layeringOutputContract,
+      layeringConfirmationDigest: 'a'.repeat(64),
+    };
+
+    expect(parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request))
+      .toEqual(request);
+    expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, {
+      ...request, layeringConfirmationDigest: undefined,
+    })).toThrow(/contract.*digest|digest.*contract/i);
+    expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, {
+      ...request, imagePurpose: undefined,
+    })).toThrow(/layering/i);
+    },
+  );
+
+  it('does not accept layering contract metadata on ordinary image generation or video jobs', () => {
+    const image = {
+      jobId: 'job-ordinary-contract', provider: 'comfly', modelRoute: 'gpt-image', prompt: 'draw a chair',
+      conversationId: 'conversation-ordinary-contract', referenceAssetIds: [],
+      layeringOutputContract: 'source-independent-rgba-v2', layeringConfirmationDigest: 'b'.repeat(64),
+    };
+    expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, image)).toThrow(/layering/i);
+    expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitVideoJob, image)).toThrow();
+  });
+
+  it('accepts a stable project id on generation submissions and rejects unrecognized fields', () => {
+    const request = {
+      jobId: 'job-a', provider: 'comfly', modelRoute: 'gpt-image', prompt: 'a chair',
+      conversationId: 'conversation-a', sessionId: 'session-a', projectId: 'project-a', referenceAssetIds: [],
+    };
+    expect(parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request))
+      .toEqual(request);
+    expect(parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitVideoJob, request))
+      .toEqual(request);
+    expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, { ...request, projectRoot: 'unexpected-root' })).toThrow();
+  });
   it('carries provider-owned enabled state without weakening the strict profile schema', () => {
     expect(parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.listProfiles, [{
       provider: '4dai',

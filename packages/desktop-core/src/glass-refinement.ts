@@ -1,4 +1,5 @@
 import type {MattingRegion,LocalMattingRequest} from './local-matting.js';
+import { sourceMattingBoxPixels } from './local-matting.js';
 
 /** Explicit glass corrections may override erroneous opaque matte pixels. Use
  * clean source samples on both sides; never infer from a generated backdrop. */
@@ -6,8 +7,11 @@ export function refineGlassForeground(source:Uint8Array,foreground:Uint8Array,wi
   bounds:LocalMattingRequest['bounds'],regions:readonly MattingRegion[]):Uint8Array {
   if(source.length!==width*height*4||foreground.length!==source.length)throw new Error('玻璃精修像素尺寸无效');
   const result=Uint8Array.from(foreground),modes=new Uint8Array(width*height);
-  for(const {box,mode} of regions)for(let y=Math.floor(box.y*height);y<Math.min(height,Math.ceil((box.y+box.height)*height));y++)
-    for(let x=Math.floor(box.x*width);x<Math.min(width,Math.ceil((box.x+box.width)*width));x++)modes[y*width+x]=mode==='glass'?1:2;
+  for(const {box,mode} of regions){
+    const pixels=sourceMattingBoxPixels(width,height,box);
+    for(let y=pixels.top;y<pixels.bottom;y++)
+      for(let x=pixels.left;x<pixels.right;x++)modes[y*width+x]=mode==='glass'?1:2;
+  }
   if(!modes.includes(1))return result;
   const gap=Math.max(4,Math.round(width*.013)),sampleWidth=Math.max(4,Math.round(width*.007));
   const lx=Math.floor(bounds.x*width)-gap,rx=Math.ceil((bounds.x+bounds.width)*width)+gap;

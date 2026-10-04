@@ -1,3 +1,5 @@
+import { parseCreativeTaskContext, readSafeMessageContent, readSafeReferenceMention, readSafeText, type CreativeTaskContext } from './creative-task-context';
+
 export type AgentConversationMode = 'chat' | 'original' | 'codex';
 export type AgentReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type ReverseAnalysisDepth = 'fast' | 'standard' | 'deep';
@@ -14,7 +16,7 @@ export interface StoredAgentRequestSummary {
   readonly modelRoute: string;
   readonly knowledgeBaseCount: number;
   readonly projectMemoryCount: number;
-  readonly references: readonly { readonly assetId: string; readonly label: string }[];
+  readonly references: readonly { readonly assetId: string; readonly label: string; readonly mention?: string }[];
   readonly status: StoredAgentRequestStatus;
   readonly visualAnalysis?: boolean;
   readonly reverseAnalysisDepth?: ReverseAnalysisDepth;
@@ -41,6 +43,7 @@ export interface StoredAgentConversation {
   readonly knowledgeBaseIds: readonly string[];
   readonly projectMemoryIds: readonly string[];
   readonly messages: readonly StoredAgentMessage[];
+  readonly taskContext?: CreativeTaskContext;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -194,6 +197,7 @@ function parseConversation(value: unknown): StoredAgentConversation | null {
   const knowledgeBaseIds = readSafeTextList(value.knowledgeBaseIds, 16, 160);
   const projectMemoryIds = readSafeTextList(value.projectMemoryIds, 32, 160);
   const messages = mode === null ? null : parseMessages(value.messages, mode);
+  const taskContext = parseCreativeTaskContext(value.taskContext);
   if (!id || !title || mode === null || reasoningEfforts === null || (value.modelRoute !== undefined && !modelRoute)
     || knowledgeBaseIds === null || projectMemoryIds === null || messages === null
     || !isSafeTimestamp(value.createdAt) || !isSafeTimestamp(value.updatedAt)) return null;
@@ -207,6 +211,7 @@ function parseConversation(value: unknown): StoredAgentConversation | null {
     knowledgeBaseIds,
     projectMemoryIds,
     messages,
+    ...(taskContext === undefined ? {} : { taskContext }),
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
   };
@@ -294,7 +299,8 @@ function parseRequest(value: unknown): StoredAgentRequestSummary | null {
     if (!isRecord(entry)) return null;
     const assetId = readSafeText(entry.assetId, 160);
     const label = readSafeText(entry.label, 160);
-    return assetId && label ? { assetId, label } : null;
+    const mention = readSafeReferenceMention(entry.mention);
+    return assetId && label ? { assetId, label, ...(mention === undefined ? {} : { mention }) } : null;
   });
   if (!modelDisplayName || !modelRoute || references.some((reference) => reference === null)
     || !isBoundedInteger(value.knowledgeBaseCount, 16) || !isBoundedInteger(value.projectMemoryCount, 32)
@@ -306,7 +312,7 @@ function parseRequest(value: unknown): StoredAgentRequestSummary | null {
     modelRoute,
     knowledgeBaseCount: value.knowledgeBaseCount as number,
     projectMemoryCount: value.projectMemoryCount as number,
-    references: references as Array<{ assetId: string; label: string }>,
+    references: references as Array<{ assetId: string; label: string; mention?: string }>,
     status: value.status,
     ...(value.visualAnalysis === undefined ? {} : { visualAnalysis: value.visualAnalysis }),
     ...(value.reverseAnalysisDepth === 'fast' || value.reverseAnalysisDepth === 'standard' || value.reverseAnalysisDepth === 'deep'
@@ -351,33 +357,6 @@ function readSafeTextList(value: unknown, limit: number, maxLength: number): str
   if (!Array.isArray(value) || value.length > limit) return null;
   const texts = value.map((entry) => readSafeText(entry, maxLength));
   return texts.every((entry): entry is string => entry !== undefined) ? texts : null;
-}
-
-function readSafeText(value: unknown, maxLength: number): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.length > maxLength || containsProtectedText(trimmed)) return undefined;
-  return trimmed;
-}
-
-function readSafeMessageContent(value: unknown, maxLength: number): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.length > maxLength) return undefined;
-  const redacted = trimmed
-    .replace(/data:[^,\s;]+(?:;[^,\s;]+)*;base64,[a-z0-9+/=]+/giu, '[图片数据已省略]')
-    .replace(/(?:https?|file):\/\/[^\s<>"']+/giu, '[链接已省略]')
-    .replace(/[A-Za-z]:\\[^\s<>"']+/gu, '[本地路径已省略]')
-    .replace(/\\\\[^\\\s]+\\[^\s<>"']*/gu, '[网络路径已省略]')
-    .trim();
-  return redacted || '[受保护内容已省略]';
-}
-
-function containsProtectedText(value: string): boolean {
-  return /(?:https?|file):\/\//iu.test(value)
-    || /[A-Za-z]:\\/u.test(value)
-    || /\\\\[^\\\s]+\\/u.test(value)
-    || /data:[^,\s;]+(?:;[^,\s;]+)*;base64,/iu.test(value);
 }
 
 function isSafeTimestamp(value: unknown): value is number {

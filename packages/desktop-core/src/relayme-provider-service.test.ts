@@ -9,6 +9,7 @@ import { NodeFileSystem } from './file-system';
 import type { ProviderConfigurationSnapshot } from './provider-configuration-store';
 import type { ProviderCredentialStore } from './provider-credential-vault';
 import { createProviderTaskMappingStore } from './provider-task-ledger';
+import { createProviderBridgeError } from './provider-contracts';
 
 const roots: string[] = [];
 
@@ -29,6 +30,415 @@ afterEach(async () => {
 });
 
 describe('RelayMe provider service', () => {
+  it('keeps multi-image history running until every project image is stored', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'relayme-multi-history-'));
+    roots.push(root);
+    const image = `data:image/png;base64,${Buffer.from(pngHeaderBytes()).toString('base64')}`;
+    let paidSubmissions = 0;
+    let secondStoreFails = true;
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relay_multi', status: 'queued' as const, terminal: null })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const storeGeneratedImage = vi.fn(async () => {
+      const attempt = storeGeneratedImage.mock.calls.length;
+      if (attempt === 2 && secondStoreFails) {
+        secondStoreFails = false;
+        throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Project temporarily closed', true);
+      }
+      return { assetId: attempt % 2 === 1 ? '1111111111111111' : '2222222222222222', width: 1, height: 1 };
+    });
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/images/generations')) { paidSubmissions += 1; return jsonResponse({ taskId: 'multi-history-raw' }); }
+      if (url.endsWith('/tasks/multi-history-raw')) return jsonResponse({ status: 'COMPLETED', images: [{ url: image }, { url: image }] });
+      throw new Error(`Unexpected fixture URL: ${url}`);
+    });
+    const createService = () => createRelayMeProviderService({ appDataRoot: root, fetch,
+      credentialStore: credentialStore({ configured: true, locked: false }), historySink,
+      profiles: [{ provider: 'relayme', modelRoute: 'relayme-multi-history', modelId: 'gpt-image-2', displayName: 'Multi Image',
+        capabilities: ['image_generation', 'async_tasks'], capabilityStatus: 'complete' }], storeGeneratedImage,
+    });
+    const service = createService();
+    const submitted = await service.submitImageJob({ jobId: 'model-job-v2-relay-multi-history', provider: 'relayme',
+      modelRoute: 'relayme-multi-history', prompt: 'two images', conversationId: 'multi-history', sessionId: 'multi-session',
+      referenceAssetIds: [], outputCount: 2 });
+    const request = { provider: 'relayme' as const, providerTaskId: submitted.providerTaskId };
+    await expect(service.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+    expect(historySink.succeeded).not.toHaveBeenCalled();
+    expect(historySink.failed).not.toHaveBeenCalled();
+    await expect(createService().pollImageJob(request)).resolves.toMatchObject({ status: 'completed', result: {
+      assetIds: ['1111111111111111', '2222222222222222'],
+    } });
+    expect(historySink.succeeded).toHaveBeenCalledTimes(1);
+    expect(paidSubmissions).toBe(1);
+  });
+
+  it('uses the durable history terminal when a completed RelayMe image arrives after history failed', async () => {
+    const image = `data:image/png;base64,${Buffer.from(pngHeaderBytes()).toString('base64')}`;
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relay_conflict', status: 'queued' as const, terminal: null })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'failed' as const })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => ({ status: 'failed' as const })),
+      queued: vi.fn(),
+    };
+    const { service } = await createService([
+      modelsResponse(), jsonResponse({ taskId: 'conflicted-raw' }),
+      jsonResponse({ status: 'COMPLETED', imageContent: image }),
+    ], { historySink, storeGeneratedImage: async () => ({ assetId: '1111111111111111', width: 1, height: 1 }) });
+    const submitted = await service.submitImageJob({ jobId: 'model-job-v2-relay-conflict', provider: 'relayme',
+      modelRoute: 'relayme-gpt-image-2', prompt: 'one image', conversationId: 'conflict', sessionId: 'conflict-session',
+      referenceAssetIds: [] });
+    const request = { provider: 'relayme' as const, providerTaskId: submitted.providerTaskId };
+    await expect(service.pollImageJob(request)).resolves.toMatchObject({ status: 'failed' });
+    await expect(service.pollImageJob(request)).resolves.toMatchObject({ status: 'failed' });
+  });
+
+  it('does not mark a RelayMe task failed when a competing history writer already succeeded', async () => {
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relay_prior_success', status: 'queued' as const, terminal: null })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(),
+      failed: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      queued: vi.fn(),
+    };
+    const { service, fetch } = await createService([
+      modelsResponse(), jsonResponse({ taskId: 'prior-success-raw' }),
+      jsonResponse({ status: 'FAILED', error: 'provider failed' }),
+    ], { historySink });
+    const job = { jobId: 'model-job-v2-relay-prior-success', provider: 'relayme' as const,
+      modelRoute: 'relayme-gpt-image-2', prompt: 'one image', conversationId: 'prior-success',
+      sessionId: 'prior-success-session', referenceAssetIds: [] };
+    const submitted = await service.submitImageJob(job);
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId }))
+      .rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true, message: expect.stringMatching(/^提交状态不确定/u) });
+    expect(await service.submitImageJob(job)).toEqual(submitted);
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) => String(url).endsWith('/images/generations'))).toHaveLength(1);
+  });
+
+  it('uses the original RelayMe provider id to cancel a staged task after restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'relayme-cancel-staged-'));
+    roots.push(root);
+    const image = `data:image/png;base64,${Buffer.from(pngHeaderBytes()).toString('base64')}`;
+    const cancel = vi.spyOn(RelayMeClient.prototype, 'cancelTask').mockRejectedValue(Object.assign(
+      new Error('cancellation is unavailable'), { code: 'CAPABILITY_UNSUPPORTED' },
+    ));
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/images/generations')) return jsonResponse({ taskId: 'original-staged-raw' });
+      if (url.endsWith('/tasks/original-staged-raw')) return jsonResponse({ status: 'COMPLETED', imageContent: image });
+      throw new Error(`Unexpected fixture URL: ${url}`);
+    });
+    const createService = () => createRelayMeProviderService({ appDataRoot: root, fetch,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      profiles: [{ provider: 'relayme', modelRoute: 'relayme-cancel-staged', modelId: 'gpt-image-2', displayName: 'Image',
+        capabilities: ['image_generation', 'async_tasks'], capabilityStatus: 'complete' }],
+      storeGeneratedImage: async () => { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Project closed', true); },
+    });
+    const service = createService();
+    const submitted = await service.submitImageJob({ jobId: 'model-job-v2-relay-cancel-staged', provider: 'relayme',
+      modelRoute: 'relayme-cancel-staged', prompt: 'one image', conversationId: 'staged', sessionId: 'staged-session',
+      referenceAssetIds: [] });
+    const request = { provider: 'relayme' as const, providerTaskId: submitted.providerTaskId };
+    await expect(service.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+    await expect(createService().cancelImageJob(request)).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' });
+    expect(cancel).toHaveBeenCalledWith('original-staged-raw');
+  });
+
+  it('retries a restarted RelayMe task when the encrypted mapping is temporarily unreadable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'relayme-mapping-read-'));
+    roots.push(root);
+    class FailingReadFileSystem extends NodeFileSystem {
+      failNextMappingRead = false;
+      override async readFile(path: string, encoding: BufferEncoding): Promise<string> {
+        if (this.failNextMappingRead && path.endsWith('provider-task-mappings.json')) {
+          this.failNextMappingRead = false;
+          throw new Error('transient mapping read failure');
+        }
+        return super.readFile(path, encoding);
+      }
+    }
+    const fileSystem = new FailingReadFileSystem();
+    let paidSubmissions = 0;
+    const image = `data:image/png;base64,${Buffer.from(pngHeaderBytes()).toString('base64')}`;
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/images/generations')) { paidSubmissions += 1; return jsonResponse({ taskId: 'mapping-read-raw' }); }
+      if (url.endsWith('/tasks/mapping-read-raw')) return jsonResponse({ status: 'COMPLETED', imageContent: image });
+      throw new Error(`Unexpected fixture URL: ${url}`);
+    });
+    const createService = () => createRelayMeProviderService({ appDataRoot: root, fileSystem, fetch,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      profiles: [{ provider: 'relayme', modelRoute: 'relayme-mapping-read', modelId: 'gpt-image-2', displayName: 'Image',
+        capabilities: ['image_generation', 'async_tasks'], capabilityStatus: 'complete' }],
+      storeGeneratedImage: async () => ({ assetId: '1111111111111111', width: 1, height: 1 }),
+    });
+    const service = createService();
+    const submitted = await service.submitImageJob({ jobId: 'model-job-v2-relay-mapping-read', provider: 'relayme',
+      modelRoute: 'relayme-mapping-read', prompt: 'one image', conversationId: 'mapping', sessionId: 'mapping-session',
+      referenceAssetIds: [] });
+    const request = { provider: 'relayme' as const, providerTaskId: submitted.providerTaskId };
+    const restarted = createService();
+    fileSystem.failNextMappingRead = true;
+    await expect(restarted.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true,
+      message: expect.stringMatching(/^提交状态不确定/u) });
+    await expect(restarted.pollImageJob(request)).resolves.toMatchObject({ status: 'completed' });
+    expect(paidSubmissions).toBe(1);
+  });
+
+  it('does not rewrite succeeded history when ACK removes a staged image during another poll', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'relayme-ack-poll-'));
+    roots.push(root);
+    let releaseRead!: () => void;
+    let signalRead!: () => void;
+    const readEntered = new Promise<void>((resolve) => { signalRead = resolve; });
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    class HeldReadFileSystem extends NodeFileSystem {
+      holdNextRead = false;
+      override async readFileBuffer(path: string) {
+        if (this.holdNextRead && /provider-pending-media-.*-0\.bin$/u.test(path)) {
+          this.holdNextRead = false;
+          signalRead();
+          await readGate;
+        }
+        return super.readFileBuffer(path);
+      }
+    }
+    const fileSystem = new HeldReadFileSystem();
+    let writable = false;
+    let paidSubmissions = 0;
+    const image = `data:image/png;base64,${Buffer.from(pngHeaderBytes()).toString('base64')}`;
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relay_ack_poll', status: 'queued' as const, terminal: null })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      failed: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/images/generations')) { paidSubmissions += 1; return jsonResponse({ taskId: 'ack-poll-raw' }); }
+      if (url.endsWith('/tasks/ack-poll-raw')) return jsonResponse({ status: 'COMPLETED', imageContent: image });
+      throw new Error(`Unexpected fixture URL: ${url}`);
+    });
+    const createService = () => createRelayMeProviderService({ appDataRoot: root, fileSystem, fetch, historySink,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      profiles: [{ provider: 'relayme', modelRoute: 'relayme-ack-poll', modelId: 'gpt-image-2', displayName: 'Image',
+        capabilities: ['image_generation', 'async_tasks'], capabilityStatus: 'complete' }],
+      storeGeneratedImage: async () => {
+        if (!writable) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Project closed', true);
+        return { assetId: '1111111111111111', width: 1, height: 1 };
+      },
+    });
+    const original = createService();
+    const submitted = await original.submitImageJob({ jobId: 'model-job-v2-relay-ack-poll', provider: 'relayme',
+      modelRoute: 'relayme-ack-poll', prompt: 'one image', conversationId: 'ack-poll', sessionId: 'ack-poll-session',
+      referenceAssetIds: [] });
+    const request = { provider: 'relayme' as const, providerTaskId: submitted.providerTaskId };
+    await expect(original.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+    writable = true;
+    fileSystem.holdNextRead = true;
+    const slow = createService().pollImageJob(request);
+    await readEntered;
+    const fast = createService();
+    try {
+      await expect(fast.pollImageJob(request)).resolves.toMatchObject({ status: 'completed' });
+      await expect(fast.ackImageJobTerminal({ ...request, status: 'completed' })).resolves.toEqual({ acknowledged: true });
+    } finally {
+      releaseRead();
+    }
+    await expect(slow).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    expect(historySink.failed).not.toHaveBeenCalled();
+    expect(paidSubmissions).toBe(1);
+  });
+
+  it.each(['image', 'video'] as const)('recovers a bound RelayMe %s after project storage is unavailable without a new paid POST', async (kind) => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-bound-recovery-'));
+    roots.push(appDataRoot);
+    const binding = { projectId: 'relay-project', rootFingerprint: 'd'.repeat(64) };
+    let activeBinding = binding;
+    let writable = false;
+    const bytes = kind === 'image' ? pngHeaderBytes() : mp4HeaderBytes();
+    const content = `https://media.example/${kind}-paid-result`;
+    let paidSubmissions = 0;
+    let downloads = 0;
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/images/generations') || url.endsWith('/videos/generations')) {
+        paidSubmissions += 1;
+        return jsonResponse({ taskId: 'bound-raw-task', status: 'QUEUED' });
+      }
+      if (url.endsWith('/tasks/bound-raw-task')) return jsonResponse({ status: 'COMPLETED',
+        ...(kind === 'image' ? { imageContent: content } : { videoContent: content, durationSeconds: 8 }) });
+      if (url === content) {
+        downloads += 1;
+        if (downloads > 1) throw new Error('CDN URL expired');
+        return binaryResponse(bytes);
+      }
+      throw new Error(`Unexpected fixture URL: ${url}`);
+    });
+    const boundStore = vi.fn(async (actual: typeof binding) => {
+      expect(actual).toEqual(binding);
+      if (!writable) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Bound project is closed', true);
+      return { assetId: '1111111111111111', width: 1, height: 1 };
+    });
+    const legacyStore = vi.fn(async () => { throw new Error('Legacy session must not receive a bound result'); });
+    const createBoundService = () => createRelayMeProviderService({ appDataRoot, fetch,
+      resolveResultHost: async () => ['8.8.8.8'],
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      profiles: [{ provider: 'relayme', modelRoute: `relay-bound-${kind}`, modelId: 'gpt-image-2',
+        displayName: 'Bound Model', capabilities: [kind === 'image' ? 'image_generation' : 'video_generation', 'async_tasks'], capabilityStatus: 'complete' }],
+      bindGenerationProject: async () => activeBinding,
+      storeGeneratedImage: legacyStore, storeGeneratedVideo: legacyStore,
+      storeGeneratedImageForProject: boundStore, storeGeneratedVideoForProject: boundStore,
+    });
+    const service = createBoundService();
+    const job = { jobId: `model-job-v2-relay-bound-${kind}`, projectId: binding.projectId,
+      provider: 'relayme' as const, modelRoute: `relay-bound-${kind}`, prompt: 'draw a product',
+      conversationId: 'relay-bound', sessionId: 'old-session', referenceAssetIds: [] };
+    const submitted = kind === 'image' ? await service.submitImageJob(job) : await service.submitVideoJob!(job);
+    const request = { provider: 'relayme' as const, providerTaskId: submitted.providerTaskId };
+    const firstPoll = kind === 'image' ? service.pollImageJob(request) : service.pollVideoJob!(request);
+    await expect(firstPoll).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+    writable = true;
+    const restarted = createBoundService();
+    const secondPoll = kind === 'image' ? restarted.pollImageJob(request) : restarted.pollVideoJob!(request);
+    await expect(secondPoll).resolves.toMatchObject({ status: 'completed', result: { assetId: '1111111111111111' } });
+    activeBinding = { ...binding, rootFingerprint: 'e'.repeat(64) };
+    const wrongProjectSubmit = kind === 'image' ? restarted.submitImageJob(job) : restarted.submitVideoJob!(job);
+    await expect(wrongProjectSubmit).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    expect(paidSubmissions).toBe(1);
+    expect(downloads).toBe(1);
+    expect(boundStore).toHaveBeenCalledTimes(2);
+    expect(legacyStore).not.toHaveBeenCalled();
+  });
+
+  it('stages every RelayMe image in order before any project commit and recovers all when CDN links expire', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-multi-stage-'));
+    roots.push(appDataRoot);
+    const binding = { projectId: 'multi-image-project', rootFingerprint: 'a'.repeat(64) };
+    const urls = ['https://media.example/paid-image-1', 'https://media.example/paid-image-2'];
+    const downloads = [0, 0];
+    const bytes = [Uint8Array.from([...pngHeaderBytes(), 1]), Uint8Array.from([...pngHeaderBytes(), 2])];
+    let paidSubmissions = 0;
+    let writable = false;
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/images/generations')) { paidSubmissions += 1; return jsonResponse({ taskId: 'multi-raw-task', status: 'QUEUED' }); }
+      if (url.endsWith('/tasks/multi-raw-task')) return jsonResponse({ status: 'COMPLETED', images: urls.map((mediaUrl, index) => ({ url: mediaUrl, width: 100 + index, height: 200 + index })) });
+      const index = urls.indexOf(url);
+      if (index >= 0) { downloads[index]! += 1; if (downloads[index]! > 1) throw new Error('CDN expired'); return binaryResponse(bytes[index]!); }
+      throw new Error(`Unexpected fixture URL: ${url}`);
+    });
+    const store = vi.fn(async (actual: typeof binding, image: Uint8Array) => {
+      expect(actual).toEqual(binding);
+      expect(downloads).toEqual([1, 1]);
+      if (!writable) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Project closed', true);
+      return { assetId: image[image.length - 1] === 1 ? '1111111111111111' : '2222222222222222', width: 100, height: 200 };
+    });
+    const createService = () => createRelayMeProviderService({ appDataRoot, fetch,
+      credentialStore: credentialStore({ configured: true, locked: false }), resolveResultHost: async () => ['8.8.8.8'],
+      profiles: [{ provider: 'relayme', modelRoute: 'multi-stage', modelId: 'gpt-image-2', displayName: 'Multi Image',
+        capabilities: ['image_generation', 'async_tasks'], capabilityStatus: 'complete' }],
+      bindGenerationProject: async () => binding, storeGeneratedImageForProject: store,
+    });
+    const service = createService();
+    const job = { jobId: 'model-job-v2-relay-multi-stage', provider: 'relayme' as const,
+      modelRoute: 'multi-stage', prompt: 'draw two', conversationId: 'multi', sessionId: 'multi-session',
+      projectId: binding.projectId, referenceAssetIds: [] };
+    const submitted = await service.submitImageJob(job);
+    const request = { provider: 'relayme' as const, providerTaskId: submitted.providerTaskId };
+    await expect(service.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+    writable = true;
+    await expect(createService().pollImageJob(request)).resolves.toMatchObject({ status: 'completed', result: {
+      assetId: '1111111111111111', assetIds: ['1111111111111111', '2222222222222222'], width: 100, height: 200,
+    } });
+    expect(downloads).toEqual([1, 1]);
+    expect(paidSubmissions).toBe(1);
+  });
+
+  it.each([
+    ['image', 'corrupt'], ['image', 'missing'], ['video', 'corrupt'], ['video', 'missing'],
+  ] as const)('terminates a %s RelayMe paid result when staged media is %s without offering a new paid retry', async (kind, damage) => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-corrupt-stage-'));
+    roots.push(appDataRoot);
+    const bytes = kind === 'image' ? pngHeaderBytes() : mp4HeaderBytes();
+    const mediaUrl = `https://media.example/corrupt-${kind}`;
+    let paidSubmissions = 0;
+    let downloads = 0;
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      if (url.endsWith(`/${kind === 'image' ? 'images' : 'videos'}/generations`)) {
+        paidSubmissions += 1;
+        return jsonResponse({ taskId: 'corrupt-raw-task', status: 'QUEUED' });
+      }
+      if (url.endsWith('/tasks/corrupt-raw-task')) return jsonResponse({ status: 'COMPLETED',
+        ...(kind === 'image' ? { imageContent: mediaUrl } : { videoContent: mediaUrl }) });
+      if (url === mediaUrl) { downloads += 1; return binaryResponse(bytes); }
+      throw new Error(`Unexpected fixture URL: ${url}`);
+    });
+    const createService = () => createRelayMeProviderService({ appDataRoot, fetch,
+      credentialStore: credentialStore({ configured: true, locked: false }), resolveResultHost: async () => ['8.8.8.8'],
+      profiles: [{ provider: 'relayme', modelRoute: `corrupt-${kind}`, modelId: 'gpt-image-2',
+        displayName: 'Paid Model', capabilities: [kind === 'image' ? 'image_generation' : 'video_generation', 'async_tasks'], capabilityStatus: 'complete' }],
+      storeGeneratedImage: async () => { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Project closed', true); },
+      storeGeneratedVideo: async () => { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Project closed', true); },
+    });
+    const service = createService();
+    const job = { jobId: `model-job-v2-corrupt-${kind}`, provider: 'relayme' as const,
+      modelRoute: `corrupt-${kind}`, prompt: 'draw', conversationId: 'corrupt', sessionId: 'corrupt-session', referenceAssetIds: [] };
+    const submitted = kind === 'image' ? await service.submitImageJob(job) : await service.submitVideoJob!(job);
+    const request = { provider: 'relayme' as const, providerTaskId: submitted.providerTaskId };
+    await expect(kind === 'image' ? service.pollImageJob(request) : service.pollVideoJob!(request))
+      .rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+    if (damage === 'corrupt') await writeFile(join(appDataRoot, 'providers', 'relayme', `provider-pending-media-${submitted.providerTaskId}-0.bin`), 'tampered');
+    else await rm(join(appDataRoot, 'providers', 'relayme', `provider-pending-media-${submitted.providerTaskId}.json`));
+    await expect(kind === 'image' ? createService().pollImageJob(request) : createService().pollVideoJob!(request))
+      .resolves.toMatchObject({ status: 'failed', error: { code: 'PROVIDER_INVALID_RESPONSE', message: expect.stringMatching(/^提交状态不确定/u) } });
+    expect(downloads).toBe(1);
+    expect(paidSubmissions).toBe(1);
+  });
+
+  it('keeps a RelayMe image running in memory when durable terminal storage fails once', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-terminal-write-'));
+    roots.push(appDataRoot);
+    class FailTerminalWriteFileSystem extends NodeFileSystem {
+      failNextMappingWrite = false;
+      override async rename(source: string, destination: string): Promise<void> {
+        if (this.failNextMappingWrite && destination.endsWith('provider-task-mappings.json')) {
+          this.failNextMappingWrite = false;
+          throw new Error('mapping write unavailable');
+        }
+        await super.rename(source, destination);
+      }
+    }
+    const fileSystem = new FailTerminalWriteFileSystem();
+    const content = `data:image/png;base64,${Buffer.from(pngHeaderBytes()).toString('base64')}`;
+    let paidSubmissions = 0;
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/images/generations')) { paidSubmissions += 1; return jsonResponse({ taskId: 'terminal-write-task', status: 'QUEUED' }); }
+      if (url.endsWith('/tasks/terminal-write-task')) return jsonResponse({ status: 'COMPLETED', imageContent: content });
+      throw new Error(`Unexpected fixture URL: ${url}`);
+    });
+    const service = createRelayMeProviderService({ appDataRoot, fetch, fileSystem,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      profiles: [{ provider: 'relayme', modelRoute: 'terminal-write-image', modelId: 'gpt-image-2',
+        displayName: 'Relay Image', capabilities: ['image_generation', 'async_tasks'], capabilityStatus: 'complete' }],
+      storeGeneratedImage: async () => ({ assetId: '1111111111111111', width: 1, height: 1 }),
+    });
+    const submitted = await service.submitImageJob({ jobId: 'model-job-v2-relay-terminal-write', provider: 'relayme',
+      modelRoute: 'terminal-write-image', prompt: 'draw', conversationId: 'terminal-write', sessionId: 'terminal-session', referenceAssetIds: [] });
+    const request = { provider: 'relayme' as const, providerTaskId: submitted.providerTaskId };
+    fileSystem.failNextMappingWrite = true;
+    await expect(service.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+    await expect(service.pollImageJob(request)).resolves.toMatchObject({ status: 'completed', result: { assetId: '1111111111111111' } });
+    expect(paidSubmissions).toBe(1);
+  });
   it('does not promote a protocol-pending route supplied by model selection', async () => {
     const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-pending-selection-'));
     roots.push(appDataRoot);
@@ -1181,6 +1591,135 @@ describe('RelayMe provider service', () => {
     );
   });
 
+  it('returns the original RelayMe image task when the same job is submitted again', async () => {
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({
+        created: true, historyId: 'history_relayme_duplicate_mock', status: 'queued' as const, terminal: null,
+      })),
+      running: vi.fn(async () => undefined),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+    };
+    const { service, fetch } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-original-image-task', status: 'queued' }),
+      jsonResponse({ taskId: 'relay-duplicate-image-task', status: 'queued' }),
+    ], { historySink: historySink as never });
+    const request = {
+      jobId: 'model-job-v2-relay-duplicate-image', provider: 'relayme' as const,
+      modelRoute: 'relayme-gpt-image-2', prompt: 'one image',
+      conversationId: 'conversation-duplicate-image', sessionId: 'desktop-session-duplicate-image',
+      referenceAssetIds: [],
+    };
+
+    const first = await service.submitImageJob(request);
+    const repeated = await service.submitImageJob(request);
+
+    expect(repeated).toEqual(first);
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) => String(url).endsWith('/images/generations'))).toHaveLength(1);
+  });
+
+  it.each(['image', 'video'] as const)('recovers a RelayMe %s result and history when marking the submitted task running fails once', async (kind) => {
+    let historyStatus: 'queued' | 'failed' | 'succeeded' = 'queued';
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({
+        created: true, historyId: `history_relayme_running_${kind}`, status: 'queued' as const, terminal: null,
+      })),
+      running: vi.fn().mockRejectedValueOnce(new Error('history running write interrupted')),
+      succeeded: vi.fn(async () => {
+        if (historyStatus === 'failed') return { status: 'failed' as const };
+        historyStatus = 'succeeded';
+        return { status: 'succeeded' as const, width: kind === 'image' ? 1 : 1920, height: kind === 'image' ? 1 : 1080 };
+      }),
+      failed: vi.fn(async () => {
+        historyStatus = 'failed';
+        return { status: 'failed' as const };
+      }),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const inlineImage = `data:image/png;base64,${Buffer.from(pngHeaderBytes()).toString('base64')}`;
+    const responses = [
+      modelsResponse(),
+      jsonResponse({ taskId: `relay-running-${kind}`, status: 'queued' }),
+      jsonResponse(kind === 'image'
+        ? { status: 'COMPLETED', imageContent: inlineImage, width: 1, height: 1 }
+        : { status: 'COMPLETED', videoContent: 'https://cdn.example/running-result.mp4', width: 1920, height: 1080, durationSeconds: 8 }),
+      ...(kind === 'video' ? [binaryResponse(mp4HeaderBytes())] : []),
+    ];
+    const { service, fetch } = await createService(responses, {
+      historySink,
+      storeGeneratedImage: async () => ({ assetId: '1111111111111111', width: 1, height: 1 }),
+      storeGeneratedVideo: async () => ({ assetId: '2222222222222222', width: 1920, height: 1080 }),
+    });
+    const request = {
+      jobId: `model-job-v2-relay-running-${kind}`, provider: 'relayme' as const,
+      modelRoute: kind === 'image' ? 'relayme-gpt-image-2' : 'relayme-kling-kling-v3-video-generation',
+      prompt: 'one result', conversationId: `conversation-running-${kind}`,
+      sessionId: `desktop-session-running-${kind}`, referenceAssetIds: [],
+    };
+    const submit = () => kind === 'image' ? service.submitImageJob(request) : service.submitVideoJob!(request);
+
+    const first = await submit();
+    const repeated = await submit();
+    const result = kind === 'image'
+      ? await service.pollImageJob({ provider: 'relayme', providerTaskId: repeated.providerTaskId })
+      : await service.pollVideoJob!({ provider: 'relayme', providerTaskId: repeated.providerTaskId });
+
+    expect(repeated).toEqual(first);
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) => String(url).endsWith(`/${kind}s/generations`))).toHaveLength(1);
+    expect(result).toMatchObject({ status: 'completed', result: {
+      assetId: kind === 'image' ? '1111111111111111' : '2222222222222222',
+    } });
+    expect(historyStatus).toBe('succeeded');
+    expect(historySink.failed).not.toHaveBeenCalled();
+  });
+
+  it('does not resubmit a RelayMe image when the first response is uncertain', async () => {
+    const { service, fetch } = await createService([
+      modelsResponse(),
+      new Error('connection reset after request transmission'),
+    ]);
+    const request = {
+      jobId: 'model-job-v2-relay-uncertain-image', provider: 'relayme' as const,
+      modelRoute: 'relayme-gpt-image-2', prompt: 'one image',
+      conversationId: 'conversation-uncertain-image', sessionId: 'desktop-session-uncertain-image',
+      referenceAssetIds: [],
+    };
+
+    await expect(service.submitImageJob(request)).rejects.toBeDefined();
+    await expect(service.submitImageJob(request)).rejects.toMatchObject({
+      code: 'PROVIDER_INVALID_RESPONSE', retryable: false,
+      message: expect.stringMatching(/提交结果无法确认.*不会重复提交/u),
+    });
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) => String(url).endsWith('/images/generations'))).toHaveLength(1);
+  });
+
+  it('reuses a RelayMe video task mapping after the service restarts', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-video-submit-restart-'));
+    roots.push(appDataRoot);
+    const credentials = credentialStore({ configured: true, locked: false });
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/models')) return modelsResponse();
+      if (url.endsWith('/workflows')) return jsonResponse({ data: { workflows: [] } });
+      if (url.endsWith('/videos/generations')) return jsonResponse({ taskId: 'relay-original-video-task', status: 'queued' });
+      throw new Error(`unexpected RelayMe request: ${url}`);
+    });
+    const options = { appDataRoot, credentialStore: credentials, fetch };
+    const request = {
+      jobId: 'model-job-v2-relay-duplicate-video', provider: 'relayme' as const,
+      modelRoute: 'relayme-kling-kling-v3-video-generation', prompt: 'one video',
+      conversationId: 'conversation-duplicate-video', sessionId: 'desktop-session-duplicate-video',
+      referenceAssetIds: [], outputCount: 1 as const,
+    };
+
+    const first = await createRelayMeProviderService(options).submitVideoJob!(request);
+    const repeated = await createRelayMeProviderService(options).submitVideoJob!(request);
+
+    expect(repeated).toEqual(first);
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) => String(url).endsWith('/videos/generations'))).toHaveLength(1);
+  });
+
   it('maps the documented image_url task result shape to the local asset store', async () => {
     const storedImage = vi.fn(async () => ({ assetId: 'fedcba9876543210', width: 1024, height: 1024 }));
     const { service } = await createService([
@@ -1421,6 +1960,108 @@ describe('RelayMe provider service', () => {
     });
   });
 
+  it.each(['image', 'video'] as const)('retries a RelayMe %s history write after storing the project asset', async (kind) => {
+    let historyStatus: 'queued' | 'running' | 'failed' | 'succeeded' = 'queued';
+    let historyWriteAttempts = 0;
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({
+        created: true, historyId: `history_relayme_write_${kind}`, status: 'queued' as const, terminal: null,
+      })),
+      running: vi.fn(async () => { historyStatus = 'running'; }),
+      succeeded: vi.fn(async () => {
+        if (historyStatus === 'failed') return { status: 'failed' as const };
+        historyWriteAttempts += 1;
+        if (historyWriteAttempts === 1) throw new Error('history index write interrupted');
+        historyStatus = 'succeeded';
+        return { status: 'succeeded' as const, width: kind === 'image' ? 1 : 1920, height: kind === 'image' ? 1 : 1080 };
+      }),
+      failed: vi.fn(async () => { historyStatus = 'failed'; return { status: 'failed' as const }; }),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64');
+    const videoBytes = Uint8Array.from([
+      0, 0, 0, 16, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0,
+      0, 0, 0, 12, 109, 111, 111, 118, 0, 0, 0, 0,
+      0, 0, 0, 12, 109, 100, 97, 116, 1, 2, 3, 4,
+    ]);
+    const outputBytes = kind === 'image' ? imageBytes : videoBytes;
+    const content = `data:${kind === 'image' ? 'image/png' : 'video/mp4'};base64,${Buffer.from(outputBytes).toString('base64')}`;
+    const completed = jsonResponse({
+      status: 'COMPLETED',
+      ...(kind === 'image' ? { imageContent: content } : { videoContent: content, durationSeconds: 8 }),
+      width: kind === 'image' ? 1 : 1920,
+      height: kind === 'image' ? 1 : 1080,
+    });
+    const storeAsset = vi.fn(async () => ({
+      assetId: '3333333333333333', width: kind === 'image' ? 1 : 1920, height: kind === 'image' ? 1 : 1080,
+    }));
+    const { service, fetch } = await createService([
+      modelsResponse(), jsonResponse({ taskId: `relay-history-write-${kind}`, status: 'queued' }), completed, completed,
+    ], { historySink, storeGeneratedImage: storeAsset, storeGeneratedVideo: storeAsset });
+    const request = {
+      jobId: `model-job-v2-relay-history-write-${kind}`, provider: 'relayme' as const,
+      modelRoute: kind === 'image' ? 'relayme-gpt-image-2' : 'relayme-kling-kling-v3-video-generation',
+      prompt: 'one result', conversationId: `conversation-history-write-${kind}`,
+      sessionId: `desktop-session-history-write-${kind}`, referenceAssetIds: [],
+    };
+    const submit = () => kind === 'image' ? service.submitImageJob(request) : service.submitVideoJob!(request);
+    const poll = (providerTaskId: string) => kind === 'image'
+      ? service.pollImageJob({ provider: 'relayme', providerTaskId })
+      : service.pollVideoJob!({ provider: 'relayme', providerTaskId });
+
+    const submitted = await submit();
+    await expect(poll(submitted.providerTaskId)).rejects.toMatchObject({ code: 'PROVIDER_ERROR', retryable: true });
+    expect(storeAsset).toHaveBeenCalledOnce();
+    expect(historyStatus).toBe('running');
+    expect(historySink.failed).not.toHaveBeenCalled();
+
+    const repeated = await submit();
+    expect(repeated).toEqual(submitted);
+    await expect(poll(repeated.providerTaskId)).resolves.toMatchObject({
+      status: 'completed', result: { assetId: '3333333333333333' },
+    });
+    expect(historyStatus).toBe('succeeded');
+    expect(historySink.succeeded).toHaveBeenCalledTimes(2);
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) => String(url).endsWith(`/${kind}s/generations`))).toHaveLength(1);
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) => String(url).includes(`/tasks/relay-history-write-${kind}`))).toHaveLength(1);
+  });
+
+  it('keeps an invalid image rejected by history validation terminal', async () => {
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({
+        created: true, historyId: 'history_relayme_invalid_media', status: 'queued' as const, terminal: null,
+      })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => { throw new Error('Generated result was invalid'); }),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const storeAsset = vi.fn(async () => ({ assetId: '4444444444444444', width: 1, height: 1 }));
+    const { service } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-invalid-media', status: 'queued' }),
+      jsonResponse({
+        status: 'COMPLETED',
+        imageContent: `data:image/png;base64,${Buffer.from(pngHeaderBytes()).toString('base64')}`,
+        width: 1, height: 1,
+      }),
+    ], { historySink, storeGeneratedImage: storeAsset });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-relay-invalid-media', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+      prompt: 'invalid media', conversationId: 'conversation-invalid-media',
+      sessionId: 'desktop-session-invalid-media', referenceAssetIds: [],
+    });
+
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId }))
+      .rejects.toMatchObject({ code: 'PROVIDER_ERROR', retryable: false });
+    expect(storeAsset).toHaveBeenCalledOnce();
+    expect(historySink.failed).toHaveBeenCalledWith('history_relayme_invalid_media', 'provider_failed');
+  });
+
   it('retries a completed RelayMe task when its result CDN is temporarily unavailable', async () => {
     const historySink = {
       reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relayme_result_503', status: 'queued' as const, terminal: null })),
@@ -1580,6 +2221,8 @@ describe('RelayMe provider service', () => {
       code: 'PROVIDER_INVALID_RESPONSE',
       retryable: false,
     });
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId }))
+      .resolves.toMatchObject({ status: 'failed' });
     expect(historySink.failed).toHaveBeenCalledOnce();
     expect(historySink.failed).toHaveBeenCalledWith('history_relayme_result_policy', 'provider_failed');
   });

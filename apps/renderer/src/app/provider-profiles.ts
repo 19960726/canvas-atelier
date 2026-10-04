@@ -484,6 +484,12 @@ const MEDIA_OUTPUT_IDENTITY_PATTERNS = [
   /(?:^|-)veo3(?:-\d+)?-(?:fast-4k|components)(?:-|$)/u,
   /(?:^|-)video-style-transform(?:-|$)/u,
   /(?:^|-)videoretalk(?:-|$)/u,
+  /(?:^|-)advanced-voice(?:-|$)/u,
+  /(?:^|-)animate-anyone(?:-|$)/u,
+  /(?:^|-)custom-voices?(?:-|$)/u,
+  /(?:^|-)tts(?:-\d+)?(?:-|$)/u,
+  /(?:^|-)voice(?:s)?(?:-|$)/u,
+  /(?:^|-)audio(?:-|$)/u,
 ] as const;
 
 function isMediaOutputProfile(profile: ProviderBridgeProfile): boolean {

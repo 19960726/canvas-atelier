@@ -122,7 +122,9 @@ describe('formal module node presentation', () => {
     const card = screen.getByTestId('module-node-card');
     expect(card).toHaveAttribute('data-port-label-mode', 'interactive');
     expect(card.querySelector('[data-port-id="references"]')).toHaveAttribute('aria-label', '参考图 / References');
-    expect(card.querySelector('[data-port-id="prompt"]')).toBeNull();
+    const promptHandle = card.querySelector('.react-flow__handle[data-port-id="prompt"]');
+    expect(promptHandle).toHaveAttribute('data-visual-alias', 'true');
+    expect(promptHandle).toHaveAttribute('aria-hidden', 'true');
     expect(card.querySelector('.module-node__port-label')).toHaveAttribute('aria-hidden', 'true');
   });
 

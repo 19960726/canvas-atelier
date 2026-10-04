@@ -18,11 +18,14 @@ import { buildProjectMemoryContext, canConnectCanvasPorts, createCanvasModuleNod
 import {
   ChevronDown,
   Clock3,
+  LayoutGrid,
   LayoutTemplate,
   Map as MapIcon,
+  MousePointer2,
   Plus,
   Save,
   Settings,
+  Undo2,
   X,
 } from 'lucide-react';
 import { useAppStore } from '../app/app-store';
@@ -1100,6 +1103,7 @@ export function CanvasWorkspace() {
   const formalCanvasEdgeCount = flowEdges.length;
   const canvasDraft = useCanvasDraft({
     nodes: flowNodes,
+    keepPassiveMeasurementsInternal: formalCanvasNodeCount > 100,
     resetKey: canvasDraftResetKey,
     onCommitPositions: commitNodePositions,
   });
@@ -1291,7 +1295,7 @@ export function CanvasWorkspace() {
   const resolveReferenceThumbnailUrl = (assetId: string) => managedImagesByAssetId.get(assetId)?.displayUrl ?? assetId;
   const placementImportError = referenceUploadError ?? projectImageError;
   const tools = useMemo(() => [
-    { id: 'select' as const, label: '定位画布', glyph: '⌖' },
+    { id: 'select' as const, label: '定位画布', icon: <MousePointer2 size={18} /> },
   ], []);
 
   const handleCanvasStageRef = useCallback((element: HTMLElement | null) => {
@@ -2053,6 +2057,7 @@ export function CanvasWorkspace() {
               }}
             >
               <span className="project-button__name">{project.name}</span>
+              <ChevronDown size={14} aria-hidden="true" />
             </button>
             {fileMenuOpen && (
               <div className="project-menu__popover" role="menu" aria-label="文件">
@@ -2154,7 +2159,8 @@ export function CanvasWorkspace() {
       </header>
 
       <nav className="toolrail toolrail--floating" aria-label="画布工具" data-testid="toolrail">
-        {tools.map(({ id, label, glyph }) => (
+        <div className="toolrail__group" role="group" aria-label="画布编辑">
+        {tools.map(({ id, label, icon }) => (
           <button
             key={id}
             type="button"
@@ -2165,7 +2171,8 @@ export function CanvasWorkspace() {
             title={label}
             onClick={() => activateCanvasTool(id)}
           >
-            <span className="toolrail__glyph" data-rail-icon={id} aria-hidden="true">{glyph}</span>
+            <span className="toolrail__glyph" data-rail-icon={id} aria-hidden="true">{icon}</span>
+            <span className="tool-button__hint" aria-hidden="true">{label}</span>
           </button>
         ))}
         <button
@@ -2177,7 +2184,8 @@ export function CanvasWorkspace() {
           title="添加节点"
           onClick={() => openQuickInsertAtScreenPosition()}
         >
-          <span className="toolrail__glyph" data-rail-icon="add-node" aria-hidden="true">＋</span>
+          <span className="toolrail__glyph" data-rail-icon="add-node" aria-hidden="true"><Plus size={18} /></span>
+          <span className="tool-button__hint" aria-hidden="true">添加节点</span>
         </button>
         <button
           type="button"
@@ -2188,7 +2196,8 @@ export function CanvasWorkspace() {
           title="模块库"
           onClick={toggleModuleLibrary}
         >
-          <span className="toolrail__glyph" data-rail-icon="modules" aria-hidden="true">▦</span>
+          <span className="toolrail__glyph" data-rail-icon="modules" aria-hidden="true"><LayoutGrid size={18} /></span>
+          <span className="tool-button__hint" aria-hidden="true">模块库</span>
         </button>
         <button
           type="button"
@@ -2199,7 +2208,8 @@ export function CanvasWorkspace() {
           disabled={undoStack.length === 0}
           onClick={() => undo()}
         >
-          <span className="toolrail__glyph" data-rail-icon="undo" aria-hidden="true">↶</span>
+          <span className="toolrail__glyph" data-rail-icon="undo" aria-hidden="true"><Undo2 size={18} /></span>
+          <span className="tool-button__hint" aria-hidden="true">撤销</span>
         </button>
         <button
           type="button"
@@ -2212,6 +2222,7 @@ export function CanvasWorkspace() {
           <span className="toolrail__glyph" data-rail-icon="arrange" aria-hidden="true">
             <LayoutTemplate size={18} />
           </span>
+          <span className="tool-button__hint" aria-hidden="true">整理画布</span>
         </button>
         {/* Retained as a non-rendered compatibility hook for persisted
             placement workflows; it is intentionally not part of the Canvas
@@ -2228,6 +2239,8 @@ export function CanvasWorkspace() {
         >
           <LayoutTemplate size={18} />
         </button>
+        </div>
+        <div className="toolrail__group" role="group" aria-label="工作区">
         <button
           ref={agentToggleRef}
           className={`tool-button${activeSurface === 'agent' ? ' is-active' : ''}`}
@@ -2239,6 +2252,7 @@ export function CanvasWorkspace() {
           onClick={() => changeSurface('agent')}
         >
           <span className="toolrail__glyph" data-rail-icon="agent" aria-hidden="true"><span className="canvas-ai-orb canvas-ai-orb--rail"><i /></span></span>
+          <span className="tool-button__hint" aria-hidden="true">AI 对话</span>
         </button>
         <button
           className={`tool-button${activeSurface === 'history' ? ' is-active' : ''}`}
@@ -2249,9 +2263,12 @@ export function CanvasWorkspace() {
           title="历史记录"
           onClick={() => changeSurface('history')}
         >
-          <span className="toolrail__glyph" data-rail-icon="history" aria-hidden="true">◷</span>
+          <span className="toolrail__glyph" data-rail-icon="history" aria-hidden="true"><Clock3 size={18} /></span>
+          <span className="tool-button__hint" aria-hidden="true">历史记录</span>
           {historyUnread && <i className="tool-button__dot" data-testid="history-unread-dot" aria-label="有新的生成结果" />}
         </button>
+        </div>
+        <div className="toolrail__group" role="group" aria-label="应用">
         <button
           className={`tool-button${activeSurface === 'settings' ? ' is-active' : ''}`}
           type="button"
@@ -2262,7 +2279,9 @@ export function CanvasWorkspace() {
           onClick={() => changeSurface('settings')}
         >
           <span className="toolrail__glyph" data-rail-icon="settings" aria-hidden="true"><Settings size={18} /></span>
+          <span className="tool-button__hint" aria-hidden="true">设置</span>
         </button>
+        </div>
       </nav>
 
       <main
@@ -2634,7 +2653,8 @@ function isEditablePasteTarget(target: EventTarget | null): boolean {
 }
 
 function isEditableKeyboardTarget(target: EventTarget | null): boolean {
-  return isEditablePasteTarget(target);
+  return isEditablePasteTarget(target) || (target instanceof Element
+    && target.closest('[role="dialog"][aria-modal="true"]') !== null);
 }
 
 function clipboardEventMayContainMedia(event: ClipboardEvent): boolean {

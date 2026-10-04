@@ -2,7 +2,7 @@ import path from 'node:path';
 import { expect, test } from './helpers/e2e-test';
 import { openEmptyApp } from './helpers/app';
 
-const artifact = (name: string) => path.join(process.cwd(), 'artifacts', '2026-08-08-multi-provider', name);
+const artifact = (name: string) => path.join(process.cwd(), process.env.CANVAS_SETTINGS_UI_AUDIT_DIR ?? 'artifacts/2026-08-08-multi-provider', name);
 
 for (const theme of ['light', 'dark'] as const) {
   test(`four API sites keep separate credentials and capability catalogs in ${theme}`, async ({ page }) => {
@@ -20,6 +20,14 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(providers.getByRole('listitem', { name: /巨轮 API/u })).toBeEnabled();
     await expect(providers.getByRole('listitem', { name: /4D AI/u })).toBeEnabled();
     await expect(providers.getByRole('listitem', { name: /GLM/u })).toHaveCount(0);
+    const defaults = settings.getByRole('region', { name: '默认模型', exact: true });
+    for (const label of ['生图默认模型', '视频默认模型', '对话默认模型', '反推默认模型', '视觉默认模型', '视频理解默认模型']) {
+      await expect(defaults.getByLabel(label, { exact: true })).toBeVisible();
+    }
+    const directory = settings.locator('.settings-catalog-details');
+    await expect(directory).toHaveJSProperty('open', false);
+    await expect(settings.getByRole('tablist', { name: '模型能力分类' })).toBeHidden();
+    await expect(settings.locator('.settings-api-diagnostics')).toHaveJSProperty('open', false);
 
     await expect.poll(() => page.evaluate(async () => (
       (await window.novusDesktop?.provider.getActiveProvider?.())?.activeProvider
@@ -32,6 +40,8 @@ for (const theme of ['light', 'dark'] as const) {
       (await window.novusDesktop?.provider.getActiveProvider?.())?.activeProvider
     ))).toBe('relayme');
 
+    await directory.locator('summary').click();
+    await expect(directory).toHaveJSProperty('open', true);
     const capabilityTabs = settings.getByRole('tablist', { name: '模型能力分类' });
     await expect(settings.getByRole('region', { name: '生图模型' })).toContainText('GPT Image 2');
     await expect(settings.getByRole('region', { name: '生图模型' })).toContainText('Seedream 5 Pro');
@@ -47,6 +57,8 @@ for (const theme of ['light', 'dark'] as const) {
     await providers.getByRole('listitem', { name: /RelayMe/u }).click();
     await expect(settings.getByLabel('API 服务地址（Base URL）')).toHaveValue('https://www.ml.relayme.uk/api/ai-tools/v1');
     await expect(settings.getByRole('button', { name: '配置隐藏密钥' })).toHaveCount(0);
+    await settings.locator('.settings-api-diagnostics > summary').click();
+    await expect(settings.locator('.settings-api-diagnostics')).toHaveJSProperty('open', true);
     await expect(settings.getByText('画布只使用 RelayMe 账号登录令牌，不接受独立 API 密钥。')).toBeVisible();
     await capabilityTabs.getByRole('tab', { name: /生图模型/u }).click();
     await expect(settings.getByRole('region', { name: '生图模型' })).toContainText('GPT Image 2');
@@ -67,6 +79,11 @@ for (const theme of ['light', 'dark'] as const) {
     await capabilityTabs.getByRole('tab', { name: /视频模型/u }).click();
     await expect(settings.getByRole('region', { name: '视频模型' })).toContainText('seedance-2.0-fast-deal');
     await expect(capabilityTabs.getByRole('tab', { name: /生图模型/u })).toHaveCount(0);
+    await expect(defaults.getByLabel('生图默认模型')).toBeDisabled();
+    await expect(defaults.getByLabel('视频默认模型')).toBeEnabled();
+    await expect.poll(() => page.evaluate(async () => (
+      (await window.novusDesktop?.provider.getActiveProvider?.())?.activeProvider
+    ))).toBe('relayme');
     await expect(settings.getByRole('link', { name: '打开巨轮网站' })).toHaveAttribute('href', 'https://julun.cc');
 
     await providers.getByRole('listitem', { name: /4D AI/u }).click();
@@ -76,6 +93,11 @@ for (const theme of ['light', 'dark'] as const) {
     await capabilityTabs.getByRole('tab', { name: /反推模型/u }).click();
     await expect(settings.getByRole('region', { name: '反推模型' })).toContainText('gpt-6-astra');
     await expect(capabilityTabs.getByRole('tab', { name: /视频模型/u })).toHaveCount(0);
+    await expect(defaults.getByLabel('生图默认模型')).toBeEnabled();
+    await expect(defaults.getByLabel('视频默认模型')).toBeDisabled();
+    await expect.poll(() => page.evaluate(async () => (
+      (await window.novusDesktop?.provider.getActiveProvider?.())?.activeProvider
+    ))).toBe('relayme');
     await expect(settings.getByRole('link', { name: '打开 4D AI 网站' })).toHaveAttribute('href', 'https://api.4dai.cc');
 
     await settings.getByRole('button', { name: '设为优先供应商' }).click();

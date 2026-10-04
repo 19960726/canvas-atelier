@@ -73,14 +73,9 @@ describe('New API authenticated model catalog', () => {
       provider: 'julun',
       modelId: 'sora-2',
       capabilities: ['video_generation', 'async_tasks'],
-      capabilityStatus: 'complete',
-      constraints: { video: {
-        aspectRatios: ['16:9'],
-        resolutions: ['720p'],
-        duration: { mode: 'options', defaultValue: 10, options: [5, 10] },
-        outputCounts: [1],
-      } },
+      capabilityStatus: 'incomplete',
     })]);
+    expect(profiles[0]?.constraints?.video).toBeUndefined();
   });
 
   it('keeps openai-only image-named 4D models visible but incomplete and gates vision by allowlist', () => {
@@ -391,7 +386,7 @@ describe('New API authenticated model catalog', () => {
   });
 
   it('keeps the Julun seed preview aligned to the 11-name public pricing snapshot', () => {
-    expect(NEW_API_PROVIDER_SEEDS.julun.map((profile) => profile.modelId)).toEqual([
+    expect(NEW_API_PROVIDER_SEEDS.julun.slice(0, 11).map((profile) => profile.modelId)).toEqual([
       'seedance-2.0-fast-deal',
       'grok-imagine-video-1.5-preview',
       'grok-imagine-video-1.5（按次）',

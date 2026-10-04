@@ -13,7 +13,79 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
+const confirmedTaskFixture = () => ({
+  version: 1 as const, generationKind: 'image' as const,
+  originalRequest: '@图片8产品位置和比例不变，一家六口，桌上必须正好6个饺子。@图片3只参考光线。',
+  executionPrompt: '保留原图产品的位置和比例；一家六口围桌；桌上正好6个饺子；仅修改灯光；禁止复制参考图3的其他物体。',
+  references: [{ assetId: 'product-eight', label: '产品原图', mention: '@图片8' }, { assetId: 'lighting-three', label: '灯光参考', mention: '@图片3' }],
+  executionReferenceAssetIds: ['product-eight'], confirmedAt: 1_000,
+});
+
+describe('confirmed creative task context storage', () => {
+  it('restores the complete confirmed task after the original request is pruned from 48-message history', () => {
+    const taskContext = confirmedTaskFixture();
+    const conversation = { ...createAgentConversation(1_000), id: 'long-confirmed-task', taskContext,
+      messages: Array.from({ length: 52 }, (_, index) => ({ id: `follow-up-${index}`, role: 'user' as const,
+        content: index === 0 ? taskContext.originalRequest : `继续修改 ${index}` })) };
+    writeAgentConversationCollection('confirmed-context', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    const restored = readAgentConversationCollection('confirmed-context').conversations[0]!;
+    expect(restored.messages).toHaveLength(48);
+    expect(restored.messages[0]!.id).toBe('follow-up-4');
+    expect(restored).toMatchObject({ taskContext });
+  });
+  it('keeps the snapshot isolated to its conversation and project while old v2 conversations remain valid', () => {
+    const first = { ...createAgentConversation(1_100), id: 'confirmed-a', taskContext: confirmedTaskFixture() };
+    const second = { ...createAgentConversation(1_200), id: 'unconfirmed-b' };
+    writeAgentConversationCollection('context-project-a', { version: 2, activeConversationId: first.id, conversations: [first, second] });
+    const restored = readAgentConversationCollection('context-project-a');
+    expect(restored.conversations[0]).toMatchObject({ taskContext: first.taskContext });
+    expect(restored.conversations[1]).not.toHaveProperty('taskContext');
+    expect(readAgentConversationCollection('context-project-b').conversations[0]).not.toHaveProperty('taskContext');
+  });
+  it('reuses existing text redaction and retains exact original mention numbers in the snapshot', () => {
+    const taskContext = { ...confirmedTaskFixture(), originalRequest: '保留6个饺子 https://example.com/source',
+      executionPrompt: '产品尺寸不变，正好6个饺子，参考文件 C:\\private\\image.png' };
+    const conversation = { ...createAgentConversation(1_300), id: 'redacted-context', taskContext };
+    writeAgentConversationCollection('context-redaction', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    expect(readAgentConversationCollection('context-redaction').conversations[0]).toMatchObject({ taskContext: {
+      ...taskContext, originalRequest: '保留6个饺子 [链接已省略]', executionPrompt: '产品尺寸不变，正好6个饺子，参考文件 [本地路径已省略]',
+    } });
+    expect(window.localStorage.getItem('agent-canvas:skill-chat:v2:context-redaction')).not.toContain('example.com');
+  });
+  it.each([
+    { label: 'overlong complete prompt', patch: { executionPrompt: '图'.repeat(16_001) } },
+    { label: 'invalid mention', patch: { references: [{ assetId: 'product-eight', label: '产品', mention: '@图片0' }] } },
+    { label: 'protected reference identity', patch: { references: [{ assetId: 'C:\\private\\image.png', label: '产品', mention: '@图片8' }] } },
+    { label: 'unbound execution reference', patch: { executionReferenceAssetIds: ['foreign-asset'] } },
+    { label: 'extra protected payload', patch: { rawImage: 'data:image/png;base64,AAAA' } },
+    { label: 'credential context', patch: { executionPrompt: 'Authorization: Bearer fakecredential123' } },
+    { label: 'too many references', patch: { references: Array.from({ length: 21 }, (_, index) => ({ assetId: `asset-${index}`, label: `图${index}`, mention: `@图片${index + 1}` })) } },
+  ])('discards only malformed optional task context: $label', ({ patch }) => {
+    const conversation = { ...createAgentConversation(1_400), id: 'safe-conversation', taskContext: { ...confirmedTaskFixture(), ...patch },
+      messages: [{ id: 'safe-user', role: 'user' as const, content: '已有对话应保留' }] };
+    writeAgentConversationCollection('bad-context', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    const restored = readAgentConversationCollection('bad-context');
+    expect(restored.activeConversationId).toBe(conversation.id);
+    expect(restored.conversations[0]!.messages).toHaveLength(1);
+    expect(restored.conversations[0]).not.toHaveProperty('taskContext');
+  });
+});
+
 describe('skill chat conversation storage', () => {
+  it('retains sent reference numbers across save and reopen instead of renumbering a subset', () => {
+    const conversation = { ...createAgentConversation(100), id: 'numbered-task', messages: [{
+      id: 'numbered-request', role: 'user' as const, content: '@图片8保留产品，@图片3只参考灯光',
+      request: { modelDisplayName: 'Visual chat', modelRoute: 'visual-chat', knowledgeBaseCount: 0,
+        projectMemoryCount: 0, status: 'completed' as const, references: [
+          { assetId: 'product-eight', label: '产品', mention: '@图片8' },
+          { assetId: 'lighting-three', label: '灯光', mention: '@图片3' },
+        ] },
+    }] };
+    writeAgentConversationCollection('numbered-project', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    const stored = readAgentConversationCollection('numbered-project').conversations[0]!.messages[0]!.request;
+    expect(stored?.references).toEqual(conversation.messages[0]!.request.references);
+  });
+
   it('keeps conversations isolated by project and restores the active task', () => {
     const first = {
       ...createAgentConversation(100),

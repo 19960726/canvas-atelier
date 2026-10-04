@@ -6,7 +6,7 @@ import { ChatSkillBridgeRequestSchema, CODEX_ASTRA_PROFILE, type ChatSkillBridge
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import { codexAnalysisDelayHint, resolveAgentRequestTimeoutMs, resolveClipboardPasteAction, SkillChatWorkbench, type SkillCanvasActionRequest, type SkillChatRequest } from './SkillChatWorkbench';
 import { queueGeneratedImageForAgent } from './generated-image-agent-transfer';
-import { createAgentConversation, writeAgentConversationCollection } from './skill-chat-session-store';
+import { createAgentConversation, readAgentConversationCollection, writeAgentConversationCollection } from './skill-chat-session-store';
 
 afterEach(() => {
   cleanup();
@@ -87,6 +87,128 @@ function renderWorkbench(overrides: Partial<React.ComponentProps<typeof SkillCha
   }
   return view;
 }
+
+describe('creative follow-up references', () => {
+  it.each(['cancel', 'failed-entry'])('keeps the prior confirmed task when a new plan is %s', async (outcome) => {
+    const taskContext = { version: 1 as const, generationKind: 'image' as const, originalRequest: '原早餐图保留六个烧麦', executionPrompt: '六个烧麦，产品原位、机位和比例不变。', references: [], executionReferenceAssetIds: [], confirmedAt: 100 };
+    const conversation = { ...createAgentConversation(100), mode: 'original' as const, modelRoute: 'chat/creative', taskContext };
+    writeAgentConversationCollection('project-a', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    const executeCanvasAction = vi.fn(async (_action: SkillCanvasActionRequest) => false);
+    const chat = vi.fn(async () => ({ message: JSON.stringify({ summary: '新的产品构图', options: [{ id: 'new', title: '新方案', kind: 'image', reason: '更换构图', prompt: '产品置于桌面前景，柔和侧光突出金属材质，保持完整轮廓，中性厨房背景。' }] }), modelRoute: 'chat/creative', sources: [] }));
+    renderWorkbench({ chat, executeCanvasAction });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '设计一个新的产品主图方案' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：新方案' }));
+    expect(readAgentConversationCollection('project-a').conversations[0]!.taskContext).toEqual(taskContext);
+    fireEvent.click(screen.getByRole('button', { name: outcome === 'cancel' ? '取消画布操作' : '确认执行生图' }));
+    if (outcome === 'failed-entry') await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('未能启动'));
+    else expect(executeCanvasAction).not.toHaveBeenCalled();
+    expect(readAgentConversationCollection('project-a').conversations[0]!.taskContext).toEqual(taskContext);
+  });
+  it('restores confirmed constraints and the original image number after bounded history removes the initiating request', async () => {
+    const reference = { assetId: 'a'.repeat(16), label: '早餐原图', displayUrl: 'novus-asset://breakfast' };
+    const conversation = {
+      ...createAgentConversation(100), mode: 'original' as const, modelRoute: 'chat/creative',
+      messages: Array.from({ length: 48 }, (_, index) => ({ id: `message-${index}`, role: index % 2 === 0 ? 'user' as const : 'assistant' as const, content: `后续讨论 ${index}`, mode: 'original' as const })),
+      taskContext: { version: 1 as const, generationKind: 'image' as const, originalRequest: '只修改原位早餐图，桌上恰好六个烧麦，禁止红色', executionPrompt: '保持机位、人物姿态、产品坐标与原图比例，六个烧麦全部可数，不得出现红色。', references: [{ assetId: reference.assetId, label: reference.label, mention: '@图片8' }], executionReferenceAssetIds: [reference.assetId], confirmedAt: 100 },
+    };
+    writeAgentConversationCollection('project-a', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: '已读取本次修改需求', modelRoute: 'chat/creative', sources: [] }));
+    renderWorkbench({ profiles: [{ ...profiles[0]!, capabilities: ['chat', 'vision'] }, { ...profiles[1]!, capabilities: ['image_generation', 'image_edit'] }], referenceImages: [reference], chat });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '继续，只把碗改成白色，其他保持' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    const request = chat.mock.calls[0]![0];
+    expect(request.referenceAssetIds).toEqual([reference.assetId]);
+    expect(request.referenceMentions).toEqual([{ assetId: reference.assetId, label: reference.label, mention: '@图片8' }]);
+    const latest = request.messages[request.messages.length - 1]!.content;
+    for (const text of ['桌上恰好六个烧麦', '产品坐标与原图比例', '不得出现红色', '只把碗改成白色']) expect(latest).toContain(text);
+  });
+  it('connects only the chosen product and lighting references after confirmation and carries every hard constraint', async () => {
+    const images = [
+      { assetId: 'a'.repeat(16), label: '产品图', displayUrl: 'novus-asset://product' },
+      { assetId: 'b'.repeat(16), label: '窗光参考', displayUrl: 'novus-asset://lighting' },
+      { assetId: 'c'.repeat(16), label: '红色反例', displayUrl: 'novus-asset://negative' },
+    ];
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: JSON.stringify({
+      summary: '使用产品与窗光，排除红色反例',
+      requirements: { goal: '原位产品图', mustKeep: ['产品坐标与比例不变'], mustChange: ['六个烧麦全部可数'], mustAvoid: ['禁止红色'], acceptanceCriteria: ['六个烧麦，产品轮廓完整'] },
+      referenceDuties: [
+        { mention: '@图片1', role: 'product', inherit: ['原始比例'], doNotCopy: [] },
+        { mention: '@图片2', role: 'lighting', inherit: ['窗光方向'], doNotCopy: ['参考场景人物'] },
+        { mention: '@图片3', role: 'negative', inherit: [], doNotCopy: ['红色'] },
+      ],
+      options: [{ id: 'a', title: '原位方案', kind: 'image', reason: '只借用产品和光线', prompt: '产品原位构图，保持原图轮廓与比例，窗光照亮金属材质，中性背景，真实摄影。', referenceMentions: ['@图片1', '@图片2', '@图片3'] }],
+    }), modelRoute: 'chat/creative', sources: [] }));
+    const executeCanvasAction = vi.fn(async (_action: SkillCanvasActionRequest) => true);
+    renderWorkbench({ profiles: [{ ...profiles[0]!, capabilities: ['chat', 'vision'] }, { ...profiles[1]!, capabilities: ['image_generation', 'image_edit'] }], referenceImages: images, chat, executeCanvasAction });
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
+    for (const image of images) window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: image.assetId } }));
+    await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('红色反例'));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 @图片2 @图片3 按原位产品与窗光建立生图工作流' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：原位方案' }));
+    expect(screen.getByLabelText('素材职责')).toHaveTextContent('反例，不垫图');
+    expect(screen.getByLabelText('方案连接素材')).toHaveTextContent('@图片1 产品图');
+    expect(screen.getByLabelText('方案连接素材')).toHaveTextContent('@图片2 窗光参考');
+    expect(screen.getByLabelText('方案连接素材')).not.toHaveTextContent('红色反例');
+    expect(executeCanvasAction).not.toHaveBeenCalled();
+    expect(readAgentConversationCollection('project-a').conversations[0]!.taskContext).toBeUndefined();
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledOnce());
+    const action = executeCanvasAction.mock.calls[0]![0] as SkillCanvasActionRequest;
+    expect(action.referenceAssetIds).toEqual([images[0]!.assetId, images[1]!.assetId]);
+    for (const constraint of ['产品坐标与比例不变', '六个烧麦全部可数', '禁止红色', '六个烧麦，产品轮廓完整', '窗光方向', '参考场景人物']) expect(action.prompt).toContain(constraint);
+    expect(action.prompt).not.toMatch(/@图片\d/u);
+    const confirmed = readAgentConversationCollection('project-a').conversations[0]!.taskContext;
+    expect(confirmed?.executionPrompt).toBe(action.prompt);
+    expect(confirmed?.executionReferenceAssetIds).toEqual(action.referenceAssetIds);
+    const sent = chat.mock.calls[0]![0].messages;
+    expect(sent[sent.length - 1]!.content).toContain('有序素材清单');
+    expect(sent[sent.length - 1]!.content).toContain('negative');
+  });
+  it('offers an explicit completion request when analysis contains no runnable option', async () => {
+    const chat = vi.fn(async () => ({ message: JSON.stringify({ summary: '早餐画面分析', requirements: { goal: '厨房早餐图' } }), modelRoute: 'chat/creative', sources: [] }));
+    renderWorkbench({ chat });
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '制作一个厨房早餐图工作流' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '补全可执行方案' }));
+    expect((screen.getByTestId('agent-composer-input') as HTMLTextAreaElement).value).toContain('完整执行提示词');
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: '确认执行生图' })).not.toBeInTheDocument();
+  });
+  it.each([
+    ['按照上述描述来生图', true],
+    ['继续', true],
+    ['按方案2，只把碗改白色', true],
+    ['只改碗颜色，其他保持', true],
+    ['只把产品去掉，原图其他不要改变', true],
+    ['继续，但去掉参考图，只根据文字生图', false],
+    ['不要用刚才的参考图，重新设计早餐画面', false],
+  ])('preserves reference intent for follow-up %s', async (followUp, inherit) => {
+    const reference = { assetId: 'a'.repeat(16), label: '早餐原图', displayUrl: 'novus-asset://breakfast' };
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: JSON.stringify({
+      summary: '保留原图场景并调整早餐内容', options: [{ id: 'a', title: '原图编辑方案', kind: 'image', reason: '保留原图透视', prompt: '早餐产品置于桌面前景，保持原图人物与厨房构图，柔和窗光，保留木质纹理与中性背景。' }],
+    }), modelRoute: 'chat/creative', sources: [] }));
+    const executeCanvasAction = vi.fn(async () => true);
+    renderWorkbench({ profiles: [{ ...profiles[0]!, capabilities: ['chat', 'vision'] }, { ...profiles[1]!, capabilities: ['image_generation', 'image_edit'] }], referenceImages: [reference], chat, executeCanvasAction });
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: '@' } });
+    fireEvent.click(projectMention(reference.label));
+    fireEvent.change(composer, { target: { value: '@图片1 按原图设计早餐画面' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await screen.findByRole('button', { name: '选择方案：原图编辑方案' });
+    fireEvent.change(composer, { target: { value: followUp } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: '选择方案：原图编辑方案' })).toHaveLength(2));
+    expect(chat.mock.calls[1]![0].referenceAssetIds ?? []).toEqual(inherit ? [reference.assetId] : []);
+    fireEvent.click(screen.getAllByRole('button', { name: '选择方案：原图编辑方案' })[1]!);
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledWith(expect.objectContaining({ createWorkflow: true, referenceAssetIds: inherit ? [reference.assetId] : [] })));
+  });
+});
 
 function canonicalCaretOffset(editor: HTMLElement): number {
   const selection = window.getSelection();
@@ -351,8 +473,8 @@ describe('SkillChatWorkbench', () => {
     expect(option).toHaveTextContent('已选择');
     expect(messageStream.scrollTop).toBe(700);
     expect(executeCanvasAction).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('待确认画布操作')).toHaveTextContent('将创建1个生图节点');
-    expect(screen.getByLabelText('待确认画布操作')).toHaveTextContent('提示词与结果保留在生成节点内');
+    expect(screen.getByLabelText('待确认画布操作')).toHaveTextContent('将建立“提示词 → 生图 → 结果”的可编辑工作流');
+    expect(screen.getByLabelText('待确认画布操作').querySelector('p')).not.toHaveTextContent('。。');
     const claritySelect = screen.getByRole('combobox', { name: '选择生图清晰度' });
     expect(within(screen.getByRole('combobox', { name: '选择生图模型' })).getAllByRole('option')).toHaveLength(1);
     expect(claritySelect).toHaveValue('');
@@ -364,11 +486,14 @@ describe('SkillChatWorkbench', () => {
       createWorkflow: true,
       nodeId: expect.stringMatching(/^agent-image-/u),
       modelRoute: 'image/only-4k',
-      prompt: '产品居中构图，保持产品比例与 Logo，柔和棚灯突出材质，纯净浅色背景，高清商业摄影。',
+      prompt: expect.stringContaining('产品居中构图，保持产品比例与 Logo，柔和棚灯突出材质，纯净浅色背景，高清商业摄影。'),
       parameters: expect.objectContaining({ resolution: '4K' }),
     })));
     const actionCall = (executeCanvasAction.mock.calls as unknown as Array<[SkillCanvasActionRequest]>)[0]!;
     expect(actionCall[0].nodeId).not.toBe('image-node');
+    expect(actionCall[0].prompt).toContain('不要改变产品颜色');
+    expect(actionCall[0].prompt).toContain('改为简洁棚拍构图');
+    expect(actionCall[0].prompt).toContain('实际返图尺寸符合所选清晰度');
 
     const createdNodeId = actionCall[0].nodeId;
     view.rerender(workbench({
@@ -2541,8 +2666,12 @@ describe('SkillChatWorkbench', () => {
   });
 
   it('submits ordered visual-analysis metadata and asks before drafting a workflow', async () => {
-    const chat = vi.fn(async () => ({
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({
       message: JSON.stringify({
+        referenceDuties: [
+          { assetId: 'a'.repeat(16), mention: '@图片1', responsibility: '产品外观', inherit: ['比例与轮廓'], replace: [], doNotCopy: [] },
+          { assetId: 'b'.repeat(16), mention: '@图片2', responsibility: '场景光线', inherit: ['光线方向'], replace: [], doNotCopy: ['原场景人物'] },
+        ],
         visual: {
           subject: '红色产品',
           environment: '浅色棚拍',
@@ -2590,6 +2719,11 @@ describe('SkillChatWorkbench', () => {
       ],
     })));
     expect(await screen.findByText('是否基于本次反推生成工作流？')).toBeVisible();
+    const sentMessages = chat.mock.calls[0]![0].messages;
+    const requestContent = sentMessages[sentMessages.length - 1]!.content;
+    expect(requestContent).toContain('只返回以下 JSON 合同');
+    expect(requestContent).toContain('"referenceDuties"');
+    expect(requestContent).toContain('"perspective"');
     expect(draftWorkflowFromAnalysis).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: '生成工作流' }));
@@ -2609,6 +2743,7 @@ describe('SkillChatWorkbench', () => {
   it('shows structured reverse variants before creating the durable workflow plan', async () => {
     const chat = vi.fn(async () => ({
       message: JSON.stringify({
+        referenceDuties: [{ assetId: 'a'.repeat(16), mention: '@图片1', responsibility: '产品', inherit: ['瓶身比例'], replace: [], doNotCopy: [] }],
         visual: { subject: '白色瓶身', environment: '浅色棚拍', material: '磨砂玻璃', lighting: '柔光', camera: '平视', depth: '浅景深', composition: '居中留白', perspective: '正面', layers: '前中后景' },
         prompts: { zh: '白色瓶身，浅色棚拍，柔光', en: 'White bottle, soft studio light', negative: ['水印'] },
         variants: [

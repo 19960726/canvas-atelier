@@ -1,4 +1,5 @@
 import type { Node } from '@xyflow/react';
+import { StrictMode, type ReactNode } from 'react';
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { selectViewportCulledElements } from './use-viewport-culling';
@@ -14,6 +15,125 @@ afterEach(() => {
 });
 
 describe('useCanvasDraft', () => {
+  it('keeps passive large-canvas measurements without rerendering the controlled graph and preserves them for the next interaction', () => {
+    const initialNodes = [draftNode('module-1', 0, 0)];
+    const renders = vi.fn();
+    const { result } = renderHook(() => {
+      renders();
+      return useCanvasDraft({
+        nodes: initialNodes,
+        ...{ keepPassiveMeasurementsInternal: true },
+        onCommitPositions: async () => true,
+      });
+    });
+    renders.mockClear();
+
+    act(() => result.current.onNodesChange([
+      { id: 'module-1', type: 'dimensions', dimensions: { width: 292, height: 260 } },
+    ]));
+    act(() => result.current.onNodesChange([
+      { id: 'module-1', type: 'dimensions', dimensions: { width: 292, height: 612 } },
+    ]));
+    expect(renders).not.toHaveBeenCalled();
+
+    act(() => result.current.onNodesChange([
+      { id: 'module-1', type: 'select', selected: true },
+      { id: 'module-1', type: 'position', position: { x: 20, y: 30 }, dragging: true },
+    ]));
+    expect(result.current.nodes[0]).toMatchObject({
+      selected: true, position: { x: 20, y: 30 }, measured: { width: 292, height: 612 },
+    });
+  });
+
+  it('retains the latest passive measurement through an unrelated render and durable text edit', () => {
+    const initialNodes = [draftNode('module-1', 0, 0)];
+    const renders = vi.fn();
+    const { result, rerender } = renderHook(({ nodes }) => {
+      renders();
+      return useCanvasDraft({ nodes, ...{ keepPassiveMeasurementsInternal: true }, onCommitPositions: async () => true });
+    }, { initialProps: { nodes: initialNodes } });
+    renders.mockClear();
+    act(() => result.current.onNodesChange([
+      { id: 'module-1', type: 'dimensions', dimensions: { width: 704, height: 1665 } },
+    ]));
+    expect(renders).not.toHaveBeenCalled();
+    rerender({ nodes: initialNodes });
+    rerender({ nodes: [{ ...initialNodes[0]!, data: { title: 'Edited prompt' } }] });
+    expect(result.current.nodes[0]).toMatchObject({ data: { title: 'Edited prompt' }, measured: { width: 704, height: 1665 } });
+  });
+
+  it('still publishes explicit resize attributes on a large canvas', () => {
+    const initialNodes = [draftNode('module-1', 0, 0)];
+    const renders = vi.fn();
+    const { result } = renderHook(() => {
+      renders();
+      return useCanvasDraft({ nodes: initialNodes, ...{ keepPassiveMeasurementsInternal: true }, onCommitPositions: async () => true });
+    });
+    renders.mockClear();
+    act(() => result.current.onNodesChange([
+      { id: 'module-1', type: 'dimensions', dimensions: { width: 480, height: 320 }, resizing: true, setAttributes: true },
+    ]));
+    expect(renders).toHaveBeenCalled();
+    expect(result.current.nodes[0]).toMatchObject({ width: 480, height: 320, resizing: true, measured: { width: 480, height: 320 } });
+    renders.mockClear();
+    act(() => result.current.onNodesChange([
+      { id: 'module-1', type: 'dimensions', dimensions: { width: 480, height: 320 }, resizing: false },
+    ]));
+    expect(renders).toHaveBeenCalled();
+    expect(result.current.nodes[0]?.resizing).toBe(false);
+  });
+
+  it('keeps passive dimensions through a completed drag commit', async () => {
+    const commit = deferred<boolean>();
+    const initialNodes = [draftNode('module-1', 0, 0)];
+    const { result, rerender } = renderHook(({ nodes }) => useCanvasDraft({
+      nodes, ...{ keepPassiveMeasurementsInternal: true }, onCommitPositions: () => commit.promise,
+    }), { initialProps: { nodes: initialNodes } });
+    act(() => result.current.onNodesChange([
+      { id: 'module-1', type: 'dimensions', dimensions: { width: 704, height: 1665 } },
+    ]));
+    act(() => result.current.onNodesChange([
+      { id: 'module-1', type: 'position', position: { x: 120, y: 70 }, dragging: true },
+    ]));
+    const stop = result.current.onNodeDragStop({} as never, result.current.nodes[0]!);
+    rerender({ nodes: [draftNode('module-1', 120, 70)] });
+    commit.resolve(true);
+    await act(async () => { await stop; });
+    expect(result.current.nodes[0]).toMatchObject({ position: { x: 120, y: 70 }, measured: { width: 704, height: 1665 } });
+  });
+
+  it('does not leak passive measurements into a different project or resurrect a deleted node', () => {
+    const initialNodes = [draftNode('module-1', 0, 0), draftNode('removed', 100, 0)];
+    const { result, rerender } = renderHook(({ nodes, resetKey }) => useCanvasDraft({
+      nodes, resetKey, ...{ keepPassiveMeasurementsInternal: true }, onCommitPositions: async () => true,
+    }), { initialProps: { nodes: initialNodes, resetKey: 'project-a' } });
+    act(() => result.current.onNodesChange([
+      { id: 'module-1', type: 'dimensions', dimensions: { width: 704, height: 1665 } },
+      { id: 'removed', type: 'dimensions', dimensions: { width: 292, height: 612 } },
+    ]));
+    rerender({ nodes: [draftNode('module-1', 0, 0)], resetKey: 'project-a' });
+    expect(result.current.nodes.map(node => node.id)).toEqual(['module-1']);
+    expect(result.current.nodes[0]?.measured).toEqual({ width: 704, height: 1665 });
+    rerender({ nodes: [draftNode('module-1', 0, 0)], resetKey: 'project-b' });
+    expect(result.current.nodes[0]?.measured).toBeUndefined();
+  });
+
+  it('publishes the latest drag and selection to the host under StrictMode', () => {
+    const initialNodes = [draftNode('module-1', 0, 0)];
+    const renderedPositions: Array<{ x: number; y: number; selected?: boolean }> = [];
+    const { result } = renderHook(() => {
+      const draft = useCanvasDraft({ nodes: initialNodes, ...{ keepPassiveMeasurementsInternal: true }, onCommitPositions: async () => true });
+      renderedPositions.push({ ...draft.nodes[0]!.position, selected: draft.nodes[0]!.selected });
+      return draft;
+    }, { wrapper: ({ children }: { children: ReactNode }) => <StrictMode>{children}</StrictMode> });
+    act(() => result.current.onNodesChange([{ id: 'module-1', type: 'dimensions', dimensions: { width: 292, height: 612 } }]));
+    act(() => result.current.onNodesChange([{ id: 'module-1', type: 'position', position: { x: 10, y: 20 }, dragging: true }]));
+    act(() => result.current.onNodesChange([{ id: 'module-1', type: 'position', position: { x: 30, y: 40 }, dragging: true }]));
+    act(() => result.current.onNodesChange([{ id: 'module-1', type: 'select', selected: true }]));
+    expect(renderedPositions[renderedPositions.length - 1]).toEqual({ x: 30, y: 40, selected: true });
+    expect(result.current.nodes[0]?.measured).toEqual({ width: 292, height: 612 });
+  });
+
   it('ignores React Flow remove changes because durable deletion is handled by the workspace', () => {
     const initialNodes = [draftNode('module-1', 0, 0)];
     const { result } = renderHook(() => useCanvasDraft({
@@ -246,6 +366,57 @@ describe('useCanvasDraft', () => {
       await secondStop;
     });
     expect(result.current.nodes.find((node) => node.id === 'b')?.position).toEqual({ x: 800, y: 900 });
+  });
+
+  it.each([true, false])('keeps a newer active drag on the same node when the first ACK is %s and preserves the second commit', async (acknowledged) => {
+    const firstCommit = deferred<boolean>();
+    const secondCommit = deferred<boolean>();
+    const onCommitPositions = vi.fn()
+      .mockImplementationOnce(() => firstCommit.promise)
+      .mockImplementationOnce(() => secondCommit.promise);
+    const initialNodes = [draftNode('a', 100, 100)];
+    const { result, rerender } = renderHook(({ nodes }) => useCanvasDraft({
+      nodes, keepPassiveMeasurementsInternal: true, onCommitPositions,
+    }), { initialProps: { nodes: initialNodes } });
+    act(() => result.current.onNodesChange([{ id: 'a', type: 'dimensions', dimensions: { width: 704, height: 1665 } }]));
+    act(() => result.current.onNodesChange([{ id: 'a', type: 'position', position: { x: 200, y: 220 }, dragging: true }]));
+    const firstStop = result.current.onNodeDragStop({} as never, result.current.nodes[0]!);
+    act(() => result.current.onNodesChange([{ id: 'a', type: 'position', position: { x: 700, y: 720 }, dragging: true }]));
+    rerender({ nodes: [draftNode('a', 200, 220)] });
+
+    firstCommit.resolve(acknowledged);
+    await act(async () => { expect(await firstStop).toBe(acknowledged); });
+    expect(result.current.nodes[0]?.position).toEqual({ x: 700, y: 720 });
+    expect(result.current.nodes[0]?.measured).toEqual({ width: 704, height: 1665 });
+
+    act(() => result.current.onNodesChange([{ id: 'a', type: 'position', position: { x: 780, y: 790 }, dragging: true }]));
+    const secondStop = result.current.onNodeDragStop({} as never, result.current.nodes[0]!);
+    expect(onCommitPositions).toHaveBeenNthCalledWith(2, [{ nodeId: 'a', position: { x: 780, y: 790 } }]);
+    rerender({ nodes: [draftNode('a', 200, 220)] });
+    secondCommit.resolve(acknowledged);
+    await act(async () => { expect(await secondStop).toBe(acknowledged); });
+    expect(result.current.nodes[0]?.position).toEqual({ x: 780, y: 790 });
+    rerender({ nodes: [draftNode('a', 200, 220, { data: { title: 'Unrelated text edit' } })] });
+    expect(result.current.nodes[0]).toMatchObject({ position: { x: 780, y: 790 }, data: { title: 'Unrelated text edit' }, measured: { width: 704, height: 1665 } });
+    rerender({ nodes: [draftNode('a', 920, 940)] });
+    expect(result.current.nodes[0]?.position).toEqual({ x: 920, y: 940 });
+  });
+
+  it.each([true, false])('ignores the previous project ACK %s after resetting during a newer same-node drag', async (acknowledged) => {
+    const firstCommit = deferred<boolean>();
+    const initialNodes = [draftNode('a', 100, 100)];
+    const { result, rerender } = renderHook(({ nodes, resetKey }) => useCanvasDraft({
+      nodes, resetKey, keepPassiveMeasurementsInternal: true, onCommitPositions: () => firstCommit.promise,
+    }), { initialProps: { nodes: initialNodes, resetKey: 'project-a' } });
+    act(() => result.current.onNodesChange([{ id: 'a', type: 'position', position: { x: 200, y: 220 }, dragging: true }]));
+    const firstStop = result.current.onNodeDragStop({} as never, result.current.nodes[0]!);
+    act(() => result.current.onNodesChange([{ id: 'a', type: 'position', position: { x: 700, y: 720 }, dragging: true }]));
+    rerender({ nodes: [draftNode('a', 5, 6)], resetKey: 'project-b' });
+    firstCommit.resolve(acknowledged);
+    await act(async () => { await firstStop; });
+    expect(result.current.nodes[0]?.position).toEqual({ x: 5, y: 6 });
+    expect(result.current.nodes[0]?.measured).toBeUndefined();
+    expect(result.current.nodes[0]?.dragging).toBeUndefined();
   });
 
   it('resynchronizes from a changed durable source and culls using the draft position', async () => {

@@ -584,7 +584,7 @@ describe('Windows Photoshop smart object adapter', () => {
 
   it('fits and centers a small fallback image as one proportional Smart Object without clipboard transfer', async () => {
     const result = await runWindowsPlacementFallback({
-      primaryError: 'place-layer failed',
+      primaryError: 'canvas_placement_rolled_back: place-layer failed',
       layerWidth: 120,
       layerHeight: 60,
     });
@@ -598,13 +598,20 @@ describe('Windows Photoshop smart object adapter', () => {
   });
 
   it('closes the fallback source and stops when duplicate fails instead of pasting a possible second layer', async () => {
-    const result = await runWindowsPlacementFallback({ primaryError: 'place-layer failed', duplicateFails: true });
+    const result = await runWindowsPlacementFallback({ primaryError: 'canvas_placement_rolled_back: place-layer failed', duplicateFails: true });
 
     expect(result.output).toMatchObject({ kind: 'placement_failed' });
     expect(result.targetLayerCount).toBe(0);
     expect(result.closeSourceDocument).toHaveBeenCalledOnce();
     expect(result.copy).not.toHaveBeenCalled();
     expect(result.paste).not.toHaveBeenCalled();
+  });
+
+  it('does not attempt a second import after an unconfirmed primary failure', async () => {
+    const result = await runWindowsPlacementFallback({ primaryError: 'COM acknowledgement lost' });
+    expect(result.output).toMatchObject({ kind: 'placement_failed' });
+    expect(result.closeSourceDocument).not.toHaveBeenCalled();
+    expect(result.targetLayerCount).toBe(0);
   });
 
   it('creates the production adapter from fixed application resources', () => {

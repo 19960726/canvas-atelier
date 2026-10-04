@@ -24,6 +24,33 @@ describe('Electron clipboard image adapter', () => {
     expect(writeImage).toHaveBeenCalledWith(nativeImage);
   });
 
+  it('publishes a Windows DeviceIndependentBitmap for native editors', async () => {
+    const png = createSolidPng();
+    const dibPixels = Uint8Array.from([1, 2, 3, 255]);
+    const nativeImage = {
+      getSize: () => ({ width: 1, height: 1 }),
+      isEmpty: () => false,
+      toBitmap: () => dibPixels,
+      toPNG: () => png,
+    };
+    const writeBuffer = vi.fn();
+    const adapter = createElectronClipboardImageAdapter({
+      readImage: () => nativeImage,
+      writeImage: vi.fn(),
+      writeBuffer,
+    }, { createFromBuffer: () => nativeImage });
+
+    await expect(adapter.writeImage!(png)).resolves.toBe(true);
+    expect(writeBuffer).toHaveBeenCalledOnce();
+    const [format, buffer] = writeBuffer.mock.calls[0]!;
+    expect(format).toBe('DeviceIndependentBitmap');
+    expect(buffer.readInt32LE(0)).toBe(40);
+    expect(buffer.readInt32LE(4)).toBe(1);
+    expect(buffer.readInt32LE(8)).toBe(-1);
+    expect(buffer.readUInt16LE(14)).toBe(32);
+    expect([...buffer.subarray(40)]).toEqual([...dibPixels]);
+  });
+
   it('copies a decoded image without synchronously encoding it to PNG first', async () => {
     const png = createSolidPng();
     const toPNG = vi.fn(() => { throw new Error('Unexpected costly re-encode'); });

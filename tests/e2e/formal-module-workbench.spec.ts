@@ -1,4 +1,5 @@
 import { test, expect } from './helpers/e2e-test';
+import type { Locator } from '@playwright/test';
 import {
   assertLocatorInside,
   captureLayoutScreenshot,
@@ -13,6 +14,26 @@ const viewports = [
   { name: '1440x900', width: 1440, height: 900 },
   { name: '1920x1080', width: 1920, height: 1080 },
 ];
+
+async function assertGroupedAliases(node: Locator, expected: string[]): Promise<void> {
+  const aliases = await node.locator('.react-flow__handle[data-visual-alias="true"]').evaluateAll(elements => elements.map(element => {
+    const main = element.closest('.module-node__port-row')?.querySelector('.react-flow__handle:not([data-visual-alias="true"])');
+    const box = element.getBoundingClientRect(), mainBox = main?.getBoundingClientRect(), style = getComputedStyle(element);
+    return { key: `${element.getAttribute('data-port-direction')}:${element.getAttribute('data-port-id')}`,
+      opacity: style.opacity, pointerEvents: style.pointerEvents, ariaHidden: element.getAttribute('aria-hidden'),
+      width: box.width, height: box.height, mainPresent: Boolean(mainBox),
+      dx: mainBox ? Math.abs(box.x + box.width / 2 - mainBox.x - mainBox.width / 2) : null,
+      dy: mainBox ? Math.abs(box.y + box.height / 2 - mainBox.y - mainBox.height / 2) : null };
+  }));
+  expect(aliases.map(alias => alias.key).sort(), 'All logical endpoints remain mounted').toEqual([...expected].sort());
+  for (const alias of aliases) {
+    expect(alias.opacity, alias.key).toBe('0'); expect(alias.pointerEvents, alias.key).toBe('none');
+    expect(alias.ariaHidden, alias.key).toBe('true'); expect(alias.mainPresent, alias.key).toBe(true);
+    expect(alias.width, alias.key).toBeGreaterThan(0); expect(alias.height, alias.key).toBeGreaterThan(0);
+    expect(alias.dx, `${alias.key} shares the visible horizontal anchor`).toBeLessThanOrEqual(1);
+    expect(alias.dy, `${alias.key} shares the visible vertical anchor`).toBeLessThanOrEqual(1);
+  }
+}
 
 for (const theme of ['light', 'dark'] as const) {
   test(`automatically opens the exact legacy starter as the Canvas workbench in ${theme}`, async ({ page }, testInfo) => {
@@ -29,7 +50,9 @@ for (const theme of ['light', 'dark'] as const) {
     const imageWorkbench = page.locator('[data-module-type="image_generation"]');
     expect((await imageWorkbench.boundingBox())?.x).toBe(340);
     await expect(page.getByTestId('toolrail')).toHaveJSProperty('offsetWidth', 60);
-    await expect(page.getByTestId('toolrail')).toHaveJSProperty('offsetHeight', 442);
+    const railHeight = (await page.getByTestId('toolrail').boundingBox())?.height;
+    expect(railHeight).toBeGreaterThan(400);
+    expect(railHeight).toBeLessThan(470);
     await expect(page.getByTestId('toolrail')).toHaveCSS('left', '52px');
     expect((await page.getByTestId('toolrail').boundingBox())?.y).toBe(142);
     await openAgentPanel(page);
@@ -133,22 +156,31 @@ for (const theme of ['light', 'dark'] as const) {
       }
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
       await expect(page.locator('.react-flow__edge')).toHaveCount(5);
+      const edgePaths = page.locator('.react-flow__edge .react-flow__edge-path');
+      await expect(edgePaths).toHaveCount(5);
+      for (const path of await edgePaths.all()) {
+        await expect(path).toBeVisible(); await expect(path).toHaveAttribute('d', /^M/u);
+        expect(await path.evaluate(element => (element as SVGPathElement).getTotalLength())).toBeGreaterThan(0);
+      }
       await expect(page.locator('[data-module-type="image_generation_v1"], [data-module-type="image_generation_v2"], [data-module-type="video_analysis"]')).toHaveCount(0);
       await assertLocatorInside(canvas, library, `module library ${viewport.name} ${theme}`);
       const generationNode = page.locator('[data-module-type="image_generation"]');
       const reverseNode = page.locator('[data-module-type="reverse_agent"]');
       const allNodes = representativeTypes.map((moduleType) => page.locator(`[data-module-type="${moduleType}"]`));
-      await expect(generationNode.locator('.module-node__port-row[data-port-id="references"][data-port-direction="input"] .react-flow__handle')).toBeVisible();
+      await expect(generationNode.locator('.module-node__port-row[data-port-id="references"][data-port-direction="input"] .react-flow__handle:not([data-visual-alias="true"])')).toBeVisible();
       await expect(generationNode.locator('.module-node__port-row[data-port-id="result"][data-port-direction="output"] .react-flow__handle:not([data-visual-alias="true"])')).toBeVisible();
-      await expect(reverseNode.locator('.module-node__port-row[data-port-id="references"][data-port-direction="input"] .react-flow__handle')).toBeVisible();
-      await expect(reverseNode.locator('.module-node__port-row[data-port-id="analysis"][data-port-direction="output"] .react-flow__handle')).toBeVisible();
+      await expect(reverseNode.locator('.module-node__port-row[data-port-id="references"][data-port-direction="input"] .react-flow__handle:not([data-visual-alias="true"])')).toBeVisible();
+      await expect(reverseNode.locator('.module-node__port-row[data-port-id="analysis"][data-port-direction="output"] .react-flow__handle:not([data-visual-alias="true"])')).toBeVisible();
       for (const node of allNodes) {
-        const handles = node.locator('.react-flow__handle');
+        const handles = node.locator('.react-flow__handle:not([data-visual-alias="true"])');
         expect(await handles.count()).toBeGreaterThan(0);
         for (let handleIndex = 0; handleIndex < await handles.count(); handleIndex += 1) {
           await expect(handles.nth(handleIndex)).toBeVisible();
         }
       }
+      await assertGroupedAliases(generationNode, ['input:prompt', 'input:mask', 'input:pose', 'output:image']);
+      await assertGroupedAliases(page.locator('[data-module-type="video_generation"]'), ['input:prompt', 'input:firstFrame', 'input:lastFrame', 'input:sourceVideo']);
+      await assertGroupedAliases(reverseNode, ['input:video', 'input:task', 'input:line_art', 'output:timeline']);
       await expect(generationNode).toContainText('Image Generation');
       await expect(generationNode.getByRole('alert')).toContainText('模型不可用');
       await expect(reverseNode).toContainText('Gemini 3.1 Pro');

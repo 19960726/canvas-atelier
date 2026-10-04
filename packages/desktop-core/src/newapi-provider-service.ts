@@ -1,9 +1,9 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { join } from 'node:path';
 
 import {
   createNewApiClient,
   type NewApiFetch,
-  type NewApiGeneratedImage,
 } from './newapi-client.js';
 import {
   buildAuthenticatedNewApiCatalog,
@@ -12,7 +12,11 @@ import {
   type NewApiProviderId,
 } from './newapi-model-catalog.js';
 import { NEW_API_PROVIDER_SEEDS } from './newapi-provider-seeds.js';
+import { getJulunVideoModelSpec } from './julun-video-model-spec.js';
 import { deriveGenerationHistoryId, type GenerationHistoryProviderSinkContract } from './generation-history-provider-sink.js';
+import type { GenerationProjectBinding } from './generation-project-binding.js';
+import { NodeFileSystem, type FileSystem } from './file-system.js';
+import { assertConfinedAppDataPathForRead, assertConfinedAppDataPathForWrite, deleteConfinedAppDataFile, writeConfinedAtomicUpdate } from './provider-file-confinement.js';
 import { isPublicProviderAddress, parseSafeProviderResultUrl } from './provider-result-security.js';
 import type { ProviderTaskMappingStore } from './provider-task-ledger.js';
 import type { ProviderService } from './provider-service-types.js';
@@ -30,6 +34,7 @@ import { parseReverseProviderResponse } from './reverse-provider-response.js';
 import { resolveReverseAnalysisBudget } from './reverse-analysis-budget.js';
 
 type ImageAspectRatio = '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '16:9' | '9:16';
+type VideoAspectRatio = ImageAspectRatio | '4:5' | '5:4' | '21:9';
 type ImageResolution = '1K' | '2K' | '4K';
 
 export interface NewApiServiceConfigurationStore {
@@ -39,7 +44,7 @@ export interface NewApiServiceConfigurationStore {
 
 export interface NewApiServiceTaskStore {
   read(publicTaskId: string): Promise<NewApiPrivateTask | undefined>;
-  write(publicTaskId: string, task: NewApiPrivateTask): Promise<void>;
+  write(publicTaskId: string, task: NewApiPrivateTask, allowCreate?: boolean): Promise<void>;
   delete(publicTaskId: string): Promise<void>;
 }
 
@@ -48,8 +53,8 @@ type TerminalVideoTask = { readonly kind: 'video'; readonly state: 'completed'; 
 type NewApiPrivateTask =
   | TerminalImageTask
   | TerminalVideoTask
-  | { readonly kind: 'image'; readonly state: 'remote'; readonly rawTaskId: string; readonly sessionId: string; readonly historyId?: string }
-  | { readonly kind: 'video'; readonly state: 'remote'; readonly rawTaskId: string; readonly sessionId: string; readonly historyId?: string }
+  | { readonly kind: 'image' | 'video'; readonly state: 'remote'; readonly rawTaskId: string; readonly sessionId: string; readonly projectBinding?: GenerationProjectBinding; readonly historyId?: string }
+  | { readonly kind: 'image' | 'video'; readonly state: 'pending'; readonly resultHash: string; readonly sessionId: string; readonly projectBinding?: GenerationProjectBinding; readonly assetId?: string; readonly historyId?: string }
   | { readonly kind: 'image' | 'video'; readonly state: 'cancelled'; readonly historyId?: string }
   | { readonly kind: 'image' | 'video'; readonly state: 'failed'; readonly code?: ProviderBridgeErrorCode; readonly message: string; readonly retryable: boolean; readonly historyId?: string };
 
@@ -79,6 +84,7 @@ export type ProviderCompatibleNewApiService = NewApiProviderService & ProviderSe
 
 interface NewApiImageJobRequest {
   readonly jobId?: string;
+  readonly projectId?: string;
   readonly provider: NewApiProviderId;
   readonly modelRoute: string;
   readonly prompt: string;
@@ -93,12 +99,13 @@ interface NewApiImageJobRequest {
 }
 interface NewApiVideoJobRequest {
   readonly jobId?: string;
+  readonly projectId?: string;
   readonly provider: NewApiProviderId;
   readonly modelRoute: string;
   readonly prompt: string;
   readonly sessionId?: string;
   readonly referenceAssetIds: readonly string[];
-  readonly aspectRatio?: ImageAspectRatio;
+  readonly aspectRatio?: VideoAspectRatio;
   readonly resolution?: '360p' | '480p' | '512p' | '540p' | '720p' | '768p' | '1080p' | '2K' | '4K';
   readonly durationSeconds?: number;
   readonly outputCount?: 1 | 2 | 3 | 4;
@@ -128,7 +135,12 @@ export function createNewApiProviderService(options: {
   readonly taskStore?: NewApiServiceTaskStore;
   readonly providerTaskMappings?: ProviderTaskMappingStore;
   readonly historySink?: GenerationHistoryProviderSinkContract;
+  readonly appDataRoot?: string;
+  readonly fileSystem?: FileSystem;
   readonly verifiedVisionModelIds?: readonly string[];
+  readonly bindGenerationProject?: (sessionId: string, expectedProjectId?: string) => Promise<GenerationProjectBinding>;
+  readonly storeGeneratedImageForProject?: (binding: GenerationProjectBinding, bytes: Uint8Array, mediaType: string) => Promise<{ readonly assetId: string }>;
+  readonly storeGeneratedVideoForProject?: (binding: GenerationProjectBinding, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string }>;
   readonly storeGeneratedImage?: (sessionId: string, bytes: Uint8Array, mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp') => Promise<string | { readonly assetId: string }>;
   readonly storeGeneratedVideo?: (sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<string | { readonly assetId: string }>;
   readonly resolveResultHost?: (hostname: string) => Promise<readonly string[]>;
@@ -144,11 +156,19 @@ export function createNewApiProviderService(options: {
     ?? (options.providerTaskMappings === undefined
       ? memoryTaskStore()
       : ledgerTaskStore(options.providerTaskMappings, options.provider, options.now ?? (() => new Date())));
+  const pendingMedia = createPendingMediaStore(options.appDataRoot, options.fileSystem);
+  const unpersistedAccepted = new Map<string, {
+    readonly publicTaskId: string;
+    readonly task: Extract<NewApiPrivateTask, { state: 'remote' | 'pending' }>;
+    readonly bytes?: Uint8Array;
+  }>();
   let accessibleModelIds: readonly string[] = [];
   let discoveredProfiles: readonly NewApiModelProfile[] | null = null;
   const fallbackConfiguration = {
     baseUrl: options.provider === 'julun' ? 'https://julun.cc/v1' : 'https://api.4dai.cc/v1',
-    profiles: NEW_API_PROVIDER_SEEDS[options.provider],
+    profiles: options.provider === 'julun'
+      ? NEW_API_PROVIDER_SEEDS.julun.map(profile => ({ ...profile, enabled: false }))
+      : NEW_API_PROVIDER_SEEDS[options.provider],
   };
   const readConfiguration = async () => {
     const snapshot = await options.configurationStore.read(fallbackConfiguration);
@@ -218,9 +238,12 @@ export function createNewApiProviderService(options: {
         ) {
           throw capabilityError('Selected model is not verified for this provider');
         }
-        return verified;
+        return options.provider === 'julun' ? { ...verified, enabled: true } : verified;
       });
-      await options.configurationStore.write({ baseUrl: current.baseUrl, profiles: selected });
+      const profiles = options.provider === 'julun'
+        ? retainUnselectedJulunProfiles(selected, current.profiles, discoveredProfiles ?? [])
+        : selected;
+      await options.configurationStore.write({ baseUrl: current.baseUrl, profiles });
       return getConfigurationStatus();
     },
     async unlock(request) {
@@ -256,9 +279,9 @@ export function createNewApiProviderService(options: {
         verifiedVisionModelIds: options.verifiedVisionModelIds,
         persistedProfiles: current.profiles,
       });
-      const selectedProfiles = current.profiles.length === 0
-        ? profiles
-        : selectRefreshedProfiles(profiles, current.profiles);
+      const selectedProfiles = options.provider === 'julun'
+        ? refreshJulunSelections(profiles, current.profiles)
+        : current.profiles.length === 0 ? profiles : selectRefreshedProfiles(profiles, current.profiles);
       await options.configurationStore.write({ baseUrl: current.baseUrl, profiles: selectedProfiles });
       discoveredProfiles = profiles;
       return markSelectedProfiles(profiles, selectedProfiles);
@@ -269,9 +292,20 @@ export function createNewApiProviderService(options: {
     },
     async listProfiles() {
       const current = await readConfiguration();
-      return discoveredProfiles === null
+      const visible = discoveredProfiles === null
         ? [...current.profiles]
         : markSelectedProfiles(discoveredProfiles, current.profiles);
+      if (options.provider !== 'julun') return visible;
+      const visibleIds = new Set(visible.map(profile => profile.modelId));
+      const visibleRoutes = new Set(visible.map(profile => profile.modelRoute));
+      const previews = NEW_API_PROVIDER_SEEDS.julun.filter(profile => !visibleIds.has(profile.modelId)).map(profile => {
+        const modelRoute = visibleRoutes.has(profile.modelRoute)
+          ? `${profile.modelRoute}-${createHash('sha256').update(profile.modelId).digest('hex').slice(0, 12)}`
+          : profile.modelRoute;
+        visibleRoutes.add(modelRoute);
+        return { ...profile, modelRoute, capabilityStatus: 'incomplete' as const, enabled: false };
+      });
+      return [...visible, ...previews];
     },
     async submitImageJob(request) {
       assertProvider(request.provider, options.provider);
@@ -301,9 +335,21 @@ export function createNewApiProviderService(options: {
         ? profile.modelId
         : select4daiGptImageModel(profile.modelId, resolution, verifiedImageModelIds);
       const size = usesGeminiNativeImage ? undefined : mapOpenAiImageSize(model, aspectRatio, resolution);
-      const submission = await prepareSubmission(options, request.jobId, 'image', profile.displayName);
+      const projectBinding = await bindProject(options, request.sessionId, request.projectId);
+      const heldImage = request.jobId === undefined ? undefined : unpersistedAccepted.get(request.jobId);
+      if (heldImage !== undefined) {
+        if (heldImage.task.kind !== 'image') throw invalidRequest('Generation job kind is invalid');
+        assertExistingProjectBinding(heldImage.task.projectBinding, projectBinding);
+        try { await recoverAcceptedTask(tasks, pendingMedia, heldImage); }
+        catch (error) { throw uncertainPaidSubmission(error); }
+        unpersistedAccepted.delete(request.jobId!);
+        await finishPendingTask(tasks, pendingMedia, heldImage.publicTaskId, options);
+        return { providerTaskId: heldImage.publicTaskId };
+      }
+      const submission = await prepareSubmission(options, request.jobId, 'image', profile.displayName, projectBinding);
       if (submission.existingPublicTaskId !== undefined) return { providerTaskId: submission.existingPublicTaskId };
       const historyId = submission.historyId;
+      let providerAccepted = false;
       try {
         await notifyHistory(options.historySink, (sink) => historyId === undefined ? undefined : sink.running(historyId));
         const client = await getClient();
@@ -324,130 +370,184 @@ export function createNewApiProviderService(options: {
             ...(request.imageBackground === undefined || request.imageBackground === 'auto' ? {} : { background: request.imageBackground }),
             ...(size === undefined ? {} : { size }),
           });
+        providerAccepted = true;
         const publicTaskId = createPublicTaskId();
         if (generated.kind === 'remote') {
-          await tasks.write(publicTaskId, {
+          const remoteTask = {
             kind: 'image', state: 'remote', rawTaskId: generated.url, sessionId: request.sessionId,
+            ...(projectBinding === undefined ? {} : { projectBinding }),
             ...(historyId === undefined ? {} : { historyId }),
-          });
+          } as const;
+          if (request.jobId !== undefined) unpersistedAccepted.set(request.jobId, { publicTaskId, task: remoteTask });
+          await persistAcceptedTask(tasks, publicTaskId, remoteTask);
+          if (request.jobId !== undefined) unpersistedAccepted.delete(request.jobId);
           return { providerTaskId: publicTaskId };
         }
-        const stored = await storeImage(generated, request.sessionId, options);
-        await tasks.write(publicTaskId, { kind: 'image', state: 'completed', assetId: stored.assetId, ...(historyId === undefined ? {} : { historyId }) });
-        await notifyHistory(options.historySink, (sink) => historyId === undefined ? undefined : sink.succeeded(historyId, stored.bytes));
+        const resultHash = createHash('sha256').update(generated.bytes).digest('hex');
+        const pendingTask = {
+          kind: 'image', state: 'pending', resultHash, sessionId: request.sessionId,
+          ...(projectBinding === undefined ? {} : { projectBinding }),
+          ...(historyId === undefined ? {} : { historyId }),
+        } as const;
+        if (request.jobId !== undefined) unpersistedAccepted.set(request.jobId, { publicTaskId, task: pendingTask, bytes: generated.bytes });
+        await recoverAcceptedTask(tasks, pendingMedia, { publicTaskId, task: pendingTask, bytes: generated.bytes });
+        if (request.jobId !== undefined) unpersistedAccepted.delete(request.jobId);
+        await finishPendingTask(tasks, pendingMedia, publicTaskId, options);
         return { providerTaskId: publicTaskId };
       } catch (error) {
-        await notifyHistory(options.historySink, (sink) => historyId === undefined ? undefined : sink.failed(historyId, 'provider_failed'));
-        throw error;
+        // A paid result may already exist. Preserve its reservation instead of
+        // making a transient local write failure look like provider failure.
+        throw providerAccepted ? uncertainPaidSubmission(error) : error;
       }
     },
     async pollImageJob(request) {
       assertProvider(request.provider, options.provider);
-      const task = await requireTask(tasks, request.providerTaskId, 'image');
+      const task = await reconcileDurableCancellation(tasks, request.providerTaskId,
+        await requireTask(tasks, request.providerTaskId, 'image'), options);
+      if (task.state === 'pending') {
+        await finishPendingTask(tasks, pendingMedia, request.providerTaskId, options);
+        return imagePoll(await requireTask(tasks, request.providerTaskId, 'image'));
+      }
       if (task.state !== 'remote') return imagePoll(task);
+      if (options.bindGenerationProject !== undefined && task.projectBinding === undefined) {
+        await failIrrecoverableTask(tasks, pendingMedia, request.providerTaskId, task, options,
+          serviceError('PROVIDER_UNAVAILABLE', 'Legacy generation project destination cannot be verified', false));
+        return imagePoll(await requireTask(tasks, request.providerTaskId, 'image'));
+      }
+      let media: Awaited<ReturnType<typeof downloadRemoteImage>>;
       try {
-        const stored = await storeImage({ kind: 'remote', url: task.rawTaskId }, task.sessionId, options);
-        const completed = {
-          kind: 'image', state: 'completed', assetId: stored.assetId,
-          ...(task.historyId === undefined ? {} : { historyId: task.historyId }),
-        } as const;
-        await tasks.write(request.providerTaskId, completed);
-        await notifyHistory(options.historySink, (sink) => task.historyId === undefined ? undefined : sink.succeeded(task.historyId, stored.bytes));
-        return imagePoll(completed);
+        media = await downloadRemoteImage(task.rawTaskId, options);
       } catch (error) {
         const normalized = normalizeImageServiceFailure(error);
         if (normalized.retryable) return { status: 'running' };
-        const failed = {
-          kind: 'image', state: 'failed', code: normalized.code, message: normalized.message, retryable: false,
-          ...(task.historyId === undefined ? {} : { historyId: task.historyId }),
-        } as const;
-        await tasks.write(request.providerTaskId, failed);
-        await notifyHistory(options.historySink, (sink) => task.historyId === undefined
-          ? undefined
-          : sink.failed(task.historyId, normalized.code === 'PROVIDER_INVALID_RESPONSE' ? 'invalid_result' : 'provider_failed'));
-        return imagePoll(failed);
+        await failIrrecoverableTask(tasks, pendingMedia, request.providerTaskId, task, options,
+          serviceError(normalized.code, normalized.message, false));
+        return imagePoll(await requireTask(tasks, request.providerTaskId, 'image'));
+      }
+      try {
+        const resultHash = await pendingMedia.stage(request.providerTaskId, 'image', media.bytes);
+        await tasks.write(request.providerTaskId, { ...task, state: 'pending', resultHash });
+        await finishPendingTask(tasks, pendingMedia, request.providerTaskId, options);
+        return imagePoll(await requireTask(tasks, request.providerTaskId, 'image'));
+      } catch {
+        const current = await tasks.read(request.providerTaskId);
+        if (current === undefined) {
+          try { await pendingMedia.remove(request.providerTaskId); } catch { /* Preserve the missing handle error. */ }
+          throw invalidRequest('Provider task was not found');
+        }
+        return imagePoll(current);
       }
     },
     async cancelImageJob(request) {
       assertProvider(request.provider, options.provider);
       const task = await requireTask(tasks, request.providerTaskId, 'image');
       if (task.state === 'completed' || task.state === 'failed' || task.state === 'cancelled') return imagePoll(task);
-      const cancelled = {
-        kind: 'image', state: 'cancelled', ...(task.historyId === undefined ? {} : { historyId: task.historyId }),
-      } as const;
-      await tasks.write(request.providerTaskId, cancelled);
-      await notifyHistory(options.historySink, (sink) => task.historyId === undefined ? undefined : sink.cancelled(task.historyId, 'cancelled_by_user'));
-      return imagePoll(cancelled);
+      return imagePoll(await cancelTaskWithDurableHistory(tasks, request.providerTaskId, task, options));
     },
     async ackImageJobTerminal(request) {
       assertProvider(request.provider, options.provider);
-      await requireTask(tasks, request.providerTaskId, 'image');
+      const task = await requireTask(tasks, request.providerTaskId, 'image');
+      if (task.state === 'remote' || task.state === 'pending') throw invalidRequest('Provider task is not terminal');
+      await pendingMedia.remove(request.providerTaskId);
       await tasks.delete(request.providerTaskId);
       return { acknowledged: true };
     },
     async submitVideoJob(request) {
       assertProvider(request.provider, options.provider);
       if (options.provider !== 'julun') throw capabilityError('4D video generation is disabled');
+      if (request.sessionId === undefined) throw invalidRequest('Video generation requires a project session');
+      const projectBinding = await bindProject(options, request.sessionId, request.projectId);
+      const heldVideo = request.jobId === undefined ? undefined : unpersistedAccepted.get(request.jobId);
+      if (heldVideo !== undefined) {
+        if (heldVideo.task.kind !== 'video') throw invalidRequest('Generation job kind is invalid');
+        assertExistingVideoIdentity(heldVideo.task, request.sessionId, projectBinding);
+        try { await recoverAcceptedTask(tasks, pendingMedia, heldVideo); }
+        catch (error) { throw uncertainPaidSubmission(error); }
+        unpersistedAccepted.delete(request.jobId!);
+        return { providerTaskId: heldVideo.publicTaskId };
+      }
+      if (request.jobId !== undefined && request.jobId.length > 0 && options.providerTaskMappings !== undefined) {
+        const historyId = deriveGenerationHistoryId(request.jobId);
+        const existing = await options.providerTaskMappings.findByHistoryId(historyId);
+        if (existing !== undefined) {
+          if (existing.provider !== options.provider || existing.historyId !== historyId || existing.kind !== 'video') {
+            throw serviceError('PROVIDER_INVALID_RESPONSE', 'Generation job provider or task identity is invalid', false);
+          }
+          assertExistingVideoIdentity(existing, request.sessionId, projectBinding);
+          return { providerTaskId: existing.publicTaskId };
+        }
+      }
       if ((request.outputCount ?? 1) !== 1) throw capabilityError('Julun video generation currently submits one output per task');
       const profile = await assertRunnableProfile(readConfiguration, request.modelRoute, 'video_generation');
-      if (request.sessionId === undefined) throw invalidRequest('Video generation requires a project session');
+      const videoParameters = resolveJulunVideoParameters(profile, request);
       if (request.referenceAssetIds.length > 1) throw capabilityError('Julun accepts one input reference');
       const inputReference = request.referenceAssetIds[0] === undefined
         ? undefined
         : await requireReference(options, request.sessionId, request.referenceAssetIds[0]);
-      const submission = await prepareSubmission(options, request.jobId, 'video', profile.displayName);
+      const submission = await prepareSubmission(options, request.jobId, 'video', profile.displayName, projectBinding, request.sessionId);
       if (submission.existingPublicTaskId !== undefined) return { providerTaskId: submission.existingPublicTaskId };
       const historyId = submission.historyId;
+      let providerAccepted = false;
       try {
-        const [width, height] = mapNewApiVideoSize(request.aspectRatio ?? '16:9', request.resolution ?? '720p').split('x').map(Number) as [number, number];
         const remote = await (await getClient()).createVideo({
           model: profile.modelId,
           prompt: request.prompt,
-          duration: request.durationSeconds ?? 10,
-          width,
-          height,
+          ...videoParameters,
           ...(inputReference === undefined ? {} : { inputReference }),
         });
+        providerAccepted = true;
         const publicTaskId = createPublicTaskId();
-        await tasks.write(publicTaskId, { kind: 'video', state: 'remote', rawTaskId: remote.id, sessionId: request.sessionId, ...(historyId === undefined ? {} : { historyId }) });
+        const remoteTask = { kind: 'video', state: 'remote', rawTaskId: remote.id, sessionId: request.sessionId,
+          ...(projectBinding === undefined ? {} : { projectBinding }), ...(historyId === undefined ? {} : { historyId }) } as const;
+        if (request.jobId !== undefined) unpersistedAccepted.set(request.jobId, { publicTaskId, task: remoteTask });
+        await persistAcceptedTask(tasks, publicTaskId, remoteTask);
+        if (request.jobId !== undefined) unpersistedAccepted.delete(request.jobId);
         await notifyHistory(options.historySink, (sink) => historyId === undefined ? undefined : sink.running(historyId));
         return { providerTaskId: publicTaskId };
       } catch (error) {
-        await notifyHistory(options.historySink, (sink) => historyId === undefined ? undefined : sink.failed(historyId, 'provider_failed'));
-        throw error;
+        // The provider may have accepted this paid request. Keep the reservation
+        // as a barrier against a duplicate submission.
+        throw providerAccepted ? uncertainPaidSubmission(error) : error;
       }
     },
     async pollVideoJob(request) {
       assertProvider(request.provider, options.provider);
-      const task = await requireTask(tasks, request.providerTaskId, 'video');
+      const task = await reconcileDurableCancellation(tasks, request.providerTaskId,
+        await requireTask(tasks, request.providerTaskId, 'video'), options);
+      if (task.state === 'pending') {
+        await finishPendingTask(tasks, pendingMedia, request.providerTaskId, options);
+        return videoPoll(await requireTask(tasks, request.providerTaskId, 'video'));
+      }
       if (task.state !== 'remote') return videoPoll(task);
+      if (options.bindGenerationProject !== undefined && task.projectBinding === undefined) {
+        await failIrrecoverableTask(tasks, pendingMedia, request.providerTaskId, task, options,
+          serviceError('PROVIDER_UNAVAILABLE', 'Legacy generation project destination cannot be verified', false));
+        return videoPoll(await requireTask(tasks, request.providerTaskId, 'video'));
+      }
       const client = await getClient();
       const remote = await client.getVideo(task.rawTaskId);
       if (isRemoteCompleted(remote.status)) {
         try {
-          if (options.storeGeneratedVideo === undefined) throw invalidRequest('Generated video storage is unavailable');
           const bytes = await client.getVideoContent(task.rawTaskId);
           assertMp4(bytes);
-          const stored = await options.storeGeneratedVideo(task.sessionId, bytes, 'video/mp4');
-          const completed = {
-            kind: 'video', state: 'completed', assetId: typeof stored === 'string' ? stored : stored.assetId,
-            ...(task.historyId === undefined ? {} : { historyId: task.historyId }),
-          } as const;
-          await tasks.write(request.providerTaskId, completed);
-          await notifyHistory(options.historySink, (sink) => task.historyId === undefined ? undefined : sink.succeeded(task.historyId, bytes));
-          return videoPoll(completed);
+          const resultHash = await pendingMedia.stage(request.providerTaskId, 'video', bytes);
+          await tasks.write(request.providerTaskId, { ...task, state: 'pending', resultHash });
+          await finishPendingTask(tasks, pendingMedia, request.providerTaskId, options);
+          return videoPoll(await requireTask(tasks, request.providerTaskId, 'video'));
         } catch (error) {
           const normalized = normalizeServiceFailure(error);
           if (normalized.retryable) throw error;
-          const failed = {
-            kind: 'video', state: 'failed', code: normalized.code, message: normalized.message, retryable: false,
-            ...(task.historyId === undefined ? {} : { historyId: task.historyId }),
-          } as const;
-          await tasks.write(request.providerTaskId, failed);
-          await notifyHistory(options.historySink, (sink) => task.historyId === undefined
-            ? undefined
-            : sink.failed(task.historyId, normalized.code === 'PROVIDER_INVALID_RESPONSE' ? 'invalid_result' : 'provider_failed'));
-          return videoPoll(failed);
+          if (!isTypedServiceFailure(error) || error.code !== 'PROVIDER_INVALID_RESPONSE') {
+            const current = await tasks.read(request.providerTaskId);
+            if (current === undefined) {
+              try { await pendingMedia.remove(request.providerTaskId); } catch { /* Preserve the missing handle error. */ }
+              throw invalidRequest('Provider task was not found');
+            }
+            return videoPoll(current);
+          }
+          await failIrrecoverableTask(tasks, pendingMedia, request.providerTaskId, task, options,
+            serviceError(normalized.code, normalized.message, false));
+          return videoPoll(await requireTask(tasks, request.providerTaskId, 'video'));
         }
       }
       if (isRemoteCancelled(remote.status)) {
@@ -458,16 +558,12 @@ export function createNewApiProviderService(options: {
         await notifyHistory(options.historySink, (sink) => task.historyId === undefined
           ? undefined
           : sink.cancelled(task.historyId, 'cancelled_by_system'));
-        return videoPoll(cancelled);
+        return videoPoll(await requireTask(tasks, request.providerTaskId, 'video'));
       }
       if (isRemoteFailed(remote.status)) {
-        const failed = {
-          kind: 'video', state: 'failed', code: 'PROVIDER_ERROR', message: 'Julun video generation failed', retryable: false,
-          ...(task.historyId === undefined ? {} : { historyId: task.historyId }),
-        } as const;
-        await tasks.write(request.providerTaskId, failed);
-        await notifyHistory(options.historySink, (sink) => task.historyId === undefined ? undefined : sink.failed(task.historyId, 'provider_failed'));
-        return videoPoll(failed);
+        await failIrrecoverableTask(tasks, pendingMedia, request.providerTaskId, task, options,
+          serviceError('PROVIDER_ERROR', 'Julun video generation failed', false));
+        return videoPoll(await requireTask(tasks, request.providerTaskId, 'video'));
       }
       return { status: 'running', ...(remote.progress === undefined ? {} : { progress: normalizeProgress(remote.progress) }) };
     },
@@ -475,16 +571,13 @@ export function createNewApiProviderService(options: {
       assertProvider(request.provider, options.provider);
       const task = await requireTask(tasks, request.providerTaskId, 'video');
       if (task.state === 'completed' || task.state === 'failed' || task.state === 'cancelled') return videoPoll(task);
-      const cancelled = {
-        kind: 'video', state: 'cancelled', ...(task.historyId === undefined ? {} : { historyId: task.historyId }),
-      } as const;
-      await tasks.write(request.providerTaskId, cancelled);
-      await notifyHistory(options.historySink, (sink) => task.historyId === undefined ? undefined : sink.cancelled(task.historyId, 'cancelled_by_user'));
-      return videoPoll(cancelled);
+      return videoPoll(await cancelTaskWithDurableHistory(tasks, request.providerTaskId, task, options));
     },
     async ackVideoJobTerminal(request) {
       assertProvider(request.provider, options.provider);
-      await requireTask(tasks, request.providerTaskId, 'video');
+      const task = await requireTask(tasks, request.providerTaskId, 'video');
+      if (task.state === 'remote' || task.state === 'pending') throw invalidRequest('Provider task is not terminal');
+      await pendingMedia.remove(request.providerTaskId);
       await tasks.delete(request.providerTaskId);
       return { acknowledged: true };
     },
@@ -644,7 +737,8 @@ async function assertRunnableProfile(
   capability: 'chat' | 'vision' | 'reverse_prompt' | 'image_generation' | 'video_generation',
 ) {
   const profile = (await readConfiguration()).profiles.find((entry) => entry.modelRoute === modelRoute);
-  if (profile === undefined || profile.capabilityStatus !== 'complete' || !profile.capabilities.includes(capability)) {
+  if (profile === undefined || profile.capabilityStatus !== 'complete' || !profile.capabilities.includes(capability)
+    || 'enabled' in profile && profile.enabled === false) {
     throw capabilityError('Selected model is not verified for this capability');
   }
   return profile;
@@ -654,12 +748,42 @@ function selectRefreshedProfiles(
   available: readonly NewApiModelProfile[],
   selected: readonly NewApiModelProfile[],
 ): NewApiModelProfile[] {
-  const selectedIdentities = new Set(selected.flatMap((profile) => [
-    `${profile.provider}:route:${profile.modelRoute}`,
-    `${profile.provider}:model:${profile.modelId}`,
-  ]));
-  return available.filter((profile) => selectedIdentities.has(`${profile.provider}:route:${profile.modelRoute}`)
-    || selectedIdentities.has(`${profile.provider}:model:${profile.modelId}`));
+  const selectedRoutes = new Set<string>();
+  return selected.flatMap(profile => {
+    if ('enabled' in profile && profile.enabled === false) return [];
+    const refreshed = available.find(candidate => candidate.provider === profile.provider
+      && candidate.modelId === profile.modelId);
+    if (refreshed === undefined || selectedRoutes.has(refreshed.modelRoute)) return [];
+    selectedRoutes.add(refreshed.modelRoute);
+    return [refreshed];
+  });
+}
+
+function refreshJulunSelections(
+  available: readonly NewApiModelProfile[],
+  stored: readonly NewApiModelProfile[],
+): NewApiModelProfile[] {
+  const storedIds = new Set(stored.map(profile => profile.modelId));
+  const refreshed = stored.map(profile => {
+    const current = available.find(candidate => candidate.modelId === profile.modelId);
+    return current === undefined
+      ? { ...profile, capabilityStatus: 'incomplete' as const, enabled: false }
+      : { ...current, ...('enabled' in profile ? { enabled: profile.enabled } : {}) };
+  });
+  return [...refreshed, ...available.filter(profile => !storedIds.has(profile.modelId))
+    .map(profile => ({ ...profile, enabled: false }))];
+}
+
+function retainUnselectedJulunProfiles(
+  selected: readonly NewApiModelProfile[],
+  stored: readonly NewApiModelProfile[],
+  available: readonly NewApiModelProfile[],
+): NewApiModelProfile[] {
+  const selectedIds = new Set(selected.map(profile => profile.modelId));
+  const known = new Map(stored.map(profile => [profile.modelId, profile]));
+  for (const profile of available) known.set(profile.modelId, profile);
+  return [...selected, ...[...known.values()].filter(profile => !selectedIds.has(profile.modelId))
+    .map(profile => ({ ...profile, enabled: false }))];
 }
 
 function markSelectedProfiles(
@@ -681,29 +805,260 @@ function parseStoredNewApiProfile(
   ) {
     throw serviceError('PROVIDER_INVALID_RESPONSE', 'Stored New API model profile is invalid', false);
   }
+  const julunSpec = provider === 'julun' ? getJulunVideoModelSpec(profile.modelId) : undefined;
   return {
     provider,
     modelRoute: profile.modelRoute,
     displayName: profile.displayName,
     modelId: profile.modelId,
     capabilities: [...profile.capabilities],
-    capabilityStatus: profile.capabilityStatus,
-    ...(profile.constraints === undefined ? {} : { constraints: profile.constraints }),
+    capabilityStatus: provider !== 'julun' ? profile.capabilityStatus
+      : profile.capabilityStatus === 'complete' && julunSpec?.kind === 'generation' && julunSpec.parameterEvidenceComplete
+        ? 'complete' : 'incomplete',
+    ...(provider !== 'julun'
+      ? profile.constraints === undefined ? {} : { constraints: profile.constraints }
+      : julunSpec === undefined ? {} : { constraints: { video: julunSpec.constraints } }),
+    ...(provider === 'julun' && profile.enabled !== undefined ? { enabled: profile.enabled } : {}),
   };
 }
 
-async function storeImage(
-  generated: NewApiGeneratedImage,
-  sessionId: string | undefined,
+async function bindProject(
   options: Parameters<typeof createNewApiProviderService>[0],
-): Promise<{ readonly assetId: string; readonly bytes: Uint8Array }> {
-  if (sessionId === undefined) throw invalidRequest('Image generation requires a project session');
-  if (options.storeGeneratedImage === undefined) throw invalidRequest('Generated image storage is unavailable');
-  const media = generated.kind === 'inline'
-    ? { bytes: generated.bytes, mediaType: generated.mediaType }
-    : await downloadRemoteImage(generated.url, options);
-  const stored = await options.storeGeneratedImage(sessionId, media.bytes, media.mediaType);
-  return { assetId: typeof stored === 'string' ? stored : stored.assetId, bytes: media.bytes };
+  sessionId: string,
+  projectId: string | undefined,
+): Promise<GenerationProjectBinding | undefined> {
+  if (options.bindGenerationProject === undefined) {
+    if (projectId !== undefined) throw invalidRequest('Generation project binding is unavailable');
+    return undefined;
+  }
+  const binding = await options.bindGenerationProject(sessionId, projectId);
+  if (projectId !== undefined && binding.projectId !== projectId) {
+    throw invalidRequest('Generation project does not match the active session');
+  }
+  return binding;
+}
+
+function createPendingMediaStore(appDataRoot: string | undefined, suppliedFileSystem?: FileSystem) {
+  const fileSystem = suppliedFileSystem ?? new NodeFileSystem();
+  const memory = new Map<string, Uint8Array>();
+  const pathFor = (taskId: string) => {
+    if (!/^provider-job-[a-f0-9]{32}$/u.test(taskId)) throw invalidRequest('Provider task id is invalid');
+    return join(appDataRoot!, `newapi-pending-${taskId}.bin`);
+  };
+  const invalid = () => serviceError('PROVIDER_UNAVAILABLE', 'Pending provider result is unavailable', true);
+  return {
+    async stage(taskId: string, kind: 'image' | 'video', bytes: Uint8Array): Promise<string> {
+      const maxBytes = kind === 'image' ? 256 * 1024 * 1024 : 512 * 1024 * 1024;
+      if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) {
+        throw serviceError('PROVIDER_INVALID_RESPONSE', 'Provider result size is invalid', false);
+      }
+      const hash = createHash('sha256').update(bytes).digest('hex');
+      if (appDataRoot === undefined) {
+        memory.set(taskId, Uint8Array.from(bytes));
+        return hash;
+      }
+      const path = pathFor(taskId);
+      try {
+        await fileSystem.mkdir(appDataRoot, { recursive: true });
+        await writeConfinedAtomicUpdate(fileSystem, {
+          appDataRoot, targetPath: path, data: bytes,
+          assertPathForRead: () => assertConfinedAppDataPathForRead(fileSystem, appDataRoot, path, 'PROVIDER_UNAVAILABLE', 'Pending provider result path is invalid'),
+          assertPathForWrite: () => assertConfinedAppDataPathForWrite(fileSystem, appDataRoot, path, 'PROVIDER_UNAVAILABLE', 'Pending provider result path is invalid'),
+          errorCode: 'PROVIDER_UNAVAILABLE', errorMessage: 'Pending provider result path is invalid',
+        });
+      } catch { throw invalid(); }
+      return hash;
+    },
+    async read(taskId: string, kind: 'image' | 'video', expectedHash: string): Promise<Uint8Array> {
+      if (!/^[a-f0-9]{64}$/u.test(expectedHash)) throw invalid();
+      let bytes: Uint8Array;
+      if (appDataRoot === undefined) {
+        const stored = memory.get(taskId);
+        if (stored === undefined) throw missingPaidResult();
+        bytes = stored;
+      } else {
+        const path = pathFor(taskId);
+        if (fileSystem.readFileBuffer === undefined) throw invalid();
+        try {
+          await assertConfinedAppDataPathForRead(fileSystem, appDataRoot, path, 'PROVIDER_UNAVAILABLE', 'Pending provider result path is invalid');
+          bytes = await fileSystem.readFileBuffer(path);
+        } catch (error) {
+          if (error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+            throw missingPaidResult();
+          }
+          if (isTypedServiceFailure(error) && error.code === 'PROVIDER_UNAVAILABLE' && !error.retryable) {
+            throw serviceError('PROVIDER_INVALID_RESPONSE',
+              '提交状态不确定：已付费生成结果的本地暂存路径未通过安全校验，请勿创建新的付费任务', false);
+          }
+          throw invalid();
+        }
+      }
+      const maxBytes = kind === 'image' ? 256 * 1024 * 1024 : 512 * 1024 * 1024;
+      if (bytes.byteLength === 0 || bytes.byteLength > maxBytes
+        || createHash('sha256').update(bytes).digest('hex') !== expectedHash) {
+        throw serviceError('PROVIDER_INVALID_RESPONSE',
+          '提交状态不确定：已付费生成结果的本地暂存未通过完整性校验，请勿创建新的付费任务', false);
+      }
+      return bytes;
+    },
+    async remove(taskId: string): Promise<void> {
+      if (appDataRoot === undefined) { memory.delete(taskId); return; }
+      const path = pathFor(taskId);
+      await deleteConfinedAppDataFile(fileSystem, {
+        appDataRoot, targetPath: path, errorCode: 'PROVIDER_UNAVAILABLE', errorMessage: 'Pending provider result path is invalid',
+      });
+    },
+  };
+}
+
+function missingPaidResult(): Error & { code: ProviderBridgeErrorCode; retryable: boolean } {
+  return serviceError('PROVIDER_INVALID_RESPONSE',
+    '提交状态不确定：已付费生成结果的本地暂存文件缺失，请勿创建新的付费任务', false);
+}
+
+async function finishPendingTask(
+  tasks: NewApiServiceTaskStore,
+  pendingMedia: ReturnType<typeof createPendingMediaStore>,
+  publicTaskId: string,
+  options: Parameters<typeof createNewApiProviderService>[0],
+): Promise<void> {
+  const initial = await tasks.read(publicTaskId);
+  if (initial?.state !== 'pending') return;
+  try {
+    const bytes = await pendingMedia.read(publicTaskId, initial.kind, initial.resultHash);
+    let pending = initial;
+    if (pending.assetId === undefined) {
+      // A legacy mapping has only an ephemeral session id. Once bound storage
+      // is available, never guess that a newly opened project with the same id
+      // is the paid result's original destination.
+      if (options.bindGenerationProject !== undefined && pending.projectBinding === undefined) {
+        throw serviceError('PROVIDER_UNAVAILABLE', 'Legacy generation project destination cannot be verified', false);
+      }
+      let assetId: string;
+      if (pending.kind === 'image') {
+        const mediaType = detectSecureImageMediaType(bytes);
+        if (pending.projectBinding !== undefined) {
+          if (options.storeGeneratedImageForProject === undefined) throw invalidRequest('Bound image storage is unavailable');
+          assetId = (await options.storeGeneratedImageForProject(pending.projectBinding, bytes, mediaType)).assetId;
+        } else {
+          if (options.storeGeneratedImage === undefined) throw invalidRequest('Generated image storage is unavailable');
+          const stored = await options.storeGeneratedImage(pending.sessionId, bytes, mediaType);
+          assetId = typeof stored === 'string' ? stored : stored.assetId;
+        }
+      } else {
+        assertMp4(bytes);
+        if (pending.projectBinding !== undefined) {
+          if (options.storeGeneratedVideoForProject === undefined) throw invalidRequest('Bound video storage is unavailable');
+          assetId = (await options.storeGeneratedVideoForProject(pending.projectBinding, bytes, 'video/mp4')).assetId;
+        } else {
+          if (options.storeGeneratedVideo === undefined) throw invalidRequest('Generated video storage is unavailable');
+          const stored = await options.storeGeneratedVideo(pending.sessionId, bytes, 'video/mp4');
+          assetId = typeof stored === 'string' ? stored : stored.assetId;
+        }
+      }
+      if (typeof assetId !== 'string' || assetId.length === 0) throw invalidRequest('Generated asset id is invalid');
+      pending = { ...pending, assetId };
+      await tasks.write(publicTaskId, pending);
+    }
+    if (pending.historyId !== undefined && options.historySink !== undefined) {
+      const terminal = await options.historySink.succeeded(pending.historyId, bytes);
+      if (terminal.status !== 'succeeded') throw serviceError('PROVIDER_UNAVAILABLE', 'Generation history is temporarily unavailable', true);
+    }
+    await tasks.write(publicTaskId, {
+      kind: pending.kind, state: 'completed', assetId: pending.assetId!,
+      ...(pending.historyId === undefined ? {} : { historyId: pending.historyId }),
+    });
+    try { await pendingMedia.remove(publicTaskId); } catch { /* ACK retries cleanup. */ }
+  } catch (error) {
+    if (await tasks.read(publicTaskId) === undefined) {
+      try { await pendingMedia.remove(publicTaskId); } catch { /* The orphan file can be collected later. */ }
+      return;
+    }
+    const failure = error instanceof Error && error.message === 'Generated result was invalid'
+      ? serviceError('PROVIDER_INVALID_RESPONSE', error.message, false)
+      : error;
+    if (isTypedServiceFailure(failure) && !failure.retryable
+      && (failure.code === 'PROVIDER_INVALID_RESPONSE' || failure.code === 'PROVIDER_UNAVAILABLE')) {
+      await failIrrecoverableTask(tasks, pendingMedia, publicTaskId, initial, options, failure);
+    }
+    // Transient project, history, or media IO faults preserve the paid bytes.
+  }
+}
+
+async function failIrrecoverableTask(
+  tasks: NewApiServiceTaskStore,
+  pendingMedia: ReturnType<typeof createPendingMediaStore>,
+  publicTaskId: string,
+  task: Extract<NewApiPrivateTask, { state: 'remote' | 'pending' }>,
+  options: Parameters<typeof createNewApiProviderService>[0],
+  error: Error & { readonly code: ProviderBridgeErrorCode; readonly retryable: boolean },
+): Promise<void> {
+  try {
+    const history = task.historyId === undefined || options.historySink === undefined
+      ? null
+      : await options.historySink.failed(task.historyId,
+        error.code === 'PROVIDER_INVALID_RESPONSE' ? 'invalid_result'
+          : error.code === 'PROVIDER_UNAVAILABLE' ? 'provider_unavailable' : 'provider_failed');
+    if (history?.status === 'succeeded') {
+      if (task.state !== 'pending' || task.assetId === undefined) return;
+      await tasks.write(publicTaskId, { kind: task.kind, state: 'completed', assetId: task.assetId, historyId: task.historyId });
+    } else if (history?.status === 'cancelled') {
+      await tasks.write(publicTaskId, { kind: task.kind, state: 'cancelled', ...(task.historyId === undefined ? {} : { historyId: task.historyId }) });
+    } else {
+      await tasks.write(publicTaskId, { kind: task.kind, state: 'failed', code: error.code,
+        message: error.message, retryable: false,
+        ...(task.historyId === undefined ? {} : { historyId: task.historyId }) });
+    }
+    try { await pendingMedia.remove(publicTaskId); } catch { /* Terminal ACK retries cleanup. */ }
+  } catch {
+    // History or mapping IO is still unavailable; retry terminalization on poll.
+  }
+}
+
+async function cancelTaskWithDurableHistory(
+  tasks: NewApiServiceTaskStore,
+  publicTaskId: string,
+  task: Extract<NewApiPrivateTask, { state: 'remote' | 'pending' }>,
+  options: Parameters<typeof createNewApiProviderService>[0],
+): Promise<NewApiPrivateTask> {
+  let terminal: Awaited<ReturnType<NonNullable<typeof options.historySink>['cancelled']>> | null = null;
+  if (task.historyId !== undefined && options.historySink !== undefined) {
+    try { terminal = await options.historySink.cancelled(task.historyId, 'cancelled_by_user'); }
+    catch { throw serviceError('PROVIDER_UNAVAILABLE', '提交状态不确定：生成历史暂不可用，请保留原任务等待恢复', true); }
+    if (terminal.status === 'succeeded') {
+      throw serviceError('PROVIDER_UNAVAILABLE', '提交状态不确定：生成结果已写入历史，请保留原任务等待恢复', true);
+    }
+  }
+  const next: NewApiPrivateTask = terminal?.status === 'failed'
+    ? { kind: task.kind, state: 'failed', code: 'PROVIDER_ERROR', message: 'Generation history already failed',
+      retryable: false, ...(task.historyId === undefined ? {} : { historyId: task.historyId }) }
+    : { kind: task.kind, state: 'cancelled', ...(task.historyId === undefined ? {} : { historyId: task.historyId }) };
+  try {
+    await tasks.write(publicTaskId, next);
+    return await requireTask(tasks, publicTaskId, task.kind);
+  } catch {
+    throw serviceError('PROVIDER_UNAVAILABLE', '提交状态不确定：取消结果暂无法写入本地任务记录，请保留原任务等待恢复', true);
+  }
+}
+
+async function reconcileDurableCancellation(
+  tasks: NewApiServiceTaskStore,
+  publicTaskId: string,
+  task: NewApiPrivateTask,
+  options: Parameters<typeof createNewApiProviderService>[0],
+): Promise<NewApiPrivateTask> {
+  if ((task.state !== 'remote' && task.state !== 'pending')
+    || task.historyId === undefined || options.historySink === undefined) return task;
+  let terminal: Awaited<ReturnType<NonNullable<typeof options.historySink>['getTerminal']>>;
+  try { terminal = await options.historySink.getTerminal(task.historyId); }
+  catch { throw serviceError('PROVIDER_UNAVAILABLE', '提交状态不确定：生成历史暂不可用，请保留原任务等待恢复', true); }
+  if (terminal?.status !== 'cancelled') return task;
+  try {
+    await tasks.write(publicTaskId, { kind: task.kind, state: 'cancelled', historyId: task.historyId });
+    return await requireTask(tasks, publicTaskId, task.kind);
+  } catch {
+    throw serviceError('PROVIDER_UNAVAILABLE', '提交状态不确定：取消结果暂无法写入本地任务记录，请保留原任务等待恢复', true);
+  }
 }
 
 async function downloadRemoteImage(
@@ -790,6 +1145,8 @@ async function prepareSubmission(
   jobId: string | undefined,
   kind: 'image' | 'video',
   modelDisplayName: string,
+  projectBinding?: GenerationProjectBinding,
+  videoSessionId?: string,
 ): Promise<{ readonly historyId?: string; readonly existingPublicTaskId?: string }> {
   if (options.providerTaskMappings === undefined || jobId === undefined || jobId.length === 0) {
     return { historyId: await reserveHistory(options.historySink, jobId, kind, modelDisplayName, options.provider) };
@@ -798,7 +1155,23 @@ async function prepareSubmission(
   const existing = await options.providerTaskMappings.findByHistoryId(historyId);
   if (existing !== undefined) {
     if (existing.provider !== options.provider) throw serviceError('PROVIDER_INVALID_RESPONSE', 'Generation job provider identity is invalid', false);
+    if (kind === 'video') {
+      if (existing.historyId !== historyId || existing.kind !== 'video' || videoSessionId === undefined) {
+        throw serviceError('PROVIDER_INVALID_RESPONSE', 'Generation job task identity is invalid', false);
+      }
+      assertExistingVideoIdentity(existing, videoSessionId, projectBinding);
+    }
+    assertExistingProjectBinding(existing.projectBinding, projectBinding);
     return { historyId, existingPublicTaskId: existing.publicTaskId };
+  }
+  if (options.historySink !== undefined) {
+    const reservation = await options.historySink.reserveSubmission({ jobId, kind, modelDisplayName, provider: options.provider });
+    if (reservation.historyId !== historyId) {
+      throw serviceError('PROVIDER_INVALID_RESPONSE', 'Generation history reservation identity is invalid', false);
+    }
+    if (reservation.terminal !== null) {
+      throw serviceError('PROVIDER_INVALID_RESPONSE', 'Generation history is already terminal', false);
+    }
   }
   const created = await options.providerTaskMappings.reserveSubmission({
     currentIdentity: jobId.startsWith('model-job-v2-'),
@@ -807,29 +1180,87 @@ async function prepareSubmission(
   if (!created) {
     const raced = await options.providerTaskMappings.findByHistoryId(historyId);
     if (raced !== undefined && raced.provider === options.provider) {
+      if (kind === 'video') {
+        if (raced.historyId !== historyId || raced.kind !== 'video' || videoSessionId === undefined) {
+          throw serviceError('PROVIDER_INVALID_RESPONSE', 'Generation job task identity is invalid', false);
+        }
+        assertExistingVideoIdentity(raced, videoSessionId, projectBinding);
+      }
+      assertExistingProjectBinding(raced.projectBinding, projectBinding);
       return { historyId, existingPublicTaskId: raced.publicTaskId };
     }
     throw serviceError('PROVIDER_INVALID_RESPONSE', 'Generation job is already reserved; create a new run to submit again', false);
   }
-  if (options.historySink !== undefined) {
-    const reservation = await options.historySink.reserveSubmission({ jobId, kind, modelDisplayName, provider: options.provider });
-    if (reservation.historyId !== historyId) {
-      throw serviceError('PROVIDER_INVALID_RESPONSE', 'Generation history reservation identity is invalid', false);
-    }
-    if (!reservation.created) {
-      const raced = await options.providerTaskMappings.findByHistoryId(historyId);
-      if (raced !== undefined && raced.provider === options.provider) {
-        return { historyId, existingPublicTaskId: raced.publicTaskId };
-      }
-      throw serviceError('PROVIDER_INVALID_RESPONSE', 'Generation job history is already reserved; create a new run to submit again', false);
-    }
-  }
   return { historyId };
+}
+
+function assertExistingProjectBinding(
+  existing: GenerationProjectBinding | undefined,
+  requested: GenerationProjectBinding | undefined,
+): void {
+  if (existing !== undefined && requested !== undefined
+    && (existing.projectId !== requested.projectId || existing.rootFingerprint !== requested.rootFingerprint)) {
+    throw invalidRequest('Generation job belongs to a different project');
+  }
+}
+
+function assertExistingVideoIdentity(
+  existing: { readonly sessionId?: string; readonly projectBinding?: GenerationProjectBinding },
+  sessionId: string,
+  projectBinding: GenerationProjectBinding | undefined,
+): void {
+  if ((existing.projectBinding === undefined) !== (projectBinding === undefined)) {
+    throw invalidRequest('Generation job project binding cannot be verified');
+  }
+  if (projectBinding !== undefined) assertExistingProjectBinding(existing.projectBinding, projectBinding);
+  else if (existing.sessionId !== sessionId) throw invalidRequest('Generation job belongs to a different project session');
 }
 
 async function requireReference(options: Parameters<typeof createNewApiProviderService>[0], sessionId: string, assetId: string) {
   if (options.readReferenceImage === undefined) throw invalidRequest('Reference image storage is unavailable');
   return options.readReferenceImage(sessionId, assetId);
+}
+
+async function persistAcceptedTask(
+  tasks: NewApiServiceTaskStore,
+  publicTaskId: string,
+  task: NewApiPrivateTask,
+): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try { await tasks.write(publicTaskId, task, true); return; }
+    catch (error) {
+      if (attempt === 2) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, attempt === 0 ? 50 : 150));
+    }
+  }
+}
+
+async function recoverAcceptedTask(
+  tasks: NewApiServiceTaskStore,
+  pendingMedia: ReturnType<typeof createPendingMediaStore>,
+  accepted: {
+    readonly publicTaskId: string;
+    readonly task: Extract<NewApiPrivateTask, { state: 'remote' | 'pending' }>;
+    readonly bytes?: Uint8Array;
+  },
+): Promise<void> {
+  if (accepted.task.state === 'pending') {
+    if (accepted.bytes === undefined) throw invalidRequest('Accepted image bytes are unavailable');
+    let staged = false;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const hash = await pendingMedia.stage(accepted.publicTaskId, accepted.task.kind, accepted.bytes);
+        if (hash !== accepted.task.resultHash) throw invalidRequest('Accepted image bytes changed');
+        staged = true;
+        break;
+      } catch (error) {
+        if (attempt === 2) throw error;
+        await new Promise<void>((resolve) => setTimeout(resolve, attempt === 0 ? 50 : 150));
+      }
+    }
+    if (!staged) throw serviceError('PROVIDER_UNAVAILABLE', 'Accepted image staging is unavailable', true);
+  }
+  await persistAcceptedTask(tasks, accepted.publicTaskId, accepted.task);
 }
 
 async function requireTask(store: NewApiServiceTaskStore, publicTaskId: string, kind: 'image' | 'video'): Promise<NewApiPrivateTask> {
@@ -860,8 +1291,19 @@ function ledgerTaskStore(
       const kind = record.kind ?? 'image';
       if (record.state === 'running') {
         if (record.sessionId === undefined) return undefined;
+        const pending = /^newapi-pending-(image|video):([a-f0-9]{64})$/u.exec(record.rawTaskId);
+        if (pending !== null) {
+          if (pending[1] !== kind) return undefined;
+          return {
+            kind, state: 'pending', resultHash: pending[2]!, sessionId: record.sessionId,
+            ...(record.projectBinding === undefined ? {} : { projectBinding: record.projectBinding }),
+            ...(record.result?.assetId === undefined ? {} : { assetId: record.result.assetId }),
+            ...(record.historyId === undefined ? {} : { historyId: record.historyId }),
+          };
+        }
         return {
           kind, state: 'remote', rawTaskId: record.rawTaskId, sessionId: record.sessionId,
+          ...(record.projectBinding === undefined ? {} : { projectBinding: record.projectBinding }),
           ...(record.historyId === undefined ? {} : { historyId: record.historyId }),
         } as Extract<NewApiPrivateTask, { state: 'remote' }>;
       }
@@ -874,35 +1316,56 @@ function ledgerTaskStore(
       if (assetId === undefined) return undefined;
       return { kind, state: 'completed', assetId, ...(record.historyId === undefined ? {} : { historyId: record.historyId }) } as TerminalImageTask | TerminalVideoTask;
     },
-    async write(id, task) {
+    async write(id, task, allowCreate = false) {
       const current = await ledger.get(id);
+      if (current === undefined && !allowCreate) throw invalidRequest('Provider task was not found');
       const timestamp = now().toISOString();
       const base = {
         provider,
         publicTaskId: id,
-        rawTaskId: task.state === 'remote' ? task.rawTaskId : current?.rawTaskId ?? `${provider}-synchronous`,
+        rawTaskId: task.state === 'remote' ? task.rawTaskId
+          : task.state === 'pending' ? `newapi-pending-${task.kind}:${task.resultHash}`
+          : current?.rawTaskId ?? `${provider}-synchronous`,
         kind: task.kind,
-        ...(task.state === 'remote' ? { sessionId: task.sessionId, ...(task.historyId === undefined ? {} : { historyId: task.historyId }) } : {
+        ...(task.state === 'remote' || task.state === 'pending' ? {
+          sessionId: task.sessionId,
+          ...(task.projectBinding === undefined ? {} : { projectBinding: task.projectBinding }),
+          ...(task.historyId === undefined ? {} : { historyId: task.historyId }),
+        } : {
           ...(current?.sessionId === undefined ? {} : { sessionId: current.sessionId }),
+          ...(current?.projectBinding === undefined ? {} : { projectBinding: current.projectBinding }),
           ...((task.historyId ?? current?.historyId) === undefined ? {} : { historyId: task.historyId ?? current?.historyId }),
         }),
         createdAt: current?.createdAt ?? timestamp,
         updatedAt: timestamp,
       } as const;
-      if (task.state === 'remote') {
-        await ledger.set({ ...base, state: 'running' });
+      if (task.state === 'remote' || task.state === 'pending') {
+        const result = task.state === 'pending' && task.assetId !== undefined
+          ? task.kind === 'image' ? { assetId: task.assetId, assetIds: [task.assetId] } : { assetId: task.assetId }
+          : undefined;
+        if (current === undefined) {
+          await ledger.set({ ...base, state: 'running', ...(result === undefined ? {} : { result }) });
+        } else {
+          const updated = await ledger.updateRunning(id, {
+            expectedRawTaskId: current.rawTaskId,
+            ...(current.rawTaskId === base.rawTaskId ? {} : { rawTaskId: base.rawTaskId }),
+            ...(result === undefined ? {} : { result }),
+          }, timestamp);
+          if (updated?.state !== 'running' || updated.rawTaskId !== base.rawTaskId
+            || (result !== undefined && updated.result?.assetId !== result.assetId)) {
+            throw serviceError('PROVIDER_UNAVAILABLE', 'Provider task changed while saving its result', true);
+          }
+        }
       } else if (task.state === 'completed') {
         const result = task.kind === 'image'
           ? { assetId: task.assetId, assetIds: [task.assetId] }
           : { assetId: task.assetId };
-        await ledger.set({ ...base, state: 'completed', terminalAt: timestamp, result });
+        const updated = await ledger.markTerminal(id, { status: 'completed', progress: 1, result }, timestamp);
+        if (updated === undefined) throw serviceError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable', true);
       } else if (task.state === 'failed') {
-        await ledger.set({
-          ...base,
-          state: 'failed',
-          terminalAt: timestamp,
-          error: { code: task.code ?? 'PROVIDER_ERROR', message: task.message, retryable: task.retryable },
-        });
+        const updated = await ledger.markTerminal(id, { status: 'failed',
+          error: serviceError(task.code ?? 'PROVIDER_ERROR', task.message, task.retryable) }, timestamp);
+        if (updated === undefined) throw serviceError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable', true);
       } else if (current !== undefined) {
         await ledger.markCancelled(id, timestamp);
       } else {
@@ -933,7 +1396,51 @@ function videoPoll(task: NewApiPrivateTask): NewApiVideoPollResult {
   return { status: 'running' };
 }
 
-export function mapNewApiVideoSize(aspectRatio: ImageAspectRatio, resolution: string): string {
+function resolveJulunVideoParameters(profile: NewApiModelProfile, request: NewApiVideoJobRequest) {
+  const spec = getJulunVideoModelSpec(profile.modelId);
+  if (spec === undefined || spec.kind === 'editing' || !spec.parameterEvidenceComplete) {
+    throw capabilityError('Selected Julun model requires an unverified video request protocol or parameter contract');
+  }
+  const constraints = profile.constraints?.video;
+  const publicConstraints = spec.constraints;
+  const aspectRatio = request.aspectRatio ?? constraints?.aspectRatios?.[0] ?? publicConstraints.aspectRatios?.[0];
+  const resolution = request.resolution ?? constraints?.resolutions?.[0] ?? publicConstraints.resolutions?.[0];
+  const durationConstraint = constraints?.duration ?? publicConstraints?.duration;
+  const duration = request.durationSeconds ?? durationConstraint?.defaultValue
+    ?? (durationConstraint?.mode === 'options' ? durationConstraint.options[0] : durationConstraint?.min);
+  if (aspectRatio === undefined || resolution === undefined || duration === undefined) {
+    throw capabilityError('Selected Julun video parameters are not verified');
+  }
+  for (const allowed of [constraints, publicConstraints]) {
+    if (allowed?.aspectRatios !== undefined && !allowed.aspectRatios.includes(aspectRatio)) {
+      throw capabilityError('Selected Julun video model does not support the requested aspect ratio');
+    }
+    if (allowed?.resolutions !== undefined && !allowed.resolutions.includes(resolution)) {
+      throw capabilityError('Selected Julun video model does not support the requested resolution');
+    }
+    const range = allowed?.duration;
+    if (range?.mode === 'options' && !range.options.includes(duration)
+      || range?.mode === 'range' && (duration < range.min || duration > range.max
+        || Math.abs((duration - range.min) / range.step - Math.round((duration - range.min) / range.step)) > 1e-6)) {
+      throw capabilityError('Selected Julun video model does not support the requested duration');
+    }
+  }
+  if (!Number.isFinite(duration) || duration <= 0) throw capabilityError('Julun video duration is invalid');
+  const durationMaximum = spec?.durationMaxByResolution?.[resolution];
+  if (durationMaximum !== undefined && duration > durationMaximum) {
+    throw capabilityError('Selected Julun resolution does not support the requested duration');
+  }
+  const exactSize = spec?.dimensionGrid?.find(entry => entry.resolution === resolution && entry.aspectRatio === aspectRatio);
+  if (spec?.dimensionGrid !== undefined && exactSize === undefined) {
+    throw capabilityError('Selected Julun video size is not verified');
+  }
+  const [width, height] = exactSize === undefined
+    ? mapNewApiVideoSize(aspectRatio, resolution).split('x').map(Number) as [number, number]
+    : [exactSize.width, exactSize.height];
+  return { duration, width, height };
+}
+
+export function mapNewApiVideoSize(aspectRatio: VideoAspectRatio, resolution: string): string {
   const short = resolution === '2K' ? 1440 : resolution === '4K' ? 2160 : Number.parseInt(resolution, 10);
   const height = Number.isFinite(short) && short > 0 ? short : 720;
   const [rw, rh] = aspectRatio.split(':').map(Number) as [number, number];
@@ -996,6 +1503,12 @@ function capabilityError(message: string): Error & { code: 'CAPABILITY_UNSUPPORT
 function invalidRequest(message: string): Error & { code: 'INVALID_REQUEST'; retryable: false } {
   return serviceError('INVALID_REQUEST', message, false) as Error & { code: 'INVALID_REQUEST'; retryable: false };
 }
-function serviceError(code: string, message: string, retryable: boolean): Error & { code: string; retryable: boolean } {
+function uncertainPaidSubmission(error: unknown): Error & { code: ProviderBridgeErrorCode; retryable: boolean } {
+  if (isTypedServiceFailure(error) && !error.retryable
+    && (error.code === 'INVALID_REQUEST' || error.code === 'PROVIDER_INVALID_RESPONSE')) return error;
+  return serviceError('PROVIDER_UNAVAILABLE',
+    '提交状态不确定：供应商已接受生成任务，但本地任务记录暂不可用；请保留原任务，不要创建新的付费任务', true);
+}
+function serviceError(code: ProviderBridgeErrorCode, message: string, retryable: boolean): Error & { code: ProviderBridgeErrorCode; retryable: boolean } {
   return Object.assign(new Error(message), { code, retryable });
 }

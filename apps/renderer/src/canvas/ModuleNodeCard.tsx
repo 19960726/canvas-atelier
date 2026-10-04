@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ButtonHTM
 import { createPortal } from 'react-dom';
 import { reverseFailureMessage } from '../app/reverse-failure';
 import { Handle, Position, useStore } from '@xyflow/react';
-import { ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, ImageUp, Images, Layers3, LoaderCircle, LockKeyhole, LockOpen, Play, Send, Video, Volume2, VolumeX, X } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, ImageUp, Images, Layers3, LockKeyhole, LockOpen, Play, Send, Video, Volume2, VolumeX, X } from 'lucide-react';
 import {
   getCanvasModuleDefinition,
   MAX_GENERATION_REFERENCES,
@@ -27,7 +27,7 @@ import { resolveConnectedReverseMedia } from './reverse-agent-media';
 import { ConnectedAgentMediaSlots, type ConnectedAgentMediaSlotItem } from './ConnectedAgentMediaSlots';
 import { useAppStore } from '../app/app-store';
 import { registerEditorDraft } from '../app/editor-draft-boundary';
-import { isRenderableManagedImageUrl } from '../app/managed-image-url';
+import { isRenderableManagedImageUrl, isRenderableManagedVideoUrl } from '../app/managed-image-url';
 import { imageQualityLabel, isGptImageQualityIdentity, supportsGptImageQuality } from '../app/image-generation-quality';
 import { IMAGE_RESOLUTION_TIERS, imageModelFamilyDisplayName, imageResolutionFamilyKey, listImageResolutionTiers, resolveImageResolutionRoute } from '../app/image-resolution-routing';
 import { resolveMediaImportMode } from '../app/media-import-capability';
@@ -38,6 +38,11 @@ import { filterModelJobsForProject, modelJobMatchesGenerationDraft, type Generat
 import { readVideoGenerationResults } from './video-generation-results';
 import { supportsGenerationReferences } from '../agent/generation-preferences';
 import { AspectRatioPopover, ClarityPopover } from './GenerationParameterPopover';
+import { GenerationRunningState } from './GenerationRunningState';
+import { retainedImagePreviewIds, retainedVideoPreviews } from '../app/generation-previous-results';
+import { resolveConnectedGenerationPrompt, type ConnectedGenerationPrompt } from './connected-generation-prompt';
+import { TextPromptEditor, useTextPromptPreview } from './TextPromptEditor';
+import { ConnectedImageOutputPreview } from './ConnectedImageOutputPreview';
 import { buildReverseResultSections, formatReverseResultDocument } from './reverse-result-sections';
 import { MediaMentionTextarea, type MediaMentionPreview, type MediaMentionSelection, type MediaMentionTextareaHandle } from '../mentions/MediaMentionTextarea';
 import { selectSavedProviderModelDefault } from '../settings/provider-model-defaults';
@@ -78,6 +83,13 @@ const executionStateLabels: Record<CanvasModuleNodeData['execution']['state'], s
 };
 
 const DRAFT_PERSIST_DEBOUNCE_MS = 180;
+
+type GenerationPreviewDimensions = { width: number; height: number };
+function readGenerationPreviewDimensions(asset: { width?: number | null; height?: number | null } | undefined): GenerationPreviewDimensions | null {
+  return asset && typeof asset.width === 'number' && typeof asset.height === 'number'
+    && Number.isFinite(asset.width) && Number.isFinite(asset.height) && asset.width > 0 && asset.height > 0
+    ? { width: asset.width, height: asset.height } : null;
+}
 
 /** Coalesce high-frequency text edits without losing the last draft on blur/unmount. */
 function useDebouncedDraft<T>(value: T, persist: (nextValue: T) => void | Promise<boolean>, delayMs = DRAFT_PERSIST_DEBOUNCE_MS, enabled = true): () => void {
@@ -212,12 +224,12 @@ function resolveNodeWorkflowLabel(
 
 interface ModulePortProps {
   port: CanvasModulePortDefinition;
-  aliasPort?: CanvasModulePortDefinition;
+  aliasPorts: readonly CanvasModulePortDefinition[];
   priority?: 'primary-media' | 'secondary' | 'secondary-output';
   connected?: boolean;
 }
 
-const ModulePort = memo(function ModulePort({ port, aliasPort, priority, connected = false }: ModulePortProps) {
+const ModulePort = memo(function ModulePort({ port, aliasPorts, priority, connected = false }: ModulePortProps) {
   const isInput = port.direction === 'input';
   const portShape = getPortShape(port.dataType);
   return (
@@ -260,8 +272,9 @@ const ModulePort = memo(function ModulePort({ port, aliasPort, priority, connect
           className={connected ? 'is-connected' : undefined}
         />
       )}
-      {aliasPort && (
+      {aliasPorts.map(aliasPort => (
         <Handle
+          key={`${aliasPort.direction}:${aliasPort.id}`}
           id={aliasPort.id}
           type={aliasPort.direction === 'input' ? 'target' : 'source'}
           position={aliasPort.direction === 'input' ? Position.Left : Position.Right}
@@ -273,7 +286,7 @@ const ModulePort = memo(function ModulePort({ port, aliasPort, priority, connect
           aria-hidden="true"
           className="module-node__port-alias"
         />
-      )}
+      ))}
     </div>
   );
 });
@@ -347,17 +360,28 @@ function visibleModulePorts(
   };
 }
 
-function visualAliasPort(
+const visualPortAliasCache = new WeakMap<CanvasModuleDefinition, Map<string, readonly CanvasModulePortDefinition[]>>();
+
+function visualAliasPorts(
   definition: CanvasModuleDefinition,
   moduleType: CanvasModuleNodeData['moduleType'],
   port: CanvasModulePortDefinition,
-): CanvasModulePortDefinition | undefined {
-  const aliasId = moduleType === 'image_generation' && port.direction === 'output' && port.id === 'result'
-    ? 'image'
-    : moduleType === 'image_layering' && port.direction === 'input' && port.id === 'image'
-      ? 'layerImages'
-      : undefined;
-  return aliasId ? definition.ports.find((candidate) => candidate.direction === port.direction && candidate.id === aliasId) : undefined;
+): readonly CanvasModulePortDefinition[] {
+  let cached = visualPortAliasCache.get(definition);
+  if (!cached) { cached = new Map(); visualPortAliasCache.set(definition, cached); }
+  const key = `${moduleType}:${port.direction}:${port.id}`;
+  const previous = cached.get(key);
+  if (previous) return previous;
+  const visible = visibleModulePorts(definition, moduleType);
+  const sameDirection = port.direction === 'input' ? visible.inputs : visible.outputs;
+  // The compact circle groups real endpoints without deleting their ids from
+  // existing/imported/Codex workflows. Stable arrays also preserve port memo.
+  const aliases = sameDirection[0]?.id === port.id
+    ? definition.ports.filter(candidate => candidate.direction === port.direction
+      && !sameDirection.some(visiblePort => visiblePort.id === candidate.id))
+    : [];
+  cached.set(key, aliases);
+  return aliases;
 }
 
 function isVisualPortConnected(
@@ -366,8 +390,7 @@ function isVisualPortConnected(
   port: CanvasModulePortDefinition,
   isConnected: (candidate: CanvasModulePortDefinition) => boolean,
 ): boolean {
-  const alias = visualAliasPort(definition, moduleType, port);
-  return isConnected(port) || (alias !== undefined && isConnected(alias));
+  return isConnected(port) || visualAliasPorts(definition, moduleType, port).some(isConnected);
 }
 
 interface ReverseAgentRouteSummary {
@@ -568,14 +591,14 @@ const ModuleNodeOverview = memo(function ModuleNodeOverview({ id, data, selected
             <ModulePort
               key={`${port.direction}:${port.id}`}
               port={port}
-              aliasPort={visualAliasPort(definition, data.moduleType, port)}
+              aliasPorts={visualAliasPorts(definition, data.moduleType, port)}
               priority={portPriority(data.moduleType, port)}
               connected={isVisualPortConnected(definition, data.moduleType, port, isPortConnected)}
             />
           ))}
         </div>
         <div className="module-node__ports-column module-node__ports-column--outputs">
-          {visibleOutputs.map((port) => <ModulePort key={`${port.direction}:${port.id}`} port={port} aliasPort={visualAliasPort(definition, data.moduleType, port)} priority={portPriority(data.moduleType, port)} connected={isPortConnected(port)} />)}
+          {visibleOutputs.map((port) => <ModulePort key={`${port.direction}:${port.id}`} port={port} aliasPorts={visualAliasPorts(definition, data.moduleType, port)} priority={portPriority(data.moduleType, port)} connected={isVisualPortConnected(definition, data.moduleType, port, isPortConnected)} />)}
         </div>
       </div>
     </article>
@@ -612,9 +635,15 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
   const startConfirmedLayering = useAppStore((state) => state.startConfirmedLayering);
   const project = useAppStore((state) => state.project);
   const persistenceMode = useAppStore((state) => state.persistenceMode);
+  const canvasDraftResetKey = useAppStore((state) => state.canvasDraftResetKey);
   const modelJobs = useAppStore((state) => state.modelJobs);
   const activeProjectSessionId = persistenceMode === 'desktop' ? getActiveProjectSessionId() : null;
   const generationDraftIdentity = `${persistenceMode}:${project.id}:${activeProjectSessionId ?? 'no-session'}:${id}`;
+  const connectedPrompt = data.moduleType === 'image_generation' || data.moduleType === 'video_generation'
+    ? resolveConnectedGenerationPrompt(project, id) : { status: 'disconnected' as const };
+  const sourcePromptPreview = useTextPromptPreview(project.id, connectedPrompt.status === 'connected' ? connectedPrompt.sourceNodeId : undefined);
+  const visibleConnectedPrompt = connectedPrompt.status === 'connected' && sourcePromptPreview !== undefined
+    ? { ...connectedPrompt, prompt: sourcePromptPreview } : connectedPrompt;
   const projectModelJobs = useMemo(
     () => {
       const scopedJobs = filterModelJobsForProject(modelJobs, project, activeProjectSessionId);
@@ -679,6 +708,11 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
     : undefined;
   const [fallbackGenerationEditorOpen, setFallbackGenerationEditorOpen] = useState(false);
   const generationEditorExpanded = data.generationEditorExpanded ?? fallbackGenerationEditorOpen;
+  const [generationPreviewDimensions, setGenerationPreviewDimensions] = useState<GenerationPreviewDimensions | null>(null);
+  const updateGenerationPreviewDimensions = useCallback((dimensions: GenerationPreviewDimensions | null) => {
+    const valid = dimensions === null ? null : readGenerationPreviewDimensions(dimensions);
+    setGenerationPreviewDimensions(current => current?.width === valid?.width && current?.height === valid?.height ? current : valid);
+  }, []);
   const requestGenerationEditorOpen = () => {
     if (data.onOpenGenerationEditor) data.onOpenGenerationEditor(id);
     else setFallbackGenerationEditorOpen(true);
@@ -687,9 +721,13 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
     if (data.onCloseGenerationEditor) data.onCloseGenerationEditor();
     else setFallbackGenerationEditorOpen(false);
   };
-  const mediaNodeStyle = selectedImage
-    ? { '--media-node-width': `${getMediaNodeWidth(selectedImage)}px` } as CSSProperties
-    : undefined;
+  const mediaNodeStyle = {
+    ...(selectedImage ? { '--media-node-width': `${getMediaNodeWidth(selectedImage)}px` } : {}),
+    ...(generationPreviewDimensions ? {
+      '--generation-preview-height': `${676 * generationPreviewDimensions.height / generationPreviewDimensions.width}px`,
+      '--generation-preview-aspect-ratio': `${generationPreviewDimensions.width} / ${generationPreviewDimensions.height}`,
+    } : {}),
+  } as CSSProperties;
   const upstreamReverseResult = useMemo(() => {
     if (data.moduleType !== 'reverse_result') return null;
     const incoming = project.edges.find((edge) => edge.target === id && edge.targetPortId === 'analysis');
@@ -700,27 +738,46 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
   }, [data.moduleType, id, project.edges, project.nodes]);
   const upstreamVideoResult = useMemo(() => {
     if (data.moduleType !== 'video_result') return null;
-    const incoming = project.edges.find((edge) => edge.target === id && edge.targetPortId === 'video');
-    if (incoming === undefined) return null;
-    const source = project.nodes.find((candidate) => candidate.id === incoming.source);
-    if (source?.type !== 'module' || source.data.moduleType !== 'video_generation' || incoming.sourcePortId !== 'result') return null;
-    const generatedResult = readVideoGenerationResults(source.data.config)[0];
+    const incoming = project.edges.filter(edge => edge.target === id && edge.targetPortId === 'video');
+    if (incoming.length !== 1 || incoming[0]!.sourcePortId !== 'result') return null;
+    const source = project.nodes.find(candidate => candidate.id === incoming[0]!.source);
+    if (source?.type !== 'module' || source.data.moduleType !== 'video_generation') return null;
+    const records = Array.isArray(source.data.config.videoResults) ? source.data.config.videoResults : [];
+    const generatedResult = records.find((record): record is Record<string, unknown> => record !== null
+      && typeof record === 'object' && !Array.isArray(record) && typeof record.assetId === 'string'
+      && typeof record.mediaType === 'string' && record.mediaType.startsWith('video/'));
     if (generatedResult === undefined) return null;
-    const posterAsset = generatedResult.posterAssetId === undefined
-      ? undefined
-      : projectImages.find((candidate) => candidate.assetId === generatedResult.posterAssetId);
-    const videoAsset = projectVideos.find((candidate) => candidate.assetId === generatedResult.assetId);
-    const posterUrl = isRenderableManagedImageUrl(generatedResult.posterUrl)
-      ? generatedResult.posterUrl
-      : isRenderableManagedImageUrl(posterAsset?.displayUrl, posterAsset?.assetId)
-        ? posterAsset.displayUrl
-        : null;
+    const videoOwned = project.assets?.some(asset => asset.assetId === generatedResult.assetId && asset.mediaType.startsWith('video/'));
+    if (!videoOwned) return null;
+    const videoAsset = videoOwned ? projectVideos.find(candidate => candidate.assetId === generatedResult.assetId
+      && isRenderableManagedVideoUrl(candidate.displayUrl, candidate.assetId)) : undefined;
+    const posterOwned = project.assets?.some(asset => asset.assetId === generatedResult.posterAssetId && asset.mediaType.startsWith('image/'));
+    const posterAsset = posterOwned ? projectImages.find(candidate => candidate.assetId === generatedResult.posterAssetId
+      && isRenderableManagedImageUrl(candidate.displayUrl, candidate.assetId)) : undefined;
+    if (videoAsset === undefined && posterAsset === undefined) return null;
+    const durationMs = readPositiveInteger(videoAsset?.durationMs) ?? readPositiveInteger(generatedResult.durationMs) ?? undefined;
+    const width = readPositiveInteger(videoAsset?.width);
+    const height = readPositiveInteger(videoAsset?.height);
     return {
-      posterUrl,
+      posterUrl: posterAsset?.displayUrl ?? null,
       videoUrl: videoAsset?.displayUrl,
-      durationMs: videoAsset?.durationMs ?? generatedResult.durationMs,
+      durationMs,
+      resolution: width !== null && height !== null ? width >= height ? `${height}p` : `${width}×${height}` : undefined,
     };
-  }, [data.moduleType, id, project.edges, project.nodes, projectImages, projectVideos]);
+  }, [data.moduleType, id, project.assets, project.edges, project.nodes, projectImages, projectVideos]);
+  const upstreamImageResult = useMemo(() => {
+    if (data.moduleType !== 'result_output') return { assets: [], running: false, corrections: {} };
+    const incoming = project.edges.filter(edge => edge.target === id && edge.targetPortId === 'result');
+    if (incoming.length !== 1 || incoming[0]!.sourcePortId !== 'result') return { assets: [], running: false, corrections: {} };
+    const source = project.nodes.find(node => node.id === incoming[0]!.source);
+    if (source?.type !== 'module' || source.data.moduleType !== 'image_generation') return { assets: [], running: false, corrections: {} };
+    const assets = [...new Set(readStringArray(source.data.config.resultAssetIds))].slice(0, 9)
+      .filter(assetId => project.assets?.some(asset => asset.assetId === assetId && asset.mediaType.startsWith('image/')))
+      .map(assetId => projectImages.find(asset => asset.assetId === assetId && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)))
+      .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined);
+    const running = projectModelJobs.some(job => job.promptNodeId === source.id && ['queued', 'submitting', 'running'].includes(job.status));
+    return { assets, running, corrections: normalizeImageColorCorrections(source.data.config.imageColorCorrections, source.data.config.colorCorrection, source.data.config.resultAssetIds) };
+  }, [data.moduleType, id, project.assets, project.edges, project.nodes, projectImages, projectModelJobs]);
   const connectedVideoMedia = data.moduleType === 'video_generation'
     ? resolveConnectedGenerationMedia(project, id, 'media')
     : [];
@@ -776,6 +833,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
       data-port-label-mode={isProfessionalWorkbench ? 'interactive' : 'always'}
       data-render-detail="full"
       data-generation-ui={data.moduleType === 'image_generation' || data.moduleType === 'video_generation' ? 'true' : undefined}
+      data-preview-sizing={generationPreviewDimensions ? 'media' : undefined}
       style={mediaNodeStyle}
     >
       {hasSelectedImage && selectedImage && (
@@ -840,6 +898,10 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
         />
       ) : data.moduleType === 'result_output' ? (
         <ResultOutputPreview
+          key={`output:${generationDraftIdentity}`}
+          assets={upstreamImageResult.assets}
+          running={upstreamImageResult.running}
+          corrections={upstreamImageResult.corrections}
           menuOpen={data.onResultOutputMenuChange ? data.resultOutputMenuOpen : undefined}
           onMenuOpenChange={data.onResultOutputMenuChange ? (open) => data.onResultOutputMenuChange?.(id, open) : undefined}
         />
@@ -847,6 +909,8 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
         <VideoResultPreview result={upstreamVideoResult} />
       ) : data.moduleType === 'reverse_result' ? (
         <ReverseResultPreview result={upstreamReverseResult} />
+      ) : data.moduleType === 'text_prompt' ? (
+        <TextPromptEditor key={`prompt:${generationDraftIdentity}`} id={id} projectId={project.id} prompt={typeof data.config.prompt === 'string' ? data.config.prompt : ''} />
       ) : data.moduleType === 'image_layer' ? (
         <ImageLayerNodeWorkbench
           sourceDocumentInput={data.config.pixelMode === 'source' ? sourceLayerInputFromNodes(
@@ -861,6 +925,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
           onQualityResult={(assetId, verdict) => persistImageLayerQuality(id, assetId, verdict)}
           onRefreshAsset={refreshProjectImages}
           onVisibilityChange={(visible) => persistImageLayerVisibility(id, visible)}
+          onReplaceAsset={(file) => useAppStore.getState().replaceImageLayerAsset(id, project.id, file)}
         />
       ) : data.moduleType === 'image_layering' ? (
         <ImageLayeringWorkbench
@@ -874,6 +939,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
           onApplySourceBounds={(bounds) => persistSourceLayerBounds(id, project.id, bounds)}
           onRefineLayer={(nodeId, regions) => useAppStore.getState().refineImageLayer(nodeId, project.id, regions)}
           onRecheckLayer={(nodeId, assetId) => recheckImageLayer(nodeId, project.id, assetId)}
+          onReviewLayers={(review) => useAppStore.getState().reviewImageLayeringGroup(id, project.id, review)}
           onRefreshJobs={useAppStore.getState().refreshModelJobs}
           onRetryJob={useAppStore.getState().retryModelJob}
           canRetryJob={(job) => job.provider !== undefined && job.modelRoute !== undefined && eligibleForLayeringRoute({ provider: job.provider, modelRoute: job.modelRoute, modelId: job.modelId, displayName: job.displayName ?? job.modelRoute, capabilities: ['image_generation', 'image_edit', 'async_tasks'] }, PRODUCTION_LAYERING_ROUTE_EVIDENCE)}
@@ -883,6 +949,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
           key={`image:${generationDraftIdentity}`}
           id={id}
           config={data.config}
+          connectedPrompt={visibleConnectedPrompt}
           modelJobs={projectModelJobs}
           projectImages={projectImages}
           projectVideos={projectVideos}
@@ -897,6 +964,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
           expanded={generationEditorExpanded}
           onRequestExpand={requestGenerationEditorOpen}
           onRequestCollapse={requestGenerationEditorClose}
+          onPreviewDimensionsChange={updateGenerationPreviewDimensions}
           onAnalyzeLayering={analyzeImageLayering}
           onCreateLayeringGroup={createConfirmedLayeringGroup}
           onStartLayering={startConfirmedLayering}
@@ -906,6 +974,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
           key={`video:${generationDraftIdentity}`}
           id={id}
           config={data.config}
+          connectedPrompt={visibleConnectedPrompt}
           modelJobs={projectModelJobs}
           projectImages={projectImages}
           projectVideos={projectVideos}
@@ -920,10 +989,11 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
           expanded={generationEditorExpanded}
           onRequestExpand={requestGenerationEditorOpen}
           onRequestCollapse={requestGenerationEditorClose}
+          onPreviewDimensionsChange={updateGenerationPreviewDimensions}
         />
       ) : data.moduleType === 'reverse_agent' ? (
         <ReverseAgentSummary
-          key={`reverse:${generationDraftIdentity}`}
+          key={`reverse:${generationDraftIdentity}:${canvasDraftResetKey}`}
           id={id}
           draftOwnerIdentity={generationDraftIdentity}
           label={definition.primaryName}
@@ -961,14 +1031,14 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
             <ModulePort
               key={`${port.direction}:${port.id}`}
               port={port}
-              aliasPort={visualAliasPort(definition, data.moduleType, port)}
+              aliasPorts={visualAliasPorts(definition, data.moduleType, port)}
               priority={portPriority(data.moduleType, port)}
               connected={isVisualPortConnected(definition, data.moduleType, port, isPortConnected)}
             />
           ))}
         </div>
         <div className="module-node__ports-column module-node__ports-column--outputs">
-          {visibleOutputs.map((port) => <ModulePort key={`${port.direction}:${port.id}`} port={port} aliasPort={visualAliasPort(definition, data.moduleType, port)} priority={portPriority(data.moduleType, port)} connected={isPortConnected(port)} />)}
+          {visibleOutputs.map((port) => <ModulePort key={`${port.direction}:${port.id}`} port={port} aliasPorts={visualAliasPorts(definition, data.moduleType, port)} priority={portPriority(data.moduleType, port)} connected={isVisualPortConnected(definition, data.moduleType, port, isPortConnected)} />)}
         </div>
       </div>
       <footer className="module-node__footer">
@@ -1114,6 +1184,7 @@ function StoryboardSheetSummary({
 function VideoGenerationSummary({
   id,
   config,
+  connectedPrompt,
   modelJobs,
   projectImages,
   projectVideos,
@@ -1128,9 +1199,11 @@ function VideoGenerationSummary({
   expanded,
   onRequestExpand,
   onRequestCollapse,
+  onPreviewDimensionsChange,
 }: {
   id: string;
   config: Record<string, unknown>;
+  connectedPrompt: ConnectedGenerationPrompt;
   modelJobs: readonly ModelJob[];
   projectImages: readonly ProjectImageAssetSummary[];
   projectVideos: readonly ProjectVideoAssetSummary[];
@@ -1155,6 +1228,7 @@ function VideoGenerationSummary({
   expanded: boolean;
   onRequestExpand: () => void;
   onRequestCollapse: () => void;
+  onPreviewDimensionsChange: (dimensions: GenerationPreviewDimensions | null) => void;
 }) {
   const activeProjectId = useAppStore((state) => state.project.id);
   const refreshProjectImages = useAppStore((state) => state.refreshProjectImages);
@@ -1164,7 +1238,8 @@ function VideoGenerationSummary({
     .map((item) => projectImages.find((asset) => asset.assetId === item.assetId))
     .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined), [connectedMedia, projectImages]);
   const mentionPreviews = useMemo(() => buildMediaMentionPreviews(connectedImages, projectVideos.filter((asset) => connectedMedia.some((item) => item.kind === 'video' && item.assetId === asset.assetId))), [connectedImages, connectedMedia, projectVideos]);
-  const [prompt, setPrompt] = useExternallyHydratedDraftState(readNonEmptyString(config.prompt) ?? '');
+  const [prompt, setPrompt] = useExternallyHydratedDraftState(connectedPrompt.status === 'disconnected'
+    ? readNonEmptyString(config.prompt) ?? '' : connectedPrompt.status === 'connected' ? connectedPrompt.prompt : '');
   const promptSelectionRef = useRef<MediaMentionSelection | null>(null);
   const promptEditorRef = useRef<MediaMentionTextareaHandle>(null);
   const [runError, setRunError] = useState<string | null>(null);
@@ -1275,6 +1350,8 @@ function VideoGenerationSummary({
       videoUrl: asset.displayUrl,
     })), [id, modelJobs, projectVideos]);
   const configuredVideoResults = useMemo(() => readVideoGenerationResults(config), [config]);
+  const previewVideoResults = useMemo(() => configuredVideoResults.length > 0 ? configuredVideoResults
+    : retainedVideoPreviews(useAppStore.getState().project, config, projectImages), [activeProjectId, configuredVideoResults, config, projectImages]);
   const expectedVideoResultAssetIds = useMemo(
     () => configuredVideoResults.map((item) => item.assetId),
     [configuredVideoResults],
@@ -1313,7 +1390,7 @@ function VideoGenerationSummary({
   const videoResultRefreshFailed = videoResultRefreshKey.length > 0
     && exhaustedVideoResultRefreshKey === videoResultRefreshKey;
   const retryVideoResultRefresh = () => setVideoResultRefreshRetryVersion((current) => current + 1);
-  const durableVideoResults = useMemo(() => configuredVideoResults.map((item) => {
+  const durableVideoResults = useMemo(() => previewVideoResults.map((item) => {
     const asset = projectVideos.find((candidate) => candidate.assetId === item.assetId);
     return asset === undefined
       ? item
@@ -1323,7 +1400,7 @@ function VideoGenerationSummary({
         mediaType: asset.mediaType,
         videoUrl: asset.displayUrl,
       };
-  }), [configuredVideoResults, projectVideos]);
+  }), [previewVideoResults, projectVideos]);
   const completedVideoResults = liveVideoResults.length > 0 ? liveVideoResults : durableVideoResults;
   const resolveVideoResultPoster = (item: (typeof completedVideoResults)[number]) => {
     if ('posterUrl' in item && isRenderableManagedImageUrl(item.posterUrl)) return item.posterUrl;
@@ -1337,6 +1414,21 @@ function VideoGenerationSummary({
     resolveVideoResultUrl(item) !== undefined || resolveVideoResultPoster(item) !== undefined
   ));
   const hasCompletedResult = visibleVideoResults.length > 0;
+  const activeVideoJob = activeJobId === undefined ? undefined : modelJobs.find(job => job.id === activeJobId);
+  const activeVideoReference = useMemo(() => (activeVideoJob?.referenceAssetIds ?? [])
+    .map(assetId => projectImages.find(asset => asset.assetId === assetId))
+    .find(asset => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [activeVideoJob, projectImages]);
+  const singleVideoResult = visibleVideoResults.length === 1 ? visibleVideoResults[0] : undefined;
+  const videoPreviewAsset = singleVideoResult ? readGenerationPreviewDimensions(projectVideos.find(asset => asset.assetId === singleVideoResult.assetId))
+    ?? readGenerationPreviewDimensions(projectImages.find(asset => asset.displayUrl === resolveVideoResultPoster(singleVideoResult)))
+    : hasCompletedResult ? null : readGenerationPreviewDimensions(activeVideoReference);
+  const videoPreviewWidth = videoPreviewAsset?.width;
+  const videoPreviewHeight = videoPreviewAsset?.height;
+  const videoPreviewIdentity = singleVideoResult ? `${singleVideoResult.assetId}:${resolveVideoResultPoster(singleVideoResult) ?? ''}`
+    : hasCompletedResult ? undefined : activeVideoReference?.displayUrl;
+  useEffect(() => {
+    onPreviewDimensionsChange(videoPreviewWidth && videoPreviewHeight ? { width: videoPreviewWidth, height: videoPreviewHeight } : null);
+  }, [onPreviewDimensionsChange, videoPreviewWidth, videoPreviewHeight, videoPreviewIdentity]);
   const videoTimingJob = selectGenerationTimingJob(modelJobs, id, 'video', durableVideoResults.length > 0, videoDraftIdentity);
   const videoGenerationError = runError ?? failedVideoJobError;
   const result = videoResultRefreshFailed
@@ -1347,7 +1439,7 @@ function VideoGenerationSummary({
         ? '视频结果已就绪'
         : '等待生成';
   return (
-    <section className="module-node__summary module-node__summary--compact module-node__summary--generation" data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedResult ? 'true' : 'false'} data-result-count={hasCompletedResult ? Math.min(visibleVideoResults.length, 4) : undefined} data-result-orientation={hasCompletedResult ? 'landscape' : undefined} aria-label="视频模拟预览">
+    <section className={`module-node__summary module-node__summary--compact module-node__summary--generation${activeJobId !== undefined ? ' is-generating' : ''}`} data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedResult ? 'true' : 'false'} data-result-count={hasCompletedResult ? Math.min(visibleVideoResults.length, 4) : undefined} data-result-orientation={hasCompletedResult ? 'landscape' : undefined} aria-label="视频模拟预览">
       <TaskTimingBadge ariaLabel="Video generation task timing" job={videoTimingJob} />
       {!expanded && <section className="module-node__generation-collapsed-shell nopan" aria-label="Video generation preview">
         <button type="button" className="module-node__generation-collapsed-preview module-node__generation-collapsed-open nopan" aria-label="Open video generation editor" aria-expanded={expanded} title="点击展开" {...collapsedActivation}>
@@ -1372,6 +1464,7 @@ function VideoGenerationSummary({
         </div>}
         {!expanded && !hasCompletedResult && hasConnectedMedia && <ConnectedMediaSlots
           ariaLabel="Connected video media"
+          preserveMediaAspect
           slotRowAriaLabel="Video preview reference slots"
           media={connectedMedia}
           projectImages={projectImages}
@@ -1398,6 +1491,7 @@ function VideoGenerationSummary({
           </div>}
           {expanded && <ConnectedMediaSlots
             ariaLabel="Connected video media editor"
+            preserveMediaAspect
             slotRowAriaLabel="Video editor reference slots"
             media={connectedMedia}
             projectImages={projectImages}
@@ -1420,6 +1514,7 @@ function VideoGenerationSummary({
               className="module-node__prompt-editor"
               data-mention-context="video"
               aria-label="Video preview prompt"
+              readOnly={connectedPrompt.status !== 'disconnected'}
               rows={5}
               value={prompt}
               mentions={mentionPreviews}
@@ -1440,7 +1535,9 @@ function VideoGenerationSummary({
                 if (event.key === 'Escape') mentionPicker.dismiss(prompt);
               }}
             />
-            {mentionPicker.open && <PromptImageMentionMenu images={connectedImages} prompt={prompt} selection={promptSelectionRef.current} onSelect={(asset, position) => {
+            {connectedPrompt.status === 'connected' && <small>从提示词节点编辑</small>}
+            {connectedPrompt.status === 'invalid' && <small role="alert">提示词连接无效，请检查来源节点。</small>}
+            {connectedPrompt.status === 'disconnected' && mentionPicker.open && <PromptImageMentionMenu images={connectedImages} prompt={prompt} selection={promptSelectionRef.current} onSelect={(asset, position) => {
               const token = imageMentionTokenAt(position);
               const edit = createImageMentionEdit(prompt, token, connectedImages, promptSelectionRef.current);
               mentionPicker.dismiss(edit.value);
@@ -1545,14 +1642,17 @@ function VideoGenerationSummary({
             {visibleVideoResults.map((item, index) => (
               <div key={item.assetId} className="module-node__generation-preview-item module-node__video-result-stage" aria-label={`Completed video result ${index + 1}`} data-aspect-ratio="16:9" onClick={(event) => { const media = event.currentTarget.querySelector('video'); if (media instanceof HTMLVideoElement) { if (media.paused) void media.play(); else media.pause(); } }}>
                   {resolveVideoResultUrl(item)
-                    ? <video src={resolveVideoResultUrl(item)} poster={resolveVideoResultPoster(item)} aria-label={`Completed video result ${index + 1} video`} controls playsInline preload="metadata" onClick={(event) => { event.stopPropagation(); const media = event.currentTarget; if (media.paused) void media.play(); else media.pause(); }} />
+                    ? <video src={resolveVideoResultUrl(item)} poster={resolveVideoResultPoster(item)} aria-label={`Completed video result ${index + 1} video`} controls playsInline preload="metadata" onLoadedMetadata={event => { if (visibleVideoResults.length === 1) onPreviewDimensionsChange({ width: event.currentTarget.videoWidth, height: event.currentTarget.videoHeight }); }} onClick={(event) => { event.stopPropagation(); const media = event.currentTarget; if (media.paused) void media.play(); else media.pause(); }} />
                   : resolveVideoResultPoster(item)
-                    ? <img src={resolveVideoResultPoster(item)} alt={`Completed video result ${index + 1}`} draggable={false} loading="lazy" decoding="async" />
+                    ? <img src={resolveVideoResultPoster(item)} alt={`Completed video result ${index + 1}`} draggable={false} loading="lazy" decoding="async" onLoad={event => { if (visibleVideoResults.length === 1) onPreviewDimensionsChange({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }); }} />
                     : <Video aria-hidden="true" size={24} strokeWidth={1.5} />}
               </div>
             ))}
           </div>
-        </div> : <div className="module-node__generation-empty-stage module-node__video-empty-stage" aria-label="视频生成预览占位"><Video size={28} strokeWidth={1.5} aria-hidden="true" /><strong>视频生成</strong><span>生成的视频将在这里显示</span></div>}
+          {activeJobId !== undefined && <GenerationRunningState kind="video" status={activeVideoJob?.status} hasPreviousResult />}
+        </div> : <div className="module-node__generation-empty-stage module-node__video-empty-stage" aria-label="视频生成预览占位" data-generation-state={activeJobId !== undefined ? 'running' : 'idle'}>
+          {activeJobId !== undefined ? <GenerationRunningState kind="video" status={activeVideoJob?.status} referenceUrl={activeVideoReference?.displayUrl} onReferenceDimensions={onPreviewDimensionsChange} /> : <><Video size={28} strokeWidth={1.5} aria-hidden="true" /><strong>视频预览</strong><span>生成的视频将在这里显示</span></>}
+        </div>}
       />}
     </section>
   );
@@ -1561,6 +1661,7 @@ function VideoGenerationSummary({
 function ImageGenerationSummary({
   id,
   config,
+  connectedPrompt,
   modelJobs,
   projectImages,
   projectVideos,
@@ -1575,12 +1676,14 @@ function ImageGenerationSummary({
   expanded,
   onRequestExpand,
   onRequestCollapse,
+  onPreviewDimensionsChange,
   onAnalyzeLayering,
   onCreateLayeringGroup,
   onStartLayering,
 }: {
   id: string;
   config: Record<string, unknown>;
+  connectedPrompt: ConnectedGenerationPrompt;
   modelJobs: readonly ModelJob[];
   projectImages: readonly ProjectImageAssetSummary[];
   projectVideos: readonly ProjectVideoAssetSummary[];
@@ -1595,6 +1698,7 @@ function ImageGenerationSummary({
   expanded: boolean;
   onRequestExpand: () => void;
   onRequestCollapse: () => void;
+  onPreviewDimensionsChange: (dimensions: GenerationPreviewDimensions | null) => void;
   onAnalyzeLayering: (input: { readonly sourceAssetId: string; readonly provider: ProviderBridgeProfile['provider']; readonly modelRoute: string; readonly width: number; readonly height: number }) => Promise<LayeringPlan>;
   onCreateLayeringGroup: (input: { readonly plan: LayeringPlan; readonly confirmation: LayeringConfirmation; readonly groupId: string }) => Promise<boolean>;
   onStartLayering: (input: { readonly plan: LayeringPlan; readonly confirmation: LayeringConfirmation; readonly groupId: string }) => Promise<boolean>;
@@ -1605,7 +1709,8 @@ function ImageGenerationSummary({
     .map((item) => projectImages.find((asset) => asset.assetId === item.assetId))
     .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined), [connectedMedia, projectImages]);
   const mentionPreviews = useMemo(() => buildMediaMentionPreviews(connectedImages, projectVideos.filter((asset) => connectedMedia.some((item) => item.kind === 'video' && item.assetId === asset.assetId))), [connectedImages, connectedMedia, projectVideos]);
-  const [prompt, setPrompt] = useExternallyHydratedDraftState(readNonEmptyString(config.prompt) ?? '');
+  const [prompt, setPrompt] = useExternallyHydratedDraftState(connectedPrompt.status === 'disconnected'
+    ? readNonEmptyString(config.prompt) ?? '' : connectedPrompt.status === 'connected' ? connectedPrompt.prompt : '');
   const promptSelectionRef = useRef<MediaMentionSelection | null>(null);
   const promptEditorRef = useRef<MediaMentionTextareaHandle>(null);
   const [runError, setRunError] = useState<string | null>(null);
@@ -1654,7 +1759,10 @@ function ImageGenerationSummary({
   const [imageOutputFormat, setImageOutputFormat] = useExternallyHydratedDraftState<ImageOutputFormat>(config.imageOutputFormat === 'jpeg' || config.imageOutputFormat === 'webp' ? config.imageOutputFormat : 'png');
   const [imageBackground, setImageBackground] = useExternallyHydratedDraftState<ImageBackground>(config.imageBackground === 'opaque' || config.imageBackground === 'transparent' ? config.imageBackground : 'auto');
   const [outputCount, setOutputCount] = useExternallyHydratedDraftState(config.outputCount === 9 ? 9 : readSupportedImageCount(config.outputCount));
-  const configuredColorCorrections = useMemo(() => normalizeImageColorCorrections(config.imageColorCorrections, config.colorCorrection, config.resultAssetIds), [config.imageColorCorrections, config.colorCorrection, config.resultAssetIds]);
+  const configuredColorCorrections = useMemo(() => normalizeImageColorCorrections(config.imageColorCorrections,
+    config.colorCorrection, Array.isArray(config.resultAssetIds) && config.resultAssetIds.length > 0
+      ? config.resultAssetIds : retainedImagePreviewIds(useAppStore.getState().project, config)),
+  [activeProjectId, config.imageColorCorrections, config.colorCorrection, config.resultAssetIds, config.previousResultAssetIds]);
   const [imageColorCorrections, setImageColorCorrections] = useExternallyHydratedDraftState(configuredColorCorrections);
   const [selectedColorAssetId, setSelectedColorAssetId] = useState<string | null>(null);
   const correctionFor = (assetId: string) => imageColorCorrections[assetId] ?? ORIGINAL_IMAGE_COLOR_CORRECTION;
@@ -1815,10 +1923,12 @@ function ImageGenerationSummary({
   const generatedPreviewAssets = useMemo(() => completedImageJobs
     .map((job) => projectImages.find((asset) => asset.assetId === job.resultAssetId))
     .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [completedImageJobs, projectImages]);
-  const durablePreviewAssets = useMemo(() => persistedResultAssetIds
+  const preservedImagePreviewIds = useMemo(() => persistedResultAssetIds.length > 0 ? persistedResultAssetIds
+    : retainedImagePreviewIds(useAppStore.getState().project, config), [activeProjectId, persistedResultAssetIds, config]);
+  const durablePreviewAssets = useMemo(() => preservedImagePreviewIds
     .slice(0, 9)
     .map((assetId) => projectImages.find((asset) => asset.assetId === assetId))
-    .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [persistedResultAssetIds, projectImages]);
+    .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [preservedImagePreviewIds, projectImages]);
   const previewItems = durablePreviewAssets.length > 0 ? durablePreviewAssets : generatedPreviewAssets;
   const selectedColorAsset = previewItems.find((asset) => asset.assetId === selectedColorAssetId) ?? previewItems[0];
   const colorCorrection = selectedColorAsset ? correctionFor(selectedColorAsset.assetId) : ORIGINAL_IMAGE_COLOR_CORRECTION;
@@ -1838,6 +1948,10 @@ function ImageGenerationSummary({
       : (previewItems[0]?.width ?? 1) > (previewItems[0]?.height ?? 1) * 1.08
         ? 'landscape'
         : 'square';
+  const activeImageJob = activeJobId === undefined ? undefined : modelJobs.find(job => job.id === activeJobId);
+  const activeImageReference = useMemo(() => (activeImageJob?.referenceAssetIds ?? [])
+    .map(assetId => projectImages.find(asset => asset.assetId === assetId))
+    .find(asset => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [activeImageJob, projectImages]);
   const imageTimingJob = selectGenerationTimingJob(modelJobs, id, 'image', durablePreviewAssets.length > 0, imageDraftIdentity);
   const activePreviewAsset = previewIndex === null ? undefined : previewItems[previewIndex];
   const actionPreviewAsset = previewActionMenu === null ? undefined : previewItems[previewActionMenu.index];
@@ -1891,6 +2005,13 @@ function ImageGenerationSummary({
   };
   const imageGenerationError = runError ?? failedJobError;
   const colorCorrectionFilterId = `image-color-correction-${id.replace(/[^a-z0-9_-]/giu, '-')}`;
+  const imagePreviewAsset = previewItems.length === 1 ? previewItems[0] : hasCompletedImageResult ? undefined : activeImageReference;
+  const imagePreviewWidth = imagePreviewAsset?.width;
+  const imagePreviewHeight = imagePreviewAsset?.height;
+  const imagePreviewIdentity = imagePreviewAsset?.displayUrl;
+  useEffect(() => {
+    onPreviewDimensionsChange(readGenerationPreviewDimensions({ width: imagePreviewWidth, height: imagePreviewHeight }));
+  }, [imagePreviewWidth, imagePreviewHeight, imagePreviewIdentity, onPreviewDimensionsChange]);
   useEffect(() => {
     if (!expanded || colorCorrection.mode === 'original') setShowOriginalForComparison(false);
   }, [colorCorrection.mode, expanded]);
@@ -1976,7 +2097,7 @@ function ImageGenerationSummary({
                     }
                   }}
                 >
-                    <ImageColorCorrectionImage src={asset.displayUrl} alt={`Generated image ${index + 1}`} draggable={false} loading="lazy" decoding="async" correction={correctionFor(asset.assetId)} filterId={`${colorCorrectionFilterId}-${index}`} />
+                    <ImageColorCorrectionImage src={asset.displayUrl} alt={`Generated image ${index + 1}`} draggable={false} loading="lazy" decoding="async" correction={correctionFor(asset.assetId)} filterId={`${colorCorrectionFilterId}-${index}`} onLoad={event => { if (previewItems.length === 1) onPreviewDimensionsChange({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }); }} />
                   <span aria-hidden="true">{index + 1}</span>
                 </DragSafeButton>
               {showOriginalForComparison && selectedColorAsset?.assetId === asset.assetId && <>
@@ -1998,11 +2119,11 @@ function ImageGenerationSummary({
                 请求 {requestedResultResolution} · 实际 {undersizedResult.width}×{undersizedResult.height}，供应商返回尺寸低于所选清晰度。
               </p>
             ) : null}
+            {activeJobId !== undefined && <GenerationRunningState kind="image" status={activeImageJob?.status} hasPreviousResult />}
           </section>}
           {!(hasCompletedImageResult && previewItems.length > 0) && <section className="module-node__generation-editor-preview module-node__generation-editor-preview--empty" aria-label="Image generation preview">
             <div className="module-node__generation-empty-stage" data-generation-state={activeJobId !== undefined ? 'running' : 'idle'}>
-              <span aria-hidden="true">{activeJobId !== undefined ? <LoaderCircle size={28} strokeWidth={1.8} /> : <ImageIcon size={28} strokeWidth={1.6} />}</span>
-              <strong>{activeJobId !== undefined ? '正在生成' : '图片生成 V2'}</strong>
+              {activeJobId !== undefined ? <GenerationRunningState kind="image" status={activeImageJob?.status} referenceUrl={activeImageReference?.displayUrl} onReferenceDimensions={onPreviewDimensionsChange} /> : <><span aria-hidden="true"><ImageIcon size={28} strokeWidth={1.6} /></span><strong>图片预览</strong></>}
             </div>
           </section>}
           {resultRecoveryFailed && <div className="module-node__generation-error nodrag nopan" role="alert" onPointerDown={stopCanvasPointer}>
@@ -2011,6 +2132,7 @@ function ImageGenerationSummary({
           </div>}
           <ConnectedMediaSlots
             ariaLabel="Image generation reference slots"
+            preserveMediaAspect
             media={connectedMedia}
             projectImages={projectImages}
             projectVideos={projectVideos}
@@ -2029,6 +2151,7 @@ function ImageGenerationSummary({
               className="module-node__prompt-editor"
               data-mention-context="image"
               aria-label="Image generation prompt"
+              readOnly={connectedPrompt.status !== 'disconnected'}
               rows={5}
               value={prompt}
               mentions={mentionPreviews}
@@ -2049,7 +2172,9 @@ function ImageGenerationSummary({
                 if (event.key === 'Escape') mentionPicker.dismiss(prompt);
               }}
             />
-            {mentionPicker.open && (
+            {connectedPrompt.status === 'connected' && <small>从提示词节点编辑</small>}
+            {connectedPrompt.status === 'invalid' && <small role="alert">提示词连接无效，请检查来源节点。</small>}
+            {connectedPrompt.status === 'disconnected' && mentionPicker.open && (
               <PromptImageMentionMenu
                 images={connectedImages}
                 prompt={prompt}
@@ -2064,7 +2189,7 @@ function ImageGenerationSummary({
               />
             )}
             <div className="module-node__prompt-suggestions" aria-label="Image prompt suggestions">
-              {['产品角度固定', '多机位广告格', '剧情推进四宫格', '角色脸部三视图'].map((suggestion) => <button key={suggestion} type="button" onClick={() => appendPromptSuggestion(suggestion)}>{suggestion}</button>)}
+              {['产品角度固定', '多机位广告格', '剧情推进四宫格', '角色脸部三视图'].map((suggestion) => <button key={suggestion} type="button" disabled={connectedPrompt.status !== 'disconnected'} onClick={() => appendPromptSuggestion(suggestion)}>{suggestion}</button>)}
             </div>
           </section>
           {compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="note">该账号没有此类模型，请先在设置中切换供应商。</p>}
@@ -2665,6 +2790,7 @@ function ReverseAgentSummary({
   }, [connectedImages]);
   const mentionPreviews = useMemo(() => buildMediaMentionPreviews(connectedImages, projectVideos.filter((asset) => connectedMedia.some((item) => item.kind === 'video' && item.assetId === asset.assetId))), [connectedImages, connectedMedia, projectVideos]);
   const [modelRoute, setModelRoute] = useState(readNonEmptyString(config.modelRoute) ?? '');
+  const reverseRouteEdited = useRef(false);
   const initialRole = readNonEmptyString(config.role) ?? '';
   const initialTask = readNonEmptyString(config.task) ?? '';
   const [role, setRole] = useState(initialRole);
@@ -2697,8 +2823,11 @@ function ReverseAgentSummary({
   const selected = useMemo(() => selectedIds.filter((id) => readyBases.some((base) => base.knowledgeBaseId === id)), [readyBases, selectedIds]);
   const compatibleRoutes = useMemo(() => dedupeVisibleModelRoutes(routes.filter(isReverseAgentRoute)), [routes]);
   useEffect(() => {
-    const nextModelRoute = readNonEmptyString(config.modelRoute) ?? '';
-    setModelRoute((current) => current === nextModelRoute ? current : nextModelRoute);
+    const externalRoute = readNonEmptyString(config.modelRoute) ?? '';
+    setModelRoute((current) => {
+      if (current === externalRoute) reverseRouteEdited.current = false;
+      return reverseRouteEdited.current ? current : externalRoute;
+    });
   }, [config.modelRoute]);
   useEffect(() => {
     const nextKnowledgeBaseIds = readStringArray(config.knowledgeBaseIds);
@@ -2880,7 +3009,11 @@ function ReverseAgentSummary({
               <div className="module-node__agent-route">
                 <span>语言模型</span>
                 <label>
-                  <select className="nodrag nopan" aria-label="Agent model route" value={routeAvailable ? modelRoute : ''} onPointerDown={stopCanvasPointer} onChange={(event) => setModelRoute(event.target.value)}>
+                  <select className="nodrag nopan" aria-label="Agent model route" value={routeAvailable ? modelRoute : ''} onPointerDown={stopCanvasPointer} onChange={(event) => {
+                    const nextRoute = event.target.value;
+                    reverseRouteEdited.current = nextRoute !== (readNonEmptyString(config.modelRoute) ?? '');
+                    setModelRoute(nextRoute);
+                  }}>
                     <option value="" disabled>选择兼容模型</option>
                     {compatibleRoutes.map((route) => <option key={route.modelRoute} value={route.modelRoute}>{reverseModelRouteOptionLabel(route)}</option>)}
                   </select>
@@ -2909,7 +3042,7 @@ function ReverseAgentSummary({
             />
           </section> : <section className="module-node__agent-media-empty-hint nodrag nopan" aria-label="Reverse media workspace" data-agent-region="media-empty" onPointerDown={stopCanvasPointer}>
             <p className="module-node__agent-media-label" aria-label="Reverse media input">素材输入 · 0 / {MAX_GENERATION_REFERENCES}</p>
-            <span>未连接素材 · 0 / {MAX_GENERATION_REFERENCES}</span>
+            <span>未连接素材</span>
           </section>}
           </section>
           {mediaError && <p className="module-node__agent-media-error" role="status">{mediaError} 已连接的有效素材仍可查看，请调整连线后再反推。</p>}
@@ -3004,7 +3137,7 @@ function ReverseAgentSummary({
           </section>
         </div>}
         result={<div className="module-node__agent-result-panel" data-agent-region="result">
-          <header><span>反推结果 / Reverse result</span><ResultFreshness value={config.resultState} /></header>
+          <header><span>反推结果</span><ResultFreshness value={config.resultState} /></header>
           {isRunning && <p role="status">正在反推，请稍候…</p>}
           {runError !== null && <p role="alert">{runError}</p>}
           {result !== null ? <div className="module-node__agent-result-scroll">
@@ -3172,6 +3305,7 @@ function ConnectedMediaSlots({
   slotRowAriaLabel,
   onAddReference,
   onReorder,
+  preserveMediaAspect = false,
 }: {
   ariaLabel: string;
   media: readonly OrderedMediaSummary[];
@@ -3184,6 +3318,7 @@ function ConnectedMediaSlots({
   slotRowAriaLabel?: string;
   onAddReference?: () => void;
   onReorder?: (media: ConnectedAgentMediaSlotItem[]) => void | boolean | Promise<void | boolean>;
+  preserveMediaAspect?: boolean;
 }) {
   if (media.length === 0 && !showPending) return null;
   const items: ConnectedAgentMediaSlotItem[] = media.slice(0, MAX_GENERATION_REFERENCES).map((item) => {
@@ -3197,6 +3332,8 @@ function ConnectedMediaSlots({
       previewUrl: image && isRenderableManagedImageUrl(image.displayUrl, image.assetId)
         ? image.displayUrl
         : video?.displayUrl,
+      width: image?.width ?? video?.width ?? undefined,
+      height: image?.height ?? video?.height ?? undefined,
     };
   });
 
@@ -3204,6 +3341,7 @@ function ConnectedMediaSlots({
     ariaLabel={ariaLabel}
     media={items}
     title={title}
+    preserveMediaAspect={preserveMediaAspect}
     slotRowAriaLabel={slotRowAriaLabel}
     emptySlotKind={items.length === 0 && showPending ? pendingKind : undefined}
     emptySlotAriaLabel={emptySlotAriaLabel}
@@ -3829,9 +3967,15 @@ function clearBrowserSelection(): void {
 }
 
 function ResultOutputPreview({
+  assets,
+  running,
+  corrections,
   menuOpen: controlledMenuOpen,
   onMenuOpenChange,
 }: {
+  assets: readonly ProjectImageAssetSummary[];
+  running: boolean;
+  corrections: Record<string, ImageColorCorrection>;
   menuOpen?: boolean;
   onMenuOpenChange?: (open: boolean) => void;
 }) {
@@ -3854,6 +3998,8 @@ function ResultOutputPreview({
     }
   };
 
+  if (assets.length > 0) return <ConnectedImageOutputPreview assets={assets} running={running} corrections={corrections} menuOpen={controlledMenuOpen} onMenuOpenChange={onMenuOpenChange} />;
+
   return (
     <section
       className="module-node__output-preview nodrag nopan"
@@ -3870,7 +4016,7 @@ function ResultOutputPreview({
     >
       <header className="module-node__output-heading">
         <strong>生成结果</strong>
-        <span>IMAGE OUTPUT · 已完成</span>
+        <span>{running ? '正在生成' : '等待结果'}</span>
       </header>
       <strong>生成图片预览</strong>
       <span>右键查看更多操作</span>
@@ -3888,13 +4034,15 @@ function ResultOutputPreview({
   );
 }
 
-function VideoResultPreview({ result }: { result: { posterUrl: string | null; videoUrl?: string; durationMs?: number } | null }) {
+function VideoResultPreview({ result }: { result: { posterUrl: string | null; videoUrl?: string; durationMs?: number; resolution?: string } | null }) {
   if (result !== null) {
+    const seconds = result.durationMs === undefined ? undefined : Math.round(result.durationMs / 1000);
+    const duration = seconds === undefined ? '时长未知' : `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
     return (
       <section className="module-node__output-preview module-node__video-output-preview module-node__video-output-preview--connected nodrag nopan" aria-label="Generated video playback" onPointerDown={stopCanvasPointer}>
         <header className="module-node__video-output-heading">
           <strong>生成结果</strong>
-          <span>已完成</span>
+          <span>{result.videoUrl === undefined ? '视频尚未加载' : '已完成'}</span>
         </header>
         <div className="module-node__video-output-stage">
           {result.videoUrl
@@ -3903,7 +4051,7 @@ function VideoResultPreview({ result }: { result: { posterUrl: string | null; vi
              ? <img src={result.posterUrl} alt="Video result poster" draggable={false} loading="lazy" decoding="async" />
             : <Video aria-hidden="true" size={28} strokeWidth={1.5} />}
         </div>
-        <div className="module-node__video-output-status"><span>00:00 / 00:05 · 1080p</span><i aria-hidden="true" /></div>
+        <div className="module-node__video-output-status"><span>{duration} · {result.resolution ?? '分辨率未知'}</span><i aria-hidden="true" /></div>
       </section>
     );
   }
@@ -4023,6 +4171,20 @@ function resolveConnectedGenerationMedia(
         return;
       }
       if (source?.type !== 'module') return;
+      if (edge.sourcePortId === 'image' && ['image_generation', 'result_output'].includes(source.data.moduleType)) {
+        let config = source.data.config;
+        if (source.data.moduleType === 'result_output') {
+          const incoming = project.edges.filter(candidate => candidate.target === source.id && candidate.targetPortId === 'result');
+          if (incoming.length !== 1 || incoming[0]!.sourcePortId !== 'result') return;
+          const producer = project.nodes.find(candidate => candidate.id === incoming[0]!.source);
+          if (producer?.type !== 'module' || producer.data.moduleType !== 'image_generation') return;
+          config = producer.data.config;
+        }
+        readStringArray(config.resultAssetIds).forEach(assetId => {
+          if (project.assets?.some(asset => asset.assetId === assetId && asset.mediaType.startsWith('image/'))) append('image', assetId, edge.id);
+        });
+        return;
+      }
       const assetId = typeof source.data.config.assetId === 'string' ? source.data.config.assetId : undefined;
       if (source.data.moduleType === 'video_input' && edge.sourcePortId === 'video' && assetId !== undefined) {
         append('video', assetId, edge.id);
@@ -4248,10 +4410,15 @@ function ProjectImageControl({
   onSelect: (assetId: string) => void;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [projectPickerReady, setProjectPickerReady] = useState(false);
   const asset = assets.find((candidate) => candidate.assetId === assetId);
-  const projectImageOptions = useMemo(() => moduleType === 'image_input'
-    ? assets.map((candidate) => <option key={candidate.assetId} value={candidate.assetId}>{candidate.label}</option>)
-    : null, [assets, moduleType]);
+  const projectImageOptions = useMemo(() => {
+    if (moduleType !== 'image_input') return null;
+    // Native choices are hidden until the picker opens. Keep its current
+    // value mounted, then populate all choices before pointer/keyboard use.
+    const choices = projectPickerReady ? assets : assets.filter((candidate) => candidate.assetId === assetId);
+    return choices.map((candidate) => <option key={candidate.assetId} value={candidate.assetId}>{candidate.label}</option>);
+  }, [assetId, assets, moduleType, projectPickerReady]);
   const previewUrl = isRenderableManagedImageUrl(asset?.displayUrl, asset?.assetId)
     || isBrowserPreviewUrl(asset?.displayUrl)
     ? asset?.displayUrl ?? null
@@ -4311,6 +4478,15 @@ function ProjectImageControl({
           >
             <ImageUp size={14} />
           </button>
+          {moduleType === 'image_input' && assets.length > 0 && (
+            <span className="module-node__media-picker module-node__media-picker--frame nodrag nopan" title="选择项目图像 / Choose project image">
+              <Images size={13} aria-hidden="true" />
+              <select aria-label="选择项目图像 / Choose project image" value={assetId ?? ''} onFocus={() => setProjectPickerReady(true)} onPointerDown={() => setProjectPickerReady(true)} onChange={(event) => onSelect(event.target.value)}>
+                <option value="" disabled>项目素材库 / Project library</option>
+                {projectImageOptions}
+              </select>
+            </span>
+          )}
         </div>
       ) : (
         <DragSafeButton
@@ -4331,15 +4507,6 @@ function ProjectImageControl({
           <strong title={asset.label}>{asset.label}</strong>
           <span className="module-node__media-tools">
             <small>{formatAssetDimensions(asset)}</small>
-            {moduleType === 'image_input' && assets.length > 0 && (
-              <span className="module-node__media-picker nodrag nopan" title="选择项目图像 / Choose project image">
-                <Images size={13} aria-hidden="true" />
-                <select aria-label="选择项目图像 / Choose project image" value={assetId ?? ''} onChange={(event) => onSelect(event.target.value)}>
-                  <option value="" disabled>项目素材库 / Project library</option>
-                  {projectImageOptions}
-                </select>
-              </span>
-            )}
           </span>
         </div>
       )}

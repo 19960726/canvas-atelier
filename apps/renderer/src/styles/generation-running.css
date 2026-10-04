@@ -1,0 +1,307 @@
+/* Running presentation follows the actual media frame, without decorative image copies. */
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true']:is([data-module-type='image_generation'], [data-module-type='video_generation']):has(.module-node__summary--generation[data-editor-expanded='true']) {
+  & .module-node__generation-empty-stage:has(> .module-node__running-state) {
+    position: relative !important;
+    display: grid !important;
+    place-items: center !important;
+    border: 1px solid var(--gate-border) !important;
+    overflow: hidden !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    min-height: 0 !important;
+    aspect-ratio: auto !important;
+    background: var(--gate-preview-surface) !important;
+    box-shadow: none !important;
+  }
+
+  & .module-node__running-state {
+    position: absolute !important;
+    inset: 0 !important;
+    display: grid !important;
+    place-items: center !important;
+    align-content: center !important;
+    box-sizing: border-box !important;
+    width: 100% !important;
+    height: 100% !important;
+    padding: 0 !important;
+    color: var(--gate-text) !important;
+    text-align: center !important;
+    pointer-events: none !important;
+  }
+
+  & .module-node__running-state--empty {
+    background: radial-gradient(ellipse at center, color-mix(in srgb, var(--gate-accent) 8%, transparent), transparent 70%),
+      linear-gradient(color-mix(in srgb, var(--gate-border) 15%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in srgb, var(--gate-border) 15%, transparent) 1px, transparent 1px) !important;
+    background-size: auto, 32px 32px, 32px 32px !important;
+  }
+
+  & .module-node__running-state--reference {
+    background: var(--gate-preview-surface) !important;
+  }
+
+  & .module-node__running-reference {
+    position: absolute !important;
+    inset: 0 !important;
+    z-index: 0 !important;
+    display: block !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    object-fit: contain !important;
+    opacity: 0.65 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  & .module-node__running-reference-label {
+    position: absolute !important;
+    top: 12px !important;
+    left: 12px !important;
+    z-index: 1 !important;
+    display: block !important;
+    width: auto !important;
+    height: auto !important;
+    padding: 4px 8px !important;
+    color: var(--gate-muted) !important;
+    background: color-mix(in srgb, var(--gate-card) 94%, transparent) !important;
+    border: 1px solid var(--gate-border) !important;
+    border-radius: 6px !important;
+    font-size: 10px !important;
+    line-height: 16px !important;
+  }
+
+  & .module-node__unified-media-slots[data-thumbnail-sizing='natural'] .connected-agent-media-slots__row {
+    /* The padded tray has less content width than the preview frame. */
+    container-type: inline-size !important;
+    --media-slot-limit: calc((100cqw - (var(--media-columns) - 1) * 6px) / var(--media-columns));
+    display: grid !important;
+    /* Fractional max-content tracks can round their total to one pixel wider
+       than the tray at 12 references. Fill the tray instead so the last slot
+       remains visible without creating a horizontal overflow gutter. */
+    grid-template-columns: repeat(var(--media-columns), minmax(0, 1fr)) !important;
+    grid-auto-rows: 54px !important;
+    align-items: center !important;
+    justify-content: start !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    gap: 6px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+  }
+
+  & .module-node__unified-media-slots[data-thumbnail-sizing='natural'] .connected-agent-media-slots__item {
+    flex: none !important;
+    width: min(var(--media-slot-width, 54px), var(--media-slot-limit)) !important;
+    min-width: 0 !important;
+    max-width: 162px !important;
+    height: min(var(--media-slot-height, 54px), calc(var(--media-slot-limit) / var(--media-slot-aspect, 1))) !important;
+    min-height: 0 !important;
+    max-height: 54px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    aspect-ratio: var(--media-slot-aspect, 1) !important;
+  }
+
+  & .module-node__unified-media-slots[data-thumbnail-sizing='natural'] .connected-agent-media-slots__item > :is(img, video) {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: contain !important;
+  }
+
+  & .module-node__running-panel {
+    position: relative !important;
+    z-index: 1 !important;
+    display: grid !important;
+    place-items: center !important;
+    align-content: center !important;
+    gap: 9px !important;
+    box-sizing: border-box !important;
+    width: 264px !important;
+    max-width: calc(100% - 32px) !important;
+    min-height: 160px !important;
+    padding: 22px 18px !important;
+    background: color-mix(in srgb, var(--gate-card) 97%, transparent) !important;
+    border: 1px solid color-mix(in srgb, var(--gate-accent) 28%, var(--gate-border)) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 8px 28px rgb(0 0 0 / 8%) !important;
+  }
+
+  & .module-node__running-indicator {
+    display: grid !important;
+    place-items: center !important;
+    width: 32px !important;
+    height: 32px !important;
+    margin: 0 0 5px !important;
+    padding: 0 !important;
+    color: var(--gate-accent) !important;
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+
+  & .module-node__running-indicator > svg {
+    display: block !important;
+    width: 28px !important;
+    height: 28px !important;
+    animation: atelier-generation-ring 1.6s linear infinite;
+  }
+
+  & .module-node__running-panel > strong {
+    margin: 0 !important;
+    color: var(--gate-text) !important;
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    line-height: 22px !important;
+    white-space: nowrap !important;
+  }
+
+  & .module-node__running-panel > :is(p, small) {
+    margin: 0 !important;
+    padding: 0 !important;
+    color: var(--gate-muted) !important;
+    background: transparent !important;
+    border: 0 !important;
+    font-size: 11px !important;
+    font-weight: 400 !important;
+    line-height: 17px !important;
+    white-space: nowrap !important;
+  }
+
+  & .module-node__running-state--preserved {
+    position: absolute !important;
+    right: 12px !important;
+    bottom: 12px !important;
+    top: auto !important;
+    left: auto !important;
+    z-index: 14 !important;
+    width: auto !important;
+    height: auto !important;
+    max-width: calc(100% - 24px) !important;
+    background: transparent !important;
+  }
+
+  & .module-node__running-state--preserved > .module-node__running-panel {
+    grid-template-columns: 24px minmax(0, 1fr) !important;
+    justify-items: start !important;
+    gap: 2px 10px !important;
+    width: auto !important;
+    max-width: 100% !important;
+    min-height: 0 !important;
+    padding: 10px 12px !important;
+    text-align: left !important;
+    background: color-mix(in srgb, var(--gate-card) 96%, transparent) !important;
+    border: 1px solid var(--gate-border) !important;
+    border-radius: 10px !important;
+    box-shadow: none !important;
+  }
+
+  & .module-node__running-state--preserved .module-node__running-indicator {
+    grid-row: 1 / 4 !important;
+    width: 24px !important;
+    height: 24px !important;
+    margin: 0 !important;
+  }
+
+  & .module-node__running-state--preserved .module-node__running-indicator > svg {
+    width: 24px !important;
+    height: 24px !important;
+  }
+
+  & .module-node__running-state--preserved .module-node__running-panel > strong {
+    font-size: 12px !important;
+    line-height: 18px !important;
+  }
+}
+
+/* Separate the secondary GPT settings from the main parameter buttons without
+   increasing the editor height or moving its primary action. */
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true'][data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) {
+  & .module-node__generation-control-bar.has-image-quality {
+    grid-template-rows: 34px 90px !important;
+    row-gap: 12px !important;
+  }
+  & .module-node__generation-control-bar > .module-node__gpt-parameters {
+    height: 90px !important;
+    min-height: 90px !important;
+    max-height: 90px !important;
+    border-top-color: color-mix(in srgb, var(--gate-border) 60%, transparent) !important;
+  }
+}
+
+/* The expanded editor keeps its parameters below a frame sized from the real
+   image/video dimensions. No crop, stretch or repeated side image is needed. */
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true'][data-preview-sizing='media']:has(.module-node__summary--generation[data-editor-expanded='true']) {
+  & > .module-node__ports .module-node__ports-column {
+    top: calc(58px + var(--generation-preview-height) / 2) !important;
+  }
+  & :is(.module-node__generation-editor-preview, .module-node__result) {
+    height: var(--generation-preview-height) !important;
+    min-height: var(--generation-preview-height) !important;
+    max-height: var(--generation-preview-height) !important;
+    aspect-ratio: var(--generation-preview-aspect-ratio) !important;
+  }
+  & :is(.module-node__generation-empty-stage, .module-node__video-result-workspace, .module-node__video-result-stage) {
+    width: 100% !important;
+    height: 100% !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    aspect-ratio: auto !important;
+  }
+  & .module-node__generation-preview-gallery--1 {
+    gap: 0 !important;
+  }
+  & .module-node__generation-preview-gallery--1 .module-node__generation-preview-item {
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+  }
+}
+
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true'][data-preview-sizing='media'][data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) {
+  --image-editor-reference-top: calc(58px + var(--generation-preview-height));
+  --image-editor-prompt-top: calc(150px + var(--generation-preview-height) + var(--image-slot-extra));
+  --image-editor-control-top: calc(286px + var(--generation-preview-height) + var(--image-slot-extra));
+  --image-editor-height: calc(362px + var(--generation-preview-height) + var(--image-slot-extra)) !important;
+  &:has(.module-node__generation-control-bar.has-image-quality) {
+    --image-editor-height: calc(464px + var(--generation-preview-height) + var(--image-slot-extra)) !important;
+  }
+  & .module-node__unified-media-slots {
+    top: var(--image-editor-reference-top) !important;
+  }
+}
+
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true'][data-preview-sizing='media'][data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) {
+  height: calc(362px + var(--generation-preview-height)) !important;
+  min-height: calc(362px + var(--generation-preview-height)) !important;
+  max-height: calc(362px + var(--generation-preview-height)) !important;
+  & .module-node__unified-media-slots { top: calc(58px + var(--generation-preview-height)) !important; }
+  & .module-node__prompt-workspace { top: calc(150px + var(--generation-preview-height)) !important; }
+  & .module-node__video-composer .module-node__video-control-bar { top: calc(286px + var(--generation-preview-height)) !important; }
+}
+
+/* The existing timer owns elapsed updates; remove the duplicate state label. */
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true']:is([data-module-type='image_generation'], [data-module-type='video_generation']):has(.module-node__summary--generation[data-editor-expanded='true']):has(.module-node__task-timing) .module-node__workbench-header > b {
+  display: none !important;
+}
+
+@keyframes atelier-generation-ring {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true'] .module-node__running-indicator > svg {
+    animation: none !important;
+  }
+}

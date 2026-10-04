@@ -6,10 +6,13 @@ import type { LayeredImageConfig } from '../app/layered-image-config';
 import type { CanvasModuleNode } from '@agent-canvas/domain';
 import type { ProjectImageAssetSummary } from '@agent-canvas/desktop-core';
 import {isShadowOnlyLayer} from '../app/shadow-layer-role';
+import { getLayerPixelRepresentation } from '../app/layer-pixel-representation';
 
 export interface SourceLayerInput {
   sourceUrl: string; width: number; height: number; selection: unknown; backgroundMode?: 'preserve' | 'replace';
-  layers: { record: LayeredImageConfig['layers'][number]['record']; url: string; bounds: unknown; maskSpace?: 'source' | 'bounds'; preparedRgb?: boolean; shadowOnly?:boolean }[];
+  groupConfirmationDigest?: string;
+  needsReconfirm?: boolean;
+  layers: { record: LayeredImageConfig['layers'][number]['record']; url: string; bounds: unknown; maskSpace?: 'source' | 'bounds'; preparedRgb?: boolean; independentRgbaCandidate?: boolean; rgbaCandidateOrigin?: 'provider-v2' | 'local-rgba-import'; representationError?: string; semanticReviewAccepted?: boolean; semanticReviewDigest?: string; layeringConfirmationDigest?: string; shadowOnly?:boolean; outputContract?: 'source-alpha-matte-v1' | 'source-independent-rgba-v2' | 'opaque-background-v2' }[];
 }
 
 export function orderedLayerPlan(config: Readonly<Record<string, unknown>>, nodes: readonly CanvasModuleNode[]): Record<string, unknown>[] {
@@ -33,21 +36,42 @@ export function sourceLayerInputFromNodes(config: Readonly<Record<string, unknow
   for (const plan of orderedLayerPlan(config,nodes)) {
     const node = nodes.find(candidate => candidate.data.config.layerId === plan.layerId);
     const asset = assets.find(asset => asset.assetId === node?.data.config.resultAssetId);
-    if (!node || !asset || node.data.config.qualityStatus !== 'passed') return null;
+    if (!node || !asset || (node.data.config.qualityStatus !== 'passed' && !(node.data.config.formatQualityStatus === 'passed'
+      && node.data.config.qualityFormatCheckedAssetId === node.data.config.resultAssetId))) return null;
+    const outputContract = node.data.config.layeringOutputContract;
+    const representation = getLayerPixelRepresentation(node.data.config, source, asset);
+    const layeringConfirmationDigest = typeof node.data.config.assemblyConfirmationDigest === 'string' ? node.data.config.assemblyConfirmationDigest
+      : typeof node.data.config.layeringConfirmationDigest === 'string'
+      ? node.data.config.layeringConfirmationDigest
+      : typeof node.data.config.confirmationDigest === 'string' ? node.data.config.confirmationDigest : undefined;
     layers.push({ record: { layerId: String(plan.layerId), kind: plan.kind === 'background' ? 'background' : 'transparent', name: String(plan.name),
-      assetId: asset.assetId, x: 0, y: 0, width, height, visible: node.data.config.visible !== false, opacity: Number(node.data.config.opacity ?? 1) },
-      url: asset.displayUrl, bounds: node.data.config.sourceBounds, preparedRgb: node.data.config.pixelColorSpace === 'foreground',shadowOnly:isShadowOnlyLayer(node.data.config),
-      maskSpace: node.data.config.maskSpace === 'source' ? 'source' : 'bounds' });
+      assetId: asset.assetId, x: 0, y: 0, width, height, visible: node.data.config.visible !== false, opacity: Number(node.data.config.opacity ?? 1),
+      ...(typeof node.data.config.name === 'string' ? { name: node.data.config.name } : {}) },
+      url: asset.displayUrl, bounds: node.data.config.sourceBounds, preparedRgb: representation.preparedRgb,shadowOnly:isShadowOnlyLayer(node.data.config),
+      maskSpace: node.data.config.maskSpace === 'source' ? 'source' : 'bounds', independentRgbaCandidate: representation.independentRgbaCandidate,
+      ...(representation.rgbaCandidateOrigin ? { rgbaCandidateOrigin: representation.rgbaCandidateOrigin } : {}),
+      ...(representation.error ? { representationError: representation.error } : {}),
+      ...(typeof node.data.config.semanticReviewAccepted === 'boolean' ? { semanticReviewAccepted: node.data.config.semanticReviewAccepted } : {}),
+      ...(typeof node.data.config.semanticReviewDigest === 'string' ? { semanticReviewDigest: node.data.config.semanticReviewDigest } : {}),
+      ...(layeringConfirmationDigest ? { layeringConfirmationDigest } : {}),
+      ...(outputContract === 'source-alpha-matte-v1' || outputContract === 'source-independent-rgba-v2' || outputContract === 'opaque-background-v2' ? { outputContract } : {}) });
   }
   return { sourceUrl: source.displayUrl, width, height, selection: config.layerSelection,
-    backgroundMode: config.backgroundMode === 'replace' ? 'replace' : 'preserve', layers };
+    backgroundMode: config.backgroundMode === 'replace' ? 'replace' : 'preserve',
+    ...(typeof config.assemblyConfirmationDigest === 'string' ? { groupConfirmationDigest: config.assemblyConfirmationDigest } :
+      typeof config.layeringConfirmationDigest === 'string' ? { groupConfirmationDigest: config.layeringConfirmationDigest } :
+      typeof config.confirmationDigest === 'string' ? { groupConfirmationDigest: config.confirmationDigest } : {}),
+    needsReconfirm: config.needsReconfirm === true, layers };
 }
 
-export async function prepareSourceLayerDocument(input: SourceLayerInput) {
+export async function prepareSourceLayerDocument(input: SourceLayerInput, validation: 'strict' | 'audit' = 'audit') {
   return buildSourceLayerDocument({ width: input.width, height: input.height,
     source: await decodeLayerPixels(input.sourceUrl, input.width, input.height), selection: readLayeringSelection(input.selection),
     backgroundMode: input.backgroundMode,
-    layers: input.layers.map(({ record, url, bounds, maskSpace, preparedRgb,shadowOnly }) => ({ id: record.layerId, name: record.name, kind: record.kind, maskSpace, preparedRgb,shadowOnly,
+    groupConfirmationDigest: input.groupConfirmationDigest,
+    needsReconfirm: input.needsReconfirm,
+    independentValidation: validation,
+    layers: input.layers.map(({ record, url, bounds, maskSpace, preparedRgb, independentRgbaCandidate, rgbaCandidateOrigin, representationError, semanticReviewAccepted, semanticReviewDigest, layeringConfirmationDigest, shadowOnly, outputContract }) => ({ id: record.layerId, name: record.name, kind: record.kind, maskSpace, preparedRgb, independentRgbaCandidate, rgbaCandidateOrigin, representationError, semanticReviewAccepted, semanticReviewDigest, layeringConfirmationDigest,shadowOnly, outputContract,
       visible: record.visible, opacity: record.opacity,
       ...(record.kind === 'transparent' ? { bounds: boxSchema.parse(bounds) } : {}),
       load: () => decodeLayerPixels(url, input.width, input.height) })),
@@ -57,8 +81,10 @@ export async function prepareSourceLayerDocument(input: SourceLayerInput) {
 export async function prepareDraftSourceLayerDocument(input: SourceLayerInput) {
   return buildDraftSourceLayerDocument({ width: input.width, height: input.height,
     source: await decodeLayerPixels(input.sourceUrl, input.width, input.height), selection: readLayeringSelection(input.selection),
-    layers: input.layers.map(({ record, url, bounds, maskSpace, preparedRgb, shadowOnly }) => ({
-      id: record.layerId, name: record.name, kind: record.kind, maskSpace, preparedRgb, shadowOnly,
+    groupConfirmationDigest: input.groupConfirmationDigest,
+    needsReconfirm: input.needsReconfirm,
+    layers: input.layers.map(({ record, url, bounds, maskSpace, preparedRgb, independentRgbaCandidate, rgbaCandidateOrigin, representationError, semanticReviewAccepted, semanticReviewDigest, layeringConfirmationDigest, shadowOnly, outputContract }) => ({
+      id: record.layerId, name: record.name, kind: record.kind, maskSpace, preparedRgb, independentRgbaCandidate, rgbaCandidateOrigin, representationError, semanticReviewAccepted, semanticReviewDigest, layeringConfirmationDigest, outputContract, shadowOnly,
       visible: record.visible, opacity: record.opacity,
       ...(record.kind === 'transparent' ? { bounds: boxSchema.parse(bounds) } : {}),
       load: () => decodeLayerPixels(url, input.width, input.height),
@@ -87,9 +113,14 @@ export function useSourceLayerPreview(input: SourceLayerInput | null) {
         if (!created.users) return null;
         const doc = await prepareSourceLayerDocument(input);
         if (!created.users) return null;
-        return { canvasWidth: doc.width, canvasHeight: doc.height,
-          layers: doc.layers.map((layer, index) => ({ record: { ...input.layers[index]!.record, x: layer.x, y: layer.y, width: layer.width, height: layer.height },
-            asset: { assetId: input.layers[index]!.record.assetId, mediaType: 'image/png', displayUrl: layerPixelsUrl(layer.rgba, layer.width, layer.height) } })) };
+        const layers: Array<LayeredImageConfig['layers'][number]> = [];
+        for (const [index, layer] of doc.layers.entries()) {
+          if (!created.users) return null;
+          const displayUrl = await layerPixelsUrl(layer.rgba, layer.width, layer.height);
+          layers.push({ record: { ...input.layers[index]!.record, x: layer.x, y: layer.y, width: layer.width, height: layer.height },
+            asset: { assetId: input.layers[index]!.record.assetId, mediaType: 'image/png', displayUrl } });
+        }
+        return created.users ? { canvasWidth: doc.width, canvasHeight: doc.height, layers } : null;
       });
       activePreviews.set(key, created); entry = created;
     }

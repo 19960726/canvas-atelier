@@ -2,11 +2,13 @@ import { createHash } from 'node:crypto';
 import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { deflateSync, inflateSync } from 'node:zlib';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCanvasModuleNode, type CanvasProject } from '@agent-canvas/domain';
 
-import type { AssetMetadata } from './asset-store';
+import { AssetStore, type AssetMetadata } from './asset-store';
 import { createDesktopBridgeHandlers } from './bridge-handlers';
 import type { CommitRequest } from './contracts';
 import { releaseJournalState } from './journal-writer';
@@ -24,6 +26,172 @@ const pngBytes = Buffer.from([
 ]);
 const validClipboardPngBytes = createSolidPng();
 
+describe('prepared layer native ownership', () => {
+  const roots: string[] = [];
+  afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+
+  it('stores a full-canvas independent PNG byte-for-byte without binding the layer or rewriting its v1 contract', async () => {
+    const fixture = await preparedLayerFixture(roots);
+    try {
+      const result = await fixture.import();
+      expect(result!.currentRevision).toBe(1);
+      expect(result!.project.nodes).toEqual(fixture.project.nodes);
+      expect(result!.asset.sha256).toBe(createHash('sha256').update(fixture.png).digest('hex'));
+      expect(await readFile(join(fixture.root, 'assets', `${result!.asset.assetId}.png`))).toEqual(fixture.png);
+      expect(decodePreparedFixture(fixture.png).rgba).toEqual(new Uint8Array([37,83,129,0,100,150,200,32,20,30,40,64,5,6,7,255]));
+      expect(result!.project.assets).toHaveLength(3);
+    } finally { await fixture.close(); }
+  });
+
+  it.each([
+    ['project', { projectId: 'other-project' }], ['source', { sourceAssetId: '0123456789abcdef' }],
+    ['result', { expectedResultAssetId: '0123456789abcdef' }], ['revision', { expectedRevision: 99 }],
+    ['group', { groupId: 'other-group' }], ['layer', { layerId: 'other-layer' }],
+  ])('rejects a stale or foreign %s binding without importing an asset', async (_name, change) => {
+    const fixture = await preparedLayerFixture(roots);
+    try {
+      await expect(fixture.import({ ...fixture.target, ...change })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+      expect(await readdir(join(fixture.root, 'assets'))).toHaveLength(2);
+      expect(await fixture.repository.readCurrentRevision(fixture.openedSession)).toBe(0);
+    } finally { await fixture.close(); }
+  });
+
+  it.each([
+    ['same aspect but smaller', createSolidPng(1, 1)],
+    ['empty foreground', createSolidPng(2, 2, [37,83,129,0])],
+    ['opaque foreground', createSolidPng(2, 2, [37,83,129,255])],
+  ])('rejects %s before material staging', async (_name, png) => {
+    const fixture = await preparedLayerFixture(roots, { png });
+    try {
+      await expect(fixture.import()).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+      expect(await readdir(join(fixture.root, 'assets'))).toHaveLength(2);
+    } finally { await fixture.close(); }
+  });
+
+  it('accepts an opaque background through the same strict path', async () => {
+    const fixture = await preparedLayerFixture(roots, { role: 'background', png: createSolidPng(2, 2, [10,20,30,255]) });
+    try { expect((await fixture.import())!.currentRevision).toBe(1); }
+    finally { await fixture.close(); }
+  });
+
+  it('rejects a background with even one transparent pixel', async () => {
+    const fixture = await preparedLayerFixture(roots, { role: 'background' });
+    try { await expect(fixture.import()).rejects.toMatchObject({ code: 'INVALID_REQUEST' }); }
+    finally { await fixture.close(); }
+  });
+
+  it('rechecks source checksum inside commitReference and leaves the old layer bound', async () => {
+    const fixture = await preparedLayerFixture(roots, { beforeReference: async data => {
+      await writeFile(join(data.root, 'assets', `${data.source.assetId}.png`), createSolidPng(2, 2, [99,88,77,255]));
+    } });
+    try {
+      await expect(fixture.import()).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+      const project = await fixture.repository.readCurrentProject(fixture.openedSession);
+      expect(project.nodes).toEqual(fixture.project.nodes);
+      expect(project.assets).toHaveLength(2);
+      expect(await fixture.repository.readCurrentRevision(fixture.openedSession)).toBe(0);
+    } finally { await fixture.close(); }
+  });
+
+  it.each(['sourceBounds', 'jobId', 'resultAssetId'])('rechecks a changed %s in the durable snapshot inside commitReference', async field => {
+    let changed = false;
+    const fixture = await preparedLayerFixture(roots, { beforeReference: async () => { changed = true; },
+      readProject: project => changed ? { ...project, nodes: project.nodes.map(node => node.id !== 'body-layer' || node.type !== 'module' ? node : {
+        ...node, data: { ...node.data, config: { ...node.data.config, [field]: field === 'sourceBounds'
+          ? { x: .1, y: 0, width: .9, height: 1 } : 'new-value' } },
+      }) } : project });
+    try { await expect(fixture.import()).rejects.toMatchObject({ code: 'INVALID_REQUEST' }); }
+    finally { await fixture.close(); }
+  });
+
+  it('does not accept private target metadata through the public generic drop request', async () => {
+    const fixture = await preparedLayerFixture(roots);
+    try { await expect(fixture.handlers.importDroppedProjectMedia({}, { request: {
+      sessionId: fixture.sessionId, target: { kind: 'agent_reference', operationId: 'dropped_media_forged', layerTarget: fixture.target },
+    }, sourcePath: fixture.sourcePath })).rejects.toMatchObject({ code: 'INVALID_REQUEST' }); }
+    finally { await fixture.close(); }
+  });
+});
+
+async function preparedLayerFixture(roots: string[], options: {
+  png?: Buffer; role?: 'transparent' | 'background';
+  beforeReference?: (data: { root: string; source: { assetId: string } }) => Promise<void>;
+  readProject?: (project: CanvasProject) => CanvasProject;
+} = {}) {
+  const tempRoot = await createTempRoot(roots, 'prepared-layer-owned-'), root = join(tempRoot, 'Owned.novus-project');
+  const assets = new AssetStore();
+  const sourceBytes = createSolidPng(2, 2), oldBytes = createSolidPng(2, 2, [1,2,3,255]);
+  const source = await assets.stageAndCommit(tempRoot, Readable.from([sourceBytes]), { originalName: 'source.png' });
+  const old = await assets.stageAndCommit(tempRoot, Readable.from([oldBytes]), { originalName: 'old.png' });
+  const asImage = (asset: AssetMetadata) => ({ assetId: asset.id, sha256: asset.sha256, byteSize: asset.byteSize,
+    width: asset.width, height: asset.height, extension: 'png' as const, mediaType: 'image/png' as const,
+    origin: 'imported' as const, label: asset.id });
+  const body = createCanvasModuleNode('body-layer', 'image_layer', { x: 0, y: 0 });
+  body.data.config = { groupId: 'group', layerId: 'body', layerKind: options.role ?? 'transparent', sourceAssetId: source.id,
+    resultAssetId: old.id, jobId: 'consumed-job', status: 'completed', canvasWidth: 2, canvasHeight: 2,
+    sourceBounds: { x: 0, y: 0, width: 1, height: 1 }, layeringOutputContract: 'source-alpha-matte-v1' };
+  const group = createCanvasModuleNode('layer-group', 'image_layering', { x: 300, y: 0 });
+  group.data.config = { groupId: 'group', sourceAssetId: source.id, canvasWidth: 2, canvasHeight: 2, status: 'completed',
+    planLayers: [{ layerId: 'body', kind: options.role ?? 'transparent', sourceBounds: { x: 0, y: 0, width: 1, height: 1 } }] };
+  const project: CanvasProject = { ...imageProject(), nodes: [body, group], assets: [asImage(source), asImage(old)] };
+  const repository = new ProjectRepository({ createId: sequentialId('prepared-repo'), processId: 6176 });
+  const created = await repository.create(root, { project, projectId: project.id, projectName: project.name });
+  await writeFile(join(root, 'assets', `${source.id}.png`), sourceBytes);
+  await writeFile(join(root, 'assets', `${old.id}.png`), oldBytes);
+  await repository.close(created);
+  let openedSession!: OpenedProjectSession;
+  const handlers = createDesktopBridgeHandlers({
+    dialogs: { chooseProjectRoot: async () => root }, snapshotScheduler: { consider: () => null, flush: vi.fn() },
+    repository: { open: async (...args) => { openedSession = await repository.open(...args); return openedSession; },
+      close: session => repository.close(session), openJournalWriter: session => repository.openJournalWriter(session),
+      readCurrentProject: async session => { const current = await repository.readCurrentProject(session); return options.readProject?.(current) ?? current; },
+      readCurrentRevision: session => repository.readCurrentRevision(session) },
+    assetStore: { list: (...args) => assets.list(...args), resolvePath: (...args) => assets.resolvePath(...args),
+      stageAndCommit: (projectRoot, stream, stageOptions) => assets.stageAndCommit(projectRoot, stream, { ...stageOptions,
+        commitReference: async asset => { await options.beforeReference?.({ root, source: { assetId: source.id } }); await stageOptions.commitReference?.(asset); },
+      }) },
+    inspectPreparedLayerPng: (bytes: Uint8Array) => {
+      const decoded = decodePreparedFixture(Buffer.from(bytes));
+      let hasTransparentPixel = false, hasNonzeroPixel = false, opaque = true;
+      for (let i = 3; i < decoded.rgba.length; i += 4) { const alpha = decoded.rgba[i]!;
+        hasTransparentPixel ||= alpha === 0; hasNonzeroPixel ||= alpha > 0; opaque &&= alpha === 255; }
+      return { width: decoded.width, height: decoded.height, sha256: createHash('sha256').update(bytes).digest('hex'),
+        hasTransparentPixel, hasNonzeroPixel, opaque };
+    },
+  } as Parameters<typeof createDesktopBridgeHandlers>[0]);
+  const opened = await handlers.openProject({}, { mode: 'write' });
+  const png = options.png ?? preparedFixturePng();
+  const sourcePath = join(tempRoot, 'replacement.png'); await writeFile(sourcePath, png);
+  const target = { projectId: project.id, nodeId: body.id, groupId: 'group', layerId: 'body', sourceAssetId: source.id,
+    expectedResultAssetId: old.id, expectedRevision: 0 };
+  return { root, sourcePath, png, project, target, repository, openedSession, handlers, sessionId: opened!.sessionId,
+    import: (preparedLayerTarget = target) => handlers.importDroppedProjectMedia({}, { request: {
+      sessionId: opened!.sessionId, target: { kind: 'agent_reference', operationId: 'dropped_media_prepared-layer' },
+    }, sourcePath, preparedLayerTarget }),
+    close: async () => { await handlers.closeAllProjects(); releaseJournalState(join(root, 'journal', 'active.ndjson'), project.id); },
+  };
+}
+
+// Independent Node-zlib fixtures exercise the bridge receipt boundary. The
+// actual installed pure PNG decoder has its own desktop-modern tests.
+function preparedFixturePng(): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const bytes = Buffer.alloc(data.length + 12); bytes.writeUInt32BE(data.length, 0); bytes.write(type, 4, 'ascii'); data.copy(bytes, 8);
+    let crc = 0xffffffff;
+    for (const byte of bytes.subarray(4, data.length + 8)) { crc ^= byte; for (let i = 0; i < 8; i++) crc = crc >>> 1 ^ (crc & 1 ? 0xedb88320 : 0); }
+    bytes.writeUInt32BE((crc ^ 0xffffffff) >>> 0, data.length + 8); return bytes;
+  };
+  const ihdr = Buffer.from([0,0,0,2,0,0,0,2,8,6,0,0,0]);
+  const rows = Buffer.from([0,37,83,129,0,100,150,200,32,0,20,30,40,64,5,6,7,255]);
+  return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
+}
+function decodePreparedFixture(bytes: Buffer) {
+  const width = bytes.readUInt32BE(16), height = bytes.readUInt32BE(20), rgba = new Uint8Array(width * height * 4);
+  const rows = inflateSync(bytes.subarray(41, 41 + bytes.readUInt32BE(33)));
+  for (let y = 0; y < height; y++) rgba.set(rows.subarray(y * (width * 4 + 1) + 1, (y + 1) * (width * 4 + 1)), y * width * 4);
+  return { width, height, rgba };
+}
+
 describe('project image bridge', () => {
   const tempRoots: string[] = [];
 
@@ -35,7 +203,7 @@ describe('project image bridge', () => {
     const invoke = vi.fn(async () => null) as DesktopBridgeInvoke;
     const api = createPreloadApi(invoke);
 
-    expect(Object.keys(api.projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importPreparedLayer', 'importToPhotoshop', 'list', 'openLayeredPsdInPhotoshop', 'pasteClipboardImage', 'refineLocalLayer', 'writeClipboardImage']);
+    expect(Object.keys(api.projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importPreparedLayer', 'importToPhotoshop', 'list', 'openLayeredPsdInPhotoshop', 'pasteClipboardImage', 'refineLocalLayer', 'saveLayeredPsd', 'writeClipboardImage']);
     expect(api.projectImages).not.toHaveProperty('readFile');
     expect(api.projectImages).not.toHaveProperty('resolvePath');
     const matting={width:8,height:8,rgba:new Uint8Array(256),bounds:{x:0,y:0,width:1,height:1},regions:[]};
@@ -107,6 +275,31 @@ describe('project image bridge', () => {
     } finally {
       await handlers.closeAllProjects();
       releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'image-project');
+    }
+  });
+
+  it('updates recent project counts after importing into a saved empty canvas', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'import-recent-counts-');
+    const sourcePath = join(tempRoot, 'reference.png');
+    await writeFile(sourcePath, validClipboardPngBytes);
+    const handlers = createDesktopBridgeHandlers({ appDataRoot: tempRoot });
+    try {
+      const opened = await handlers.createProject({}, {
+        project: { ...imageProject(), nodes: [], edges: [], assets: [] },
+      });
+      const result = await handlers.importDroppedProjectMedia({}, {
+        request: { sessionId: opened!.sessionId, target: {
+          kind: 'new_media_input', operationId: 'dropped_media_recent-counts', position: { x: 10, y: 20 },
+        } },
+        sourcePath,
+      });
+      expect(result!.project.nodes).toHaveLength(1);
+      await handlers.closeAllProjects();
+      expect(await handlers.listRecentProjects({})).toContainEqual(expect.objectContaining({
+        projectId: opened!.projectId, nodeCount: 1, imageCount: 1,
+      }));
+    } finally {
+      await handlers.closeAllProjects();
     }
   });
 

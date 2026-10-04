@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { expect, test } from './helpers/e2e-test';
-import { e2eState, openEmptyApp, queueProjectImageImport } from './helpers/app';
+import { e2eState, openEmptyApp, queueProjectImageImport, queueProjectVideoImport } from './helpers/app';
 import { makeReferenceImage } from './helpers/fixtures';
 
 const artifact = (name: string) => path.join(process.cwd(), 'artifacts', '2026-08-07-canvas-interaction-consolidation', name);
@@ -43,11 +43,25 @@ for (const theme of ['light', 'dark'] as const) {
     if (theme === 'dark') {
       const posterAssetId = (await e2eState(page)).projectImages[0]?.assetId;
       expect(posterAssetId).toBeTruthy();
-      await page.evaluate(async ({ assetId }) => {
+      // A result rail can only display media owned by this project. Import a
+      // local fixture through the real UI instead of inventing a result ID.
+      await page.evaluate(() => window.__NOVUS_E2E__.createModule('video_input', { x: 220, y: 720 }));
+      await queueProjectVideoImport(page, { label: 'clean-owned-video.mp4' });
+      await page.locator('[data-module-type="video_input"]').getByRole('button', { name: 'Import video' }).click();
+      const ownedVideoAssetId = (await e2eState(page)).projectVideos.at(-1)?.assetId;
+      expect(ownedVideoAssetId).toBeTruthy();
+      expect((await e2eState(page)).projectAssetIds).toContain(ownedVideoAssetId);
+      const mediaState = await e2eState(page);
+      const ownedVideo = mediaState.projectVideos.find(asset => asset.assetId === ownedVideoAssetId);
+      const ownedPoster = mediaState.projectImages.find(asset => asset.assetId === posterAssetId);
+      expect(ownedVideo).toBeTruthy();
+      expect(ownedPoster).toBeTruthy();
+      expect(mediaState.projectAssetIds).toContain(posterAssetId);
+      await page.evaluate(async ({ assetId, videoAssetId }) => {
         await window.__NOVUS_E2E__.configureModule('video_generation', {
           config: {
             videoResults: [{
-              assetId: 'e2e-generated-video-result-1',
+              assetId: videoAssetId,
               mediaType: 'video/mp4',
               durationMs: 5000,
               posterAssetId: assetId,
@@ -55,11 +69,29 @@ for (const theme of ['light', 'dark'] as const) {
           },
           execution: { state: 'completed' },
         });
-      }, { assetId: posterAssetId! });
+      }, { assetId: posterAssetId!, videoAssetId: ownedVideoAssetId! });
       await videoNode.locator('[data-port-id="result"].react-flow__handle').dragTo(videoResult.locator('[data-port-id="video"].react-flow__handle'));
       await expect.poll(async () => (await e2eState(page)).edgeCount).toBe(2);
       await page.locator('.react-flow__controls-fitview').evaluate((button) => (button as HTMLButtonElement).click());
-      await expect(videoResult.getByRole('img', { name: 'Video result poster' })).toBeVisible();
+      const edgePaths = page.locator('.react-flow__edge .react-flow__edge-path');
+      await expect(edgePaths).toHaveCount(2);
+      for (const edge of await edgePaths.all()) await expect(edge).toHaveAttribute('d', /^M.+C/u);
+      // Owned video results use the native player and its poster attribute.
+      // The structural MP4 fixture only proves wiring and poster presentation;
+      // actual decode/playback is covered by the exact-EXE media gate.
+      const player = videoResult.getByLabel('Generated video playback video', { exact: true });
+      await expect(player).toBeVisible();
+      await expect(player).toHaveAttribute('src', ownedVideo!.displayUrl);
+      await expect(player).toHaveAttribute('poster', ownedPoster!.displayUrl);
+      await expect(player).toHaveAttribute('controls', '');
+      await expect(videoResult.getByLabel('Generated video playback', { exact: true })).toContainText('已完成');
+      const posterDimensions = await player.evaluate(async element => {
+        const poster = new Image();
+        poster.src = (element as HTMLVideoElement).poster;
+        await poster.decode();
+        return { width: poster.naturalWidth, height: poster.naturalHeight };
+      });
+      expect(posterDimensions).toEqual({ width: 1280, height: 720 });
       await page.screenshot({ path: artifact('video-connected-slot.png'), fullPage: true });
     }
   });

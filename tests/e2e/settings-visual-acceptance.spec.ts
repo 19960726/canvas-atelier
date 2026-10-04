@@ -5,6 +5,27 @@ import { openEmptyApp } from './helpers/app';
 
 const output = path.join(process.cwd(), 'work', process.env.CANVAS_SETTINGS_AUDIT_DIR ?? 'qa-settings-atelier-20260925');
 
+async function measureSettings(drawer: import('@playwright/test').Locator) {
+  return drawer.evaluate((element) => {
+    const body = element.querySelector('.settings-drawer__body')!;
+    const overflowing = [...body.querySelectorAll('button, input, select, article, section')]
+      .filter((node) => {
+        const rect = node.getBoundingClientRect();
+        const bounds = body.getBoundingClientRect();
+        // Native details gives its folded descendants zero-size rectangles.
+        // Expanded content is measured separately below.
+        return rect.width > 0 && rect.height > 0
+          && (rect.right > bounds.right + 2 || rect.left < bounds.left - 2);
+      })
+      .slice(0, 12)
+      .map((node) => ({ tag: node.tagName, className: node.className, text: node.textContent?.slice(0, 40) }));
+    const visibleText = [...body.querySelectorAll('.settings-section p, .settings-section small, .settings-section button')]
+      .filter((node) => node.getBoundingClientRect().height > 0)
+      .map((node) => ({ text: node.textContent?.slice(0, 32), fontSize: Number.parseFloat(getComputedStyle(node).fontSize) }));
+    return { width: element.getBoundingClientRect().width, bodyWidth: body.getBoundingClientRect().width, scrollWidth: body.scrollWidth, overflowing, visibleText };
+  });
+}
+
 test('model directory uses the page scroll and keeps search, default and save reachable', async ({ page }) => {
   fs.mkdirSync(output, { recursive: true });
   await page.setViewportSize({ width: 1680, height: 900 });
@@ -12,6 +33,14 @@ test('model directory uses the page scroll and keeps search, default and save re
   await openEmptyApp(page);
   await page.getByTestId('settings-toggle').click();
   const drawer = page.getByTestId('settings-drawer');
+  const defaults = drawer.getByRole('region', { name: '默认模型', exact: true });
+  await expect(defaults.getByLabel('生图默认模型')).toBeVisible();
+  await expect(defaults.locator('.settings-model-save')).toBeVisible();
+  const catalog = drawer.locator('.settings-catalog-details');
+  await expect(catalog).toHaveJSProperty('open', false);
+  await expect(drawer.getByRole('searchbox', { name: '搜索当前分类模型' })).toBeHidden();
+  await catalog.locator('summary').click();
+  await expect(catalog).toHaveJSProperty('open', true);
   const list = drawer.locator('.settings-model-list').first();
   await expect(list.locator('article')).not.toHaveCount(0);
   const size = await list.evaluate((element) => ({ client: element.clientHeight, scroll: element.scrollHeight, overflow: getComputedStyle(element).overflowY }));
@@ -78,27 +107,43 @@ for (const width of [1680, 1024, 480]) {
         await drawer.getByRole('tab', { name: tab }).click();
         await expect(drawer.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', `settings-tab-${name}`);
         await expect(drawer.locator('.settings-page-heading h2')).toBeVisible();
+        measures[name] = await measureSettings(drawer);
         await drawer.screenshot({ path: path.join(output, `${width}-${theme}-${name}.png`) });
+        if (name === 'api') {
+          await expect(drawer.locator('.settings-catalog-details')).toHaveJSProperty('open', false);
+          for (const label of ['生图默认模型', '视频默认模型', '对话默认模型', '反推默认模型', '视觉默认模型', '视频理解默认模型']) {
+            await expect(drawer.getByRole('region', { name: '默认模型', exact: true }).getByLabel(label, { exact: true })).toBeVisible();
+          }
+          await drawer.locator('.settings-catalog-details > summary').click();
+          await expect(drawer.getByRole('searchbox', { name: '搜索当前分类模型' })).toBeVisible();
+          await expect(drawer.locator('.settings-api-diagnostics')).toHaveJSProperty('open', false);
+          await drawer.locator('.settings-api-diagnostics > summary').click();
+          await expect(drawer.getByRole('region', { name: '诊断与更新' })).toBeVisible();
+        } else if (name === 'mcp') {
+          await expect(drawer.locator('.settings-mcp-capability-details')).toHaveJSProperty('open', false);
+          await expect(drawer.locator('.settings-mcp-more-permissions')).toHaveJSProperty('open', false);
+          await expect(drawer.getByRole('checkbox')).toHaveCount(4);
+          await drawer.locator('.settings-mcp-capability-details > summary').click();
+          await expect(drawer.getByRole('region', { name: 'Codex 与 MCP 能力诊断' })).toBeVisible();
+          await drawer.locator('.settings-mcp-more-permissions > summary').click();
+          await expect(drawer.getByRole('checkbox')).toHaveCount(7);
+        } else if (name === 'sync') {
+          await expect(drawer.getByRole('region', { name: '应用更新', exact: true })).toBeVisible();
+          await expect(drawer.getByTestId('settings-sync-diagnostics-layer')).toHaveJSProperty('open', false);
+          await expect(drawer.getByRole('region', { name: '连接与恢复' })).toBeHidden();
+          await drawer.getByTestId('settings-sync-diagnostics-layer').locator('summary').click();
+          await expect(drawer.getByRole('region', { name: '连接与恢复' })).toBeVisible();
+        } else {
+          await expect(drawer.locator('.settings-storage-details')).toHaveJSProperty('open', false);
+          await drawer.locator('.settings-storage-details > summary').click();
+        }
+        measures[`${name}-expanded`] = await measureSettings(drawer);
+        await drawer.screenshot({ path: path.join(output, `${width}-${theme}-${name}-expanded.png`) });
         if (name === 'api' || name === 'mcp') {
           await drawer.locator('.settings-drawer__body').evaluate((body) => { body.scrollTop = body.scrollHeight; });
           await drawer.screenshot({ path: path.join(output, `${width}-${theme}-${name}-bottom.png`) });
           await drawer.locator('.settings-drawer__body').evaluate((body) => { body.scrollTop = 0; });
         }
-        measures[name] = await drawer.evaluate((element) => {
-          const body = element.querySelector('.settings-drawer__body')!;
-          const overflowing = [...body.querySelectorAll('button, input, select, article, section')]
-            .filter((node) => {
-              const rect = node.getBoundingClientRect();
-              const bounds = body.getBoundingClientRect();
-              return rect.right > bounds.right + 2 || rect.left < bounds.left - 2;
-            })
-            .slice(0, 12)
-            .map((node) => ({ tag: node.tagName, className: node.className, text: node.textContent?.slice(0, 40) }));
-          const visibleText = [...body.querySelectorAll('.settings-section p, .settings-section small, .settings-section button')]
-            .filter((node) => node.getBoundingClientRect().height > 0)
-            .map((node) => ({ text: node.textContent?.slice(0, 32), fontSize: Number.parseFloat(getComputedStyle(node).fontSize) }));
-          return { width: element.getBoundingClientRect().width, bodyWidth: body.getBoundingClientRect().width, scrollWidth: body.scrollWidth, overflowing, visibleText };
-        });
       }
       fs.writeFileSync(path.join(output, `${width}-${theme}-metrics.json`), JSON.stringify(measures, null, 2));
       for (const result of Object.values(measures) as { scrollWidth: number; bodyWidth: number; overflowing: unknown[]; visibleText: { fontSize: number }[] }[]) {
@@ -139,8 +184,8 @@ test('settings action icons align with their labels and save has breathing room'
   });
   expect(alignment).toBeLessThanOrEqual(4);
   const saveSpacing = await page.locator('.settings-model-save').evaluate((element) => {
-    const next = element.parentElement?.nextElementSibling;
-    return next ? next.getBoundingClientRect().top - element.getBoundingClientRect().bottom : 0;
+    const defaults = element.closest('.settings-model-defaults-section')?.querySelector('.settings-model-defaults');
+    return defaults ? element.getBoundingClientRect().top - defaults.getBoundingClientRect().bottom : 0;
   });
   expect(saveSpacing).toBeGreaterThanOrEqual(12);
 });

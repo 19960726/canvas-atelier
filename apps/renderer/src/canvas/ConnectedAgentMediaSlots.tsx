@@ -9,6 +9,8 @@ export interface ConnectedAgentMediaSlotItem {
   readonly assetId: string;
   readonly label: string;
   readonly previewUrl?: string;
+  readonly width?: number;
+  readonly height?: number;
 }
 
 interface ConnectedAgentMediaSlotsProps {
@@ -25,6 +27,7 @@ interface ConnectedAgentMediaSlotsProps {
   readonly showAddPlaceholder?: boolean;
   readonly addAriaLabel?: string;
   readonly preserveOverflow?: boolean;
+  readonly preserveMediaAspect?: boolean;
 }
 
 export function ConnectedAgentMediaSlots({
@@ -41,9 +44,10 @@ export function ConnectedAgentMediaSlots({
   showAddPlaceholder = false,
   addAriaLabel = '添加素材',
   preserveOverflow = false,
+  preserveMediaAspect = false,
 }: ConnectedAgentMediaSlotsProps) {
   const mediaSignature = media.map((item) => `${item.edgeId ?? ''}:${item.kind}:${item.assetId}`).join('|');
-  const mediaPresentationSignature = JSON.stringify(media.map((item) => [item.edgeId, item.kind, item.assetId, item.label, item.previewUrl]));
+  const mediaPresentationSignature = JSON.stringify(media.map((item) => [item.edgeId, item.kind, item.assetId, item.label, item.previewUrl, item.width, item.height]));
   const [orderedMedia, setOrderedMedia] = useState(() => preserveOverflow ? [...media] : media.slice(0, MAX_GENERATION_REFERENCES));
   const previousExternalMediaSignature = useRef(mediaSignature);
   const previousPreserveOverflow = useRef(preserveOverflow);
@@ -129,7 +133,7 @@ export function ConnectedAgentMediaSlots({
   }, []);
 
   return (
-    <section ref={trayRef} className="module-node__agent-media-slots module-node__unified-media-slots connected-agent-media-slots nodrag nopan" aria-label={ariaLabel} onPointerDown={stopPointer}>
+    <section ref={trayRef} className="module-node__agent-media-slots module-node__unified-media-slots connected-agent-media-slots nodrag nopan" aria-label={ariaLabel} data-thumbnail-sizing={preserveMediaAspect ? 'natural' : undefined} onPointerDown={stopPointer}>
       <header><span>{title}</span><b>{visibleMedia.length} / {MAX_GENERATION_REFERENCES}</b></header>
       {reorderError && <span role="alert">换位未保存，已恢复原顺序，请重试。</span>}
       <div
@@ -145,6 +149,7 @@ export function ConnectedAgentMediaSlots({
             key={mediaItemId(item, index)}
             className={`module-node__agent-media-slot connected-agent-media-slots__item is-${item.kind}${dropIndex === index ? ' is-drop-target' : ''}`}
             data-slot-index={index + 1}
+            style={preserveMediaAspect ? naturalMediaThumbnailStyle(item) : undefined}
             aria-label={`Agent media slot ${index + 1}`}
             title={`${index + 1}. ${item.label}`}
             draggable={onReorder !== undefined}
@@ -208,6 +213,16 @@ export function ConnectedAgentMediaSlots({
       </div>
     </section>
   );
+}
+
+function naturalMediaThumbnailStyle(item: ConnectedAgentMediaSlotItem): CSSProperties | undefined {
+  if (item.width === undefined || item.height === undefined || !Number.isFinite(item.width)
+    || !Number.isFinite(item.height) || item.width <= 0 || item.height <= 0) return undefined;
+  const ratio = item.width / item.height;
+  if (!Number.isFinite(ratio) || ratio <= 0) return undefined;
+  const width = Math.min(162, 54 * ratio);
+  const height = width / ratio;
+  return { '--media-slot-width': `${width}px`, '--media-slot-height': `${height}px`, '--media-slot-aspect': ratio } as CSSProperties;
 }
 
 function mediaItemId(item: ConnectedAgentMediaSlotItem, index: number): string {

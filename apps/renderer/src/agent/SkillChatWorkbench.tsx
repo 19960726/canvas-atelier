@@ -36,13 +36,14 @@ import {
   type ReverseAnalysisDepth,
   type StoredAgentConversation,
 } from './skill-chat-session-store';
-import { parseReverseAnalysisResponse, type ReverseAnalysisResult } from './reverse-workflow-contract';
+import { parseReverseAnalysisResponse, reverseWorkflowPlanningInstructions, type ReverseAnalysisResult } from './reverse-workflow-contract';
 import { formatReverseTimelineContext, selectReverseTimelineContext } from './reverse-timeline-context';
 import { GenerationPreferencesSheet } from './GenerationPreferencesSheet';
 import { CodexReasoningPopover } from './CodexReasoningPopover';
 import { generationProfiles, readGenerationPreferences, writeGenerationPreferences, resolveGenerationPreference, type GenerationKind, type GenerationParameters, type GenerationPreferences } from './generation-preferences';
-import { assessCreativeGenerationPrompt, constrainCreativePlanKind, creativePlanningInstructions, creativeWorkflowSteps, parseCreativePlan, recoverEmptyCreativePlan, type CreativePlanOption } from './creative-plan';
+import { assessCreativeGenerationPrompt, buildCreativeExecutionPrompt, resolveCreativeGenerationReferences, constrainCreativePlanKind, creativePlanningInstructions, creativeWorkflowSteps, parseCreativePlan, recoverEmptyCreativePlan, type CreativePlanOption, type CreativeRequirementAnalysis, type CreativeReferenceDuty } from './creative-plan';
 import { consumeQueuedGeneratedImageForAgent, listQueuedGeneratedImagesForAgent } from './generated-image-agent-transfer';
+import { createConfirmedCreativeTaskContext, formatCreativeTaskContext, type CreativeTaskContext } from './creative-task-context';
 import { AgentWindowControlsContext } from './FloatingAgentWindow';
 
 type SkillMessage = {
@@ -81,6 +82,7 @@ export interface SkillChatRequest {
   readonly reasoningEffort?: CodexReasoningEffort;
   readonly reverseAnalysisDepth?: ReverseAnalysisDepth;
   readonly visualAnalysis?: boolean;
+  readonly purpose?: 'image_layering_analysis' | 'reverse_workflow';
 }
 
 type SkillRequestSummary = {
@@ -89,7 +91,7 @@ type SkillRequestSummary = {
   readonly knowledgeBaseCount: number;
   readonly knowledgeBaseIds?: readonly string[];
   readonly projectMemoryCount: number;
-  readonly references: readonly { readonly assetId: string; readonly label: string }[];
+  readonly references: readonly { readonly assetId: string; readonly label: string; readonly mention?: string }[];
   readonly status: SkillRequestStatus;
   readonly visualAnalysis?: boolean;
   readonly reverseAnalysisDepth?: ReverseAnalysisDepth;
@@ -324,13 +326,15 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
     ? clampProjectMemoryIds(initialConversation.projectMemoryIds, availableProjectMemoryIds)
     : [...availableProjectMemoryIds]);
   const [messages, setMessages] = useState<SkillMessage[]>(() => [...initialConversation.messages]);
+  const [taskContext, setTaskContext] = useState<CreativeTaskContext | undefined>(initialConversation.taskContext);
+  const pendingTaskContext = useRef<CreativeTaskContext | undefined>(undefined);
   const [showAllQuickTasks, setShowAllQuickTasks] = useState(false);
   const [composer, setComposer] = useState<ImageMentionValue>({ text: '', citations: [] });
   const composerSelectionRef = useRef<MediaMentionSelection | null>(null);
   const pendingComposerCaretRef = useRef<number | null>(null);
   const [importedReferenceImages, setImportedReferenceImages] = useState<SkillChatReferenceImage[]>([]);
   const [initialReferenceCatalog] = useState(
-    () => createConversationReferenceCatalog(initialConversation.messages, referenceImages),
+    () => createConversationReferenceCatalog(initialConversation.messages, referenceImages, initialConversation.taskContext?.references),
   );
   const referenceCatalog = useRef<ConversationReferenceCatalogEntry[]>(initialReferenceCatalog);
   const referenceFileInput = useRef<HTMLInputElement>(null);
@@ -397,6 +401,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
     writeGenerationPreferences(projectId, value);
     setPendingCanvasAction(null);
     setSelectedCreativeOptionKey(null);
+    pendingTaskContext.current = undefined;
   };
   const [canvasActionRunning, setCanvasActionRunning] = useState(false);
   const [expandedReverseIds, setExpandedReverseIds] = useState<string[]>([]);
@@ -1015,6 +1020,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
         knowledgeBaseIds: [...selectedKnowledgeBaseIds],
         projectMemoryIds: [...selectedProjectMemoryIds],
         messages: [...messages],
+        taskContext,
         updatedAt: Date.now(),
       };
       const next = {
@@ -1025,7 +1031,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
       writeAgentConversationCollection(projectId, next);
       return next;
     });
-  }, [activeConversationId, agentMode, messages, modelRoute, projectId, reasoningEfforts, reverseAnalysisDepth, selectedKnowledgeBaseIds, selectedProjectMemoryIds]);
+  }, [activeConversationId, agentMode, messages, modelRoute, projectId, reasoningEfforts, reverseAnalysisDepth, selectedKnowledgeBaseIds, selectedProjectMemoryIds, taskContext]);
 
   useLayoutEffect(() => {
     const offset = pendingComposerCaretRef.current;
@@ -1041,6 +1047,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
     requestId.current += 1;
     setPendingCanvasAction(null);
     setSelectedCreativeOptionKey(null);
+    pendingTaskContext.current = undefined;
     setPendingCanvasModelRoute(undefined);
     if (activeLocalCodexRequestId.current === null) setStatus('idle');
   };
@@ -1061,7 +1068,8 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
     setSelectedKnowledgeBaseIds([...conversation.knowledgeBaseIds]);
     setSelectedProjectMemoryIds(clampProjectMemoryIds(conversation.projectMemoryIds, availableProjectMemoryIds));
     setMessages([...conversation.messages]);
-    referenceCatalog.current = createConversationReferenceCatalog(conversation.messages, allReferenceImages);
+    setTaskContext(conversation.taskContext);
+    referenceCatalog.current = createConversationReferenceCatalog(conversation.messages, allReferenceImages, conversation.taskContext?.references);
     setAgentMode(conversation.mode);
     setReasoningEfforts(conversation.reasoningEfforts);
     setReverseAnalysisDepth(conversation.reverseAnalysisDepth);
@@ -1100,6 +1108,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
     setSelectedKnowledgeBaseIds([]);
     setSelectedProjectMemoryIds([...created.projectMemoryIds]);
     setMessages([]);
+    setTaskContext(undefined);
     referenceCatalog.current = [];
     setAgentMode(created.mode);
     setReasoningEfforts(created.reasoningEfforts);
@@ -1130,7 +1139,19 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
     if (!modelRoute || selectedProfile === undefined || !hasSupportedReasoningEffort || status === 'sending'
       || activeSendRequestId.current === requestId.current) return;
     invalidatePastedReferences();
-    const selectedReferences = resolveSelectedPasteReferences(cleanComposer.citations, mentionReferences);
+    let selectedReferences = resolveSelectedPasteReferences(cleanComposer.citations, mentionReferences);
+    const continuingTask = agentMode !== 'chat' && isReferenceFollowUp(content) ? taskContext : undefined;
+    if (selectedReferences.length === 0 && isReferenceFollowUp(content)) {
+      const inherited = [...messages].reverse().find((candidate) => candidate.role === 'user' && (candidate.mode ?? agentMode) === agentMode);
+      const inheritedReferences = inherited?.request?.references.length ? inherited.request.references : continuingTask?.references;
+      if (inheritedReferences) {
+        selectedReferences = resolveSelectedPasteReferences(inheritedReferences, mentionReferences);
+        if (selectedReferences.length !== inheritedReferences.length) {
+          setError('上一轮参考素材已不可用，请重新添加后再发送。');
+          return;
+        }
+      }
+    }
     if (selectedReferences.length > 0 && !supportsImageMentions) {
       setError(imageMentionCapabilityError);
       return;
@@ -1139,22 +1160,32 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
     const planning = agentMode === 'original';
     const workflowPlanning = agentMode === 'codex' && !isReverseAnalysisIntent(content)
       && isWorkflowCreationIntent(content, selectedReferences.length);
-    const planningInstructions = planning ? creativePlanningInstructions(generationPreferences, profiles, selectedReferences.length, reverseAnalysisDepth)
-      : workflowPlanning ? '先分析用户需求和本次参考图，再编写可直接用于生成模型的完整提示词。明确主体、构图、材质、光照、保留项、修改项与禁止项；不要逐字复制用户原话，不要包含聊天口吻、画布操作或 @ 图片标记。只返回 JSON：{"summary":"方案说明","generation":{"prompt":"分析后编写的完整执行提示词"}}。无法形成方案时 generation.prompt 留空并在 summary 说明原因。' : '';
+    const planningInstructions = planning ? creativePlanningInstructions(generationPreferences, profiles, selectedReferences.length, reverseAnalysisDepth, selectedReferences)
+      : workflowPlanning ? '先分析用户需求和本次参考图，再编写可直接用于生成模型的完整提示词。明确主体、构图、材质、光照、保留项、修改项与禁止项；不要逐字复制用户原话，不要包含聊天口吻、画布操作或 @ 图片标记。只返回 JSON：{"summary":"方案说明","generation":{"prompt":"分析后编写的完整执行提示词"}}。无法形成方案时 generation.prompt 留空并在 summary 说明原因。'
+        : visualAnalysis && isReverseAnalysisIntent(content) ? reverseWorkflowPlanningInstructions(selectedReferences) : '';
     const maxMessageLength = selectedProfile.provider === 'codex'
       ? MAX_CODEX_SKILL_CHAT_MESSAGE_LENGTH
       : MAX_PROVIDER_SKILL_CHAT_MESSAGE_LENGTH;
-    const planningMessageLength = content.length + (planningInstructions.length > 0 ? planningInstructions.length + 2 : 0);
+    let confirmedInstructions = '';
+    try {
+      if (continuingTask) confirmedInstructions = formatCreativeTaskContext(continuingTask, maxMessageLength - content.length - planningInstructions.length - 4);
+    } catch {
+      setError('已确认的完整需求超出本次消息长度，请拆分任务或缩短本次修改；不会丢弃已确认约束。');
+      return;
+    }
+    const taskPlanningInstructions = [planningInstructions, confirmedInstructions].filter(Boolean).join('\n\n');
+    const planningMessageLength = content.length + (taskPlanningInstructions.length > 0 ? taskPlanningInstructions.length + 2 : 0);
     if (planningMessageLength > maxMessageLength) {
       setError('消息过长，请分段发送。');
       return;
     }
-    const reverseSeparatorLength = planningInstructions.length > 0 ? 2 : content.length > 0 ? 2 : 0;
+    const reverseSeparatorLength = taskPlanningInstructions.length > 0 ? 2 : content.length > 0 ? 2 : 0;
     const reverseContextInstructions = formatReverseTimelineContext(
       activeReverseTimeline,
       maxMessageLength - planningMessageLength - reverseSeparatorLength,
     );
-    const providerInstructions = [planningInstructions, reverseContextInstructions].filter((item) => item.length > 0).join('\n\n');
+    const providerInstructions = [taskPlanningInstructions, reverseContextInstructions].filter((item) => item.length > 0).join('\n\n');
+    pendingTaskContext.current = undefined;
     setPendingCanvasAction(null);
     setSelectedCreativeOptionKey(null);
     const requestSummary: SkillRequestSummary = {
@@ -1163,7 +1194,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
       knowledgeBaseCount: selectedKnowledgeBaseIds.length,
       knowledgeBaseIds: [...selectedKnowledgeBaseIds],
       projectMemoryCount: selectedProjectMemoryIds.length,
-      references: selectedReferences.map(({ assetId, label }) => ({ assetId, label })),
+      references: selectedReferences.map(({ assetId, label, mention }) => ({ assetId, label, mention })),
       status: 'sending',
       visualAnalysis,
       ...(visualAnalysis ? { reverseAnalysisDepth } : {}),
@@ -1210,6 +1241,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
         ...(supportedEfforts.length > 0 ? { reasoningEffort } : {}),
         ...(visualAnalysis ? { reverseAnalysisDepth } : {}),
         visualAnalysis,
+        ...(visualAnalysis && !planning && isReverseAnalysisIntent(content) ? { purpose: 'reverse_workflow' as const } : {}),
       }), resolveAgentRequestTimeoutMs(
         selectedProfile.provider,
         reasoningEffort,
@@ -1252,7 +1284,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
     }
   };
 
-  const chooseCreativeOption = (messageId: string, option: CreativePlanOption, references: readonly { assetId: string }[], sourceRequest?: string) => {
+  const chooseCreativeOption = (messageId: string, option: CreativePlanOption, references: readonly { assetId: string; mention: string; label: string }[], requirements: CreativeRequirementAnalysis, sourceRequest?: string, duties: readonly CreativeReferenceDuty[] = []) => {
     try {
       const promptQuality = assessCreativeGenerationPrompt(option.prompt, sourceRequest);
       if (!promptQuality.valid && promptQuality.reason === 'contains-mention') {
@@ -1267,9 +1299,17 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
         setError('Agent 返回的生图提示词过于简略，需补充主体、构图、光线、材质、保留项和禁止项后再执行。');
         return;
       }
-      const { profile, parameters } = resolveGenerationPreference(option.kind, generationPreferences, profiles, option.modelRoute, references.length);
+      const generationReferences = resolveCreativeGenerationReferences(option, references, duties);
+      const { profile, parameters } = resolveGenerationPreference(option.kind, generationPreferences, profiles, option.modelRoute, generationReferences.length);
       const kind = `${option.kind}_generation` as const;
-      setPendingCanvasAction({ kind, nodeId: `agent-${option.kind}-${createMessageId()}`, createNode: true, createWorkflow: true, projectId, prompt: option.prompt, modelRoute: profile.modelRoute, parameters, referenceAssetIds: references.map((item) => item.assetId) });
+      const prompt = buildCreativeExecutionPrompt(option, requirements, duties, generationReferences);
+      pendingTaskContext.current = createConfirmedCreativeTaskContext({
+        generationKind: option.kind,
+        originalRequest: sourceRequest && isReferenceFollowUp(sourceRequest) && taskContext ? taskContext.originalRequest : sourceRequest || requirements.goal,
+        executionPrompt: prompt, references: [...references],
+        executionReferenceAssetIds: generationReferences.map((item) => item.assetId), confirmedAt: Date.now(),
+      });
+      setPendingCanvasAction({ kind, nodeId: `agent-${option.kind}-${createMessageId()}`, createNode: true, createWorkflow: true, projectId, prompt, modelRoute: profile.modelRoute, parameters, referenceAssetIds: generationReferences.map((item) => item.assetId) });
       setSelectedCreativeOptionKey(`${messageId}:${option.id}`);
       setPendingCanvasModelRoute(profile.modelRoute);
       setPendingCanvasResolution(typeof parameters.resolution === 'string' ? parameters.resolution : '');
@@ -1356,6 +1396,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
   const confirmCanvasAction = async () => {
     if (pendingCanvasAction === null || executeCanvasAction === undefined || canvasActionRunning || actionBusy.current) return;
     const action = pendingCanvasAction;
+    const contextToConfirm = pendingTaskContext.current;
     const epoch = conversationEpoch.current;
     actionBusy.current = true;
     setCanvasActionRunning(true);
@@ -1378,6 +1419,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
         setError(`${canvasActionLabel(action.kind)}节点未能启动，请检查模型配置后重试。`);
         return;
       }
+      if (contextToConfirm) setTaskContext({ ...contextToConfirm, executionPrompt: action.prompt, confirmedAt: Date.now() });
       const canvasNodeLabel = `${canvasActionLabel(action.kind)} · ${action.prompt.replace(/\s+/gu, ' ').trim().slice(0, 28)}`;
       setMessages((current) => [...current, {
         id: `canvas-result:${generationNodeId}`,
@@ -1460,6 +1502,12 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
 
   const messageDetails = useMemo(() => messages.map((message, messageIndex) => {
     const precedingMessage = messageIndex > 0 ? messages[messageIndex - 1] : undefined;
+    const referenceContextMessage = precedingMessage?.role === 'user'
+      && (precedingMessage.request?.references.length ?? 0) === 0
+      && isReferenceFollowUp(precedingMessage.content)
+      ? [...messages.slice(0, messageIndex - 1)].reverse().find((candidate) => candidate.role === 'user'
+        && candidate.mode === precedingMessage.mode) ?? precedingMessage
+      : precedingMessage;
     const messageMode = message.mode ?? agentMode;
     const parsedCreativePlan = message.role === 'assistant' && messageMode === 'original'
       ? parseCreativePlan(message.content)
@@ -1477,7 +1525,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
           precedingMessage.content,
           requestedGenerationKind === undefined ? generationPreferences : { ...generationPreferences, kind: requestedGenerationKind },
           profiles,
-          precedingMessage.request?.references.length ?? 0,
+          referenceContextMessage?.request?.references.length ?? 0,
         )
         : null)
       : null;
@@ -1487,9 +1535,9 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
     const requestedWorkflowOffer = precedingMessage?.role === 'user'
       && messageMode === 'codex'
       && isWorkflowCreationIntent(precedingMessage.content, precedingMessage.request?.references.length ?? 0);
-    const workflowReferences = precedingMessage?.request?.references.map((reference, index) => ({
+    const workflowReferences = referenceContextMessage?.request?.references.map((reference, index) => ({
       ...reference,
-      mention: `@图片${index + 1}`,
+      mention: reference.mention ?? `@图片${index + 1}`,
     })) ?? [];
     const reverseAnalysis = reverseWorkflowOffer && message.role === 'assistant'
       ? parseReverseAnalysisResponse(message.content, workflowReferences.map((reference) => ({
@@ -1504,7 +1552,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
       ? parseWorkflowPlanningSummary(message.content)
       : null;
     return {
-      message, precedingMessage, messageMode, requestedGenerationKind, creativePlan,
+      message, precedingMessage, referenceContextMessage, messageMode, requestedGenerationKind, creativePlan,
       reverseWorkflowOffer, requestedWorkflowOffer, workflowReferences, reverseAnalysis, workflowSummary,
     };
   }), [messages, agentMode, generationPreferences, profiles]);
@@ -1802,7 +1850,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
             </section>
           )}
           {messageDetails.map(({
-            message, precedingMessage, messageMode, requestedGenerationKind, creativePlan,
+            message, precedingMessage, referenceContextMessage, messageMode, requestedGenerationKind, creativePlan,
             reverseWorkflowOffer, requestedWorkflowOffer, workflowReferences, reverseAnalysis, workflowSummary,
           }) => {
             const workflowOffer = message.role === 'assistant'
@@ -1833,19 +1881,33 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
                   </dl>
                 </section>
                 {([['观察', creativePlan.observations], ['估计', creativePlan.estimates], ['未知', creativePlan.unknowns]] as const).map(([label, items]) => items.length > 0 ? <div key={label}><strong>{label}</strong><p>{items.join('\n')}</p></div> : null)}
+                {creativePlan.referenceDuties.length > 0 && <section className="creative-plan__requirements" aria-label="素材职责"><header><strong>素材职责</strong></header><dl>{creativePlan.referenceDuties.map((duty) => <div key={duty.mention}><dt>{duty.mention}</dt><dd>{({ product: '产品外观', composition: '构图', lighting: '光线', style: '风格', context: '仅供理解', negative: '反例，不垫图' } as const)[duty.role]}{duty.inherit.length > 0 ? `：${duty.inherit.join('；')}` : ''}{duty.doNotCopy.length > 0 ? `\n禁止复制：${duty.doNotCopy.join('；')}` : ''}</dd></div>)}</dl></section>}
                 {creativePlan.options.map((option) => {
                   const optionKey = `${message.id}:${option.id}`;
                   const selected = selectedCreativeOptionKey === optionKey;
-                  const workflowSteps = creativeWorkflowSteps(option, precedingMessage?.request?.references.length ?? 0);
+                  let connectedReferences: typeof workflowReferences = [];
+                  let referenceError = '';
+                  try { connectedReferences = resolveCreativeGenerationReferences(option, workflowReferences, creativePlan.referenceDuties); }
+                  catch (caught) { referenceError = caught instanceof Error ? caught.message : '方案参考素材不可用，请重新分析。'; }
+                  const workflowSteps = creativeWorkflowSteps(option, connectedReferences.length);
                   return <div key={option.id} className="creative-plan__option"><span className="creative-plan__kind">{option.kind === 'image' ? '图片工作流' : '视频工作流'}</span><strong>{option.title}</strong><p>{option.reason}</p>
+                    {connectedReferences.length > 0 && <p aria-label="方案连接素材">连接素材：{connectedReferences.map((reference) => `${reference.mention} ${reference.label}`).join('、')}</p>}
+                    {referenceError && <p role="alert">{referenceError}</p>}
                     <section className="creative-plan__workflow" aria-label={`工作流预览：${option.title}`}><b>工作流预览</b><ol>{workflowSteps.map((step, index) => <li key={`${step.title}-${index}`}><span>{index + 1}</span><div><strong>{step.title}</strong><p>{step.detail}</p></div></li>)}</ol></section>
-                    <details><summary>查看完整执行提示词</summary><p>{option.prompt}</p></details>
-                    {messageMode !== 'chat' && <button type="button" className={`creative-plan__select${selected ? ' is-selected' : ''}`} aria-label={`选择方案：${option.title}`} aria-pressed={selected} disabled={canvasActionRunning || status === 'sending'} onClick={() => chooseCreativeOption(message.id, option, precedingMessage?.request?.references ?? [], precedingMessage?.content)}>{selected ? '✓ 已选择' : '选择此方案'}</button>}
+                    <details><summary>查看完整执行提示词</summary><p>{buildCreativeExecutionPrompt(option, creativePlan.requirements, creativePlan.referenceDuties, connectedReferences)}</p></details>
+                    {messageMode !== 'chat' && <button type="button" className={`creative-plan__select${selected ? ' is-selected' : ''}`} aria-label={`选择方案：${option.title}`} aria-pressed={selected} disabled={canvasActionRunning || status === 'sending' || referenceError.length > 0} onClick={() => chooseCreativeOption(message.id, option, workflowReferences, creativePlan.requirements, referenceContextMessage?.content, creativePlan.referenceDuties)}>{selected ? '✓ 已选择' : '选择此方案'}</button>}
                   </div>;
                 })}
-                {creativePlan.options.length === 0 && requestedGenerationKind !== undefined && (
-                  <p className="skill-chat-workbench__error" role="alert">本次已选择{requestedGenerationKind === 'image' ? '图片' : '视频'}工作流，但模型没有返回对应方案。请打开生成偏好切换输出类型，或配置支持当前参考素材的{requestedGenerationKind === 'image' ? '图片' : '视频'}模型后重试。</p>
-                )}
+                {creativePlan.options.length === 0 && <div className="creative-plan__option">
+                  <p role="alert">本次已选择{requestedGenerationKind === 'video' ? '视频' : '图片'}工作流，但模型没有返回对应的可执行方案。请补全方案；如果没有兼容模型，请先在生成偏好中配置。</p>
+                  <button type="button" disabled={status === 'sending' || canvasActionRunning} onClick={() => {
+                    const references = resolveSelectedPasteReferences(workflowReferences, mentionReferences);
+                    const tokens = references.map((reference) => reference.mention).join(' ');
+                    setComposer({ text: `${tokens}${tokens ? ' ' : ''}请根据上述需求分析补全可执行方案，提供完整执行提示词、兼容生成模型和工作流步骤。保留原需求与参考素材，返回方案 JSON 供我选择。`,
+                      citations: references.map(({ assetId, label }) => ({ assetId, label })) });
+                  }}>补全可执行方案</button>
+                  <small>填入补全请求后，由你点击发送。</small>
+                </div>}
               </section>}
               {message.role === 'user' && message.request?.references.length ? (
                 <section className="skill-chat-workbench__sent-references" aria-label="已发送素材">
@@ -1963,8 +2025,8 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
             <article ref={confirmationCardRef} className="skill-chat-workbench__message skill-chat-workbench__message--assistant skill-chat-workbench__confirmation" aria-label="待确认画布操作">
               <span>等待确认</span>
               <p>{pendingCanvasAction.createWorkflow
-                ? `${pendingCanvasAction.referenceAssetIds?.length ? `将使用${pendingCanvasAction.referenceAssetIds.length}个参考素材连接` : '将创建'}1个${canvasActionLabel(pendingCanvasAction.kind)}节点；提示词与结果保留在生成节点内，并执行已确认方案。`
-                : pendingCanvasAction.createNode ? `将新建独立节点并执行${canvasActionLabel(pendingCanvasAction.kind)}` : `将在节点 ${pendingCanvasAction.nodeId} 执行${canvasActionLabel(pendingCanvasAction.kind)}`}。</p>
+                ? `${pendingCanvasAction.referenceAssetIds?.length ? `将连接${pendingCanvasAction.referenceAssetIds.length}个参考素材，` : ''}将建立“提示词 → ${canvasActionLabel(pendingCanvasAction.kind)} → 结果”的可编辑工作流，并执行已确认方案。`
+                : pendingCanvasAction.createNode ? `将新建独立节点并执行${canvasActionLabel(pendingCanvasAction.kind)}` : `将在节点 ${pendingCanvasAction.nodeId} 执行${canvasActionLabel(pendingCanvasAction.kind)}`}</p>
               <details><summary>查看执行提示词与参数</summary><p>{pendingCanvasAction.prompt}</p><p>{Object.entries(pendingCanvasAction.parameters ?? {}).map(([key, value]) => `${key}: ${value}`).join(' · ') || '使用模型默认参数'}</p></details>
               {pendingCanvasActionProfiles.length > 0 && (
                 <div className="skill-chat-workbench__action-controls">
@@ -2001,7 +2063,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
                 <header><strong>画布操作</strong><span>待确认</span></header>
                 <div className="skill-chat-workbench__confirmation-actions">
                   <button type="button" className="is-primary" aria-label={`确认执行${canvasActionLabel(pendingCanvasAction.kind)}`} disabled={canvasActionRunning || pendingCanvasActionProfiles.length === 0} onClick={() => void confirmCanvasAction()}>{canvasActionRunning ? '正在创建…' : pendingCanvasAction.createWorkflow ? '确认并创建工作流' : '确认并新建节点'}</button>
-                  <button type="button" className="is-secondary" aria-label="取消画布操作" disabled={canvasActionRunning} onClick={() => { setPendingCanvasAction(null); setSelectedCreativeOptionKey(null); }}>取消</button>
+                  <button type="button" className="is-secondary" aria-label="取消画布操作" disabled={canvasActionRunning} onClick={() => { pendingTaskContext.current = undefined; setPendingCanvasAction(null); setSelectedCreativeOptionKey(null); }}>取消</button>
                 </div>
               </section>
             </article>
@@ -2169,7 +2231,7 @@ export const SkillChatWorkbench = memo(function SkillChatWorkbench({
               modelPicker={activePopover === 'reasoning-model' ? modelPickerPanel : undefined}
               generationKind={generationPreferences.kind}
               onOpenGeneration={() => dispatchPopover({ type: 'open', id: 'generation' })}
-              reverseDepth={showReverseDepth ? { value: reverseAnalysisDepth, disabled: status === 'sending', onChange: setReverseAnalysisDepth } : undefined}
+              reverseDepth={showReverseDepth ? { value: reverseAnalysisDepth, purpose: agentMode === 'original' ? 'creative' : 'reverse', disabled: status === 'sending', onChange: setReverseAnalysisDepth } : undefined}
             />
           </div>
           <div className="skill-chat-workbench__composer-actions">
@@ -2220,11 +2282,21 @@ function canonicalMentionReferences(references: {
 function createConversationReferenceCatalog(
   messages: readonly SkillMessage[],
   referenceImages: readonly SkillChatReferenceImage[],
+  confirmedReferences: readonly { assetId: string; mention: string }[] = [],
 ): ConversationReferenceCatalogEntry[] {
   const catalog: ConversationReferenceCatalogEntry[] = [];
   const usedAssetIds = new Set<string>();
   const usedPositions = new Set<number>();
   const projectPositionByAssetId = new Map(referenceImages.map((image, index) => [image.assetId, index]));
+  for (const reference of confirmedReferences) {
+    const match = reference.mention.match(/^@(?:图片|视频)([1-9]\d*)$/u);
+    if (!match) continue;
+    const mentionPosition = Number(match[1]) - 1;
+    if (!Number.isSafeInteger(mentionPosition) || usedAssetIds.has(reference.assetId) || usedPositions.has(mentionPosition)) continue;
+    catalog.push({ assetId: reference.assetId, mentionPosition });
+    usedAssetIds.add(reference.assetId);
+    usedPositions.add(mentionPosition);
+  }
   for (const message of messages) {
     const references = message.request?.references ?? [];
     const mentionedPositions = Array.from(message.content.matchAll(/@图片(\d+)(?!\d)/gu))
@@ -2232,7 +2304,9 @@ function createConversationReferenceCatalog(
       .filter((position) => Number.isSafeInteger(position) && position >= 0);
     references.forEach((reference, index) => {
       if (usedAssetIds.has(reference.assetId)) return;
-      const fromMessage = mentionedPositions[index];
+      const persistedPosition = reference.mention?.match(/^@(?:图片|视频)(\d+)$/u);
+      const fromMessage = persistedPosition === undefined || persistedPosition === null
+        ? mentionedPositions[index] : Number(persistedPosition[1]) - 1;
       const fromProject = projectPositionByAssetId.get(reference.assetId);
       const preferred = fromMessage !== undefined && !usedPositions.has(fromMessage)
         ? fromMessage
@@ -2430,6 +2504,11 @@ function detectCanvasActionKind(value: string): SkillCanvasActionKind | null {
   if (/(?:生成|制作|创建|做).*(?:视频|动画|video)/u.test(normalized)) return 'video_generation';
   if (/(?:生成|制作|创建|画|做).*(?:图片|图像|主图|海报|产品图|效果图|image)/u.test(normalized)) return 'image_generation';
   return null;
+}
+
+function isReferenceFollowUp(content: string): boolean {
+  return /(?:上述|上面|这张|这些|刚才|上一轮|原图|只(?:改|修改|调整|把|将)|其他.{0,8}(?:保持|不变))|^(?:继续|接着|按(?:照)?方案)/u.test(content)
+    && !/(?:不要(?:再用|用|使用)?|不用|不使用|无需|不需要|别用|去掉|移除|忽略)(?:刚才的?|上一轮的?|之前的?|这些|这张|原来的?|本次的?|\s)*(?:参考图|参考素材|参考|原图|图片|素材|@(?:图片|视频)\d+)|重新(?:开始|设计)|从头/u.test(content);
 }
 
 function shouldUseVisualAnalysis(

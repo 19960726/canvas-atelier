@@ -21,6 +21,11 @@ const layerPlan = [
   { layerId: 'fast-bar', kind: 'transparent', name: '恒温杯加热 2min 对比条', description: '上方蓝色 2min 对比条及其文字，保持原图位置。', included: true },
   { layerId: 'slow-bar', kind: 'transparent', name: '普通暖奶器 7min 对比条', description: '下方灰色 7min 对比条及其文字，保持原图位置。', included: true },
 ] as const;
+const layerReply = {
+  layers: layerPlan.map(layer => ({ ...layer, elementIds: [layer.layerId] })),
+  elements: layerPlan.map(layer => ({ elementId: layer.layerId, name: layer.name, layerId: layer.layerId,
+    kind: layer.kind === 'background' ? 'object' as const : /光|蒸汽|热效/u.test(layer.name) ? 'optical' as const : /文字|标题|说明|标签|对比条/u.test(layer.name) ? 'text' as const : 'object' as const })),
+};
 
 test('uses the supplied poster pixels for a zero-credit layering flow and checks the visible node sockets', async ({ page }) => {
   test.skip(!existsSync(sourcePath), 'Optional private poster is not in the repository; set CANVAS_USER_POSTER_FIXTURE to the original PNG (SHA-256 is checked).');
@@ -53,7 +58,7 @@ test('uses the supplied poster pixels for a zero-credit layering flow and checks
   const dialog = page.getByRole('dialog', { name: 'AI 图片分层' });
   await expect(dialog.getByRole('combobox', { name: '视觉分析模型' })).toBeVisible();
   await page.screenshot({ path: path.join(evidenceDir, '01-user-poster-analysis.png'), fullPage: true });
-  await page.evaluate((layers) => window.__NOVUS_E2E__!.queueLayeringAnalysisReply(JSON.stringify({ layers })), layerPlan);
+  await page.evaluate((reply) => window.__NOVUS_E2E__!.queueLayeringAnalysisReply(JSON.stringify(reply)), layerReply);
   await dialog.getByRole('button', { name: '分析图片' }).click();
   const names = dialog.getByRole('list', { name: '可编辑分层方案' }).getByRole('textbox', { name: /^图层名称/u });
   await expect(names).toHaveCount(12);

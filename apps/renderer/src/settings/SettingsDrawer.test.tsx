@@ -15,6 +15,87 @@ afterEach(() => {
 });
 
 describe('SettingsDrawer', () => {
+  it('persists an empty Julun model selection and clears only its saved default routes', async () => {
+    const storageKey = 'novus-atelier:provider-model-defaults:v1';
+    localStorage.setItem(storageKey, JSON.stringify({ version: 1, providers: {
+      julun: { video_generation: 'julun/minimax_h3' }, comfly: { image_generation: 'image/keep' },
+    } }));
+    const status = { configured: true, locked: false, encryption: 'safeStorage' as const };
+    const profiles = [{ provider: 'julun' as const, modelRoute: 'julun/minimax_h3', displayName: 'MiniMax H3',
+      modelId: 'minimax_h3', capabilities: ['video_generation' as const], capabilityStatus: 'complete' as const, enabled: true }];
+    const updateProfiles = vi.fn(async () => status);
+    window.novusDesktop = { provider: { getStatus: vi.fn(async () => status),
+      listProfiles: vi.fn(async ({ provider }: { provider?: string } = {}) => provider === 'julun' ? profiles : []),
+      updateProfiles } } as unknown as typeof window.novusDesktop;
+    render(<SettingsDrawer providerStatus={status} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('listitem', { name: /巨轮 API/u }));
+    fireEvent.click(screen.getByText('模型目录', { selector: 'summary strong' }));
+    const toggle = await screen.findByRole('checkbox', { name: '启用 MiniMax H3' });
+    expect(toggle).toBeChecked();
+    fireEvent.click(toggle);
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: '保存 巨轮 API 模型选择' }));
+    await waitFor(() => expect(updateProfiles).toHaveBeenCalledWith({ provider: 'julun', profiles: [] }));
+    expect(await screen.findByText('已保存 0 个 巨轮 API 模型')).toBeVisible();
+    expect(JSON.parse(localStorage.getItem(storageKey)!).providers).toEqual({
+      julun: {}, comfly: { image_generation: 'image/keep' },
+    });
+  });
+
+  it('saves six independent default routes while the model catalogue stays folded', async () => {
+    const capabilities = [
+      ['image_generation', '生图默认模型', 'image'],
+      ['video_generation', '视频默认模型', 'video'],
+      ['chat', '对话默认模型', 'chat'],
+      ['reverse_prompt', '反推默认模型', 'reverse'],
+      ['vision', '视觉默认模型', 'vision'],
+      ['video_understanding', '视频理解默认模型', 'video-understanding'],
+    ] as const;
+    const profiles = capabilities.flatMap(([capability, , route]) => ['alpha', 'beta'].map((variant) => ({
+      provider: 'comfly' as const, modelRoute: `${route}/${variant}`, displayName: `${route} ${variant}`,
+      modelId: `${route}-${variant}`, capabilities: [capability], capabilityStatus: 'complete' as const,
+    })));
+    window.novusDesktop = { provider: {
+      listProfiles: vi.fn(async () => profiles),
+      updateProfiles: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+    } } as unknown as typeof window.novusDesktop;
+    const props = { providerStatus: { configured: true, locked: false, encryption: 'safeStorage' as const }, onClose: vi.fn(), onProviderStatusChange: vi.fn() };
+    const first = render(<SettingsDrawer {...props} />);
+    const defaults = await screen.findByRole('region', { name: '默认模型' });
+    await waitFor(() => expect(within(defaults).getByLabelText('生图默认模型')).toHaveValue('comfly:image/alpha'));
+    expect(within(defaults).getAllByRole('combobox')).toHaveLength(6);
+    const catalogue = screen.getByText('模型目录', { selector: 'summary strong' }).closest('details');
+    expect(catalogue).not.toHaveAttribute('open');
+    const selections = capabilities.map(([, label, route], index) => ({ label, key: `comfly:${route}/${index % 2 === 0 ? 'beta' : 'alpha'}` }));
+    for (const { label, key } of selections) {
+      fireEvent.change(within(defaults).getByLabelText(label), { target: { value: key } });
+    }
+    fireEvent.click(screen.getByRole('button', { name: '保存 Comfly 模型选择' }));
+    await screen.findByText('已保存 12 个 Comfly 模型');
+    first.unmount();
+    render(<SettingsDrawer {...props} />);
+    await waitFor(() => {
+      for (const { label, key } of selections) expect(screen.getByLabelText(label)).toHaveValue(key);
+    });
+    expect(screen.getByText('模型目录', { selector: 'summary strong' }).closest('details')).not.toHaveAttribute('open');
+  });
+
+  it('checks for application updates without opening connection recovery diagnostics', async () => {
+    window.novusDesktop = { updates: {
+      getState: vi.fn(async () => ({ status: 'idle', currentVersion: '1.6.185' })),
+      check: vi.fn(async () => ({ state: { status: 'idle', currentVersion: '1.6.185', message: 'No updates are available.' } })),
+    } } as unknown as typeof window.novusDesktop;
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: '同步' }));
+    const updateAction = screen.getByRole('button', { name: 'Check for updates' });
+    expect(updateAction.closest('details')).toBeNull();
+    const advanced = screen.getByText('高级故障排查').closest('details');
+    expect(advanced).not.toHaveAttribute('open');
+    fireEvent.click(updateAction);
+    expect(await screen.findByText('当前已是最新版本')).toBeVisible();
+    expect(advanced).not.toHaveAttribute('open');
+  });
+
   it('audits history only on the storage tab and handles refresh failure with a retry', async () => {
     const result = { activeBytes: 100, activeCount: 1, trashBytes: 0, trashCount: 0, missingOrCorruptCount: 0 };
     const getCapacity = vi.fn().mockResolvedValueOnce(result).mockRejectedValueOnce(new Error('audit unavailable')).mockResolvedValue(result);
@@ -165,11 +246,12 @@ describe('SettingsDrawer', () => {
     expect(screen.getByRole('button', { name: '配置隐藏密钥' })).toBeVisible();
     expect(screen.getByLabelText('Comfly 凭据摘要')).toHaveTextContent('凭据状态');
     expect(screen.getByLabelText('Comfly 凭据摘要')).toHaveTextContent('已配置');
-    expect(screen.getByLabelText('Comfly 凭据摘要')).toHaveTextContent('系统凭据库');
+    expect(screen.getByLabelText('Comfly 凭据摘要')).toHaveTextContent('由操作系统安全存储加密');
     expect(screen.queryByText('密钥名称')).not.toBeInTheDocument();
 
     expect(await screen.findByText('模型目录')).toBeVisible();
-    expect(screen.getByText('4 个模型系列')).toBeVisible();
+    expect(screen.getByText('4 个模型 · 筛选与启用')).toBeVisible();
+    fireEvent.click(screen.getByText('模型目录', { selector: 'summary strong' }));
     await waitFor(() => expect(screen.getByRole('region', { name: '生图模型' })).toBeVisible());
     expect(screen.getByRole('tablist', { name: '模型能力分类' })).toBeVisible();
     expect(screen.queryByRole('region', { name: '对话模型' })).not.toBeInTheDocument();
@@ -426,13 +508,15 @@ describe('SettingsDrawer', () => {
     expect(screen.getByText('当前优先：Comfly')).toBeVisible();
   });
 
-  it('organizes the API tab as a layered workbench with chat adaptation guidance', async () => {
+  it('keeps defaults visible while catalog and diagnostics are disclosed on demand', async () => {
     render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     expect(screen.getByTestId('settings-api-status-layer')).toBeInTheDocument();
     expect(screen.getByTestId('settings-provider-layer')).toBeInTheDocument();
     expect(screen.getByTestId('settings-model-layer')).toBeInTheDocument();
     expect(screen.getByTestId('settings-diagnostics-layer')).toBeInTheDocument();
-    expect(screen.getByText(/对话模型适配/u)).toBeVisible();
+    expect(screen.getByRole('region', { name: '默认模型' })).toBeVisible();
+    expect(screen.getByText('模型目录', { selector: 'summary strong' }).closest('details')).not.toHaveAttribute('open');
+    expect(screen.getByText('高级诊断', { selector: 'summary strong' }).closest('details')).not.toHaveAttribute('open');
   });
 
   it('marks storage, MCP, and sync surfaces as layered workbench sections', async () => {
@@ -724,7 +808,8 @@ describe('SettingsDrawer', () => {
     await waitFor(() => expect(listProfiles).toHaveBeenCalledWith({ provider: 'relayme' }));
 
     expect(screen.queryAllByText('Comfly Previous Model')).toHaveLength(0);
-    expect(screen.getByText('当前供应商尚未加载模型')).toBeVisible();
+    expect(screen.getByText('正在加载…')).toBeVisible();
+    expect(screen.getByLabelText('生图默认模型')).toBeDisabled();
     rejectRelayProfiles(new Error('temporary RelayMe catalog failure'));
   });
 
@@ -944,14 +1029,14 @@ describe('SettingsDrawer', () => {
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 
     expect(screen.getByRole('tab', { name: 'API 与模型' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByText('供应商设置')).toBeVisible();
-    expect(screen.queryByText('本地保存')).toBeNull();
+    expect(screen.getByRole('region', { name: '供应商设置' })).toBeVisible();
+    expect(screen.queryByRole('region', { name: '本地保存' })).toBeNull();
 
     fireEvent.click(screen.getByRole('tab', { name: '存储与备份' }));
 
     expect(screen.getByRole('tab', { name: '存储与备份' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByText('本地保存')).toBeVisible();
-    expect(screen.queryByText('供应商设置')).toBeNull();
+    expect(screen.getByRole('region', { name: '本地保存' })).toBeVisible();
+    expect(screen.queryByRole('region', { name: '供应商设置' })).toBeNull();
   });
 
   it('loads the desktop cache path and wires open, choose, and reset actions', async () => {
@@ -1035,7 +1120,7 @@ describe('SettingsDrawer', () => {
     fireEvent.click(screen.getByRole('tab', { name: '存储与备份' }));
 
     expect(screen.getByLabelText('下载保存位置')).toBeVisible();
-    expect(screen.getByText('下载时由系统窗口选择位置')).toBeVisible();
+    expect(screen.getByText('由系统保存窗口选择位置')).toBeVisible();
     expect(screen.queryByRole('checkbox', { name: '固定下载输出目录' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('本地保存')).toBeVisible();
     expect(screen.getByRole('button', { name: '刷新' }).querySelector(':scope > .settings-action-content')).not.toBeNull();
@@ -1177,6 +1262,7 @@ describe('SettingsDrawer', () => {
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     fireEvent.click(screen.getByRole('tab', { name: /MCP/u }));
 
+    fireEvent.click(screen.getByText('能力诊断', { selector: 'summary' }));
     const diagnostics = await screen.findByRole('region', { name: 'Codex 与 MCP 能力诊断' });
     expect(diagnostics).toHaveTextContent('Codex CLI可用');
     expect(diagnostics).toHaveTextContent('模型2 个');
@@ -1310,6 +1396,7 @@ it('keeps safe permission defaults and the workflow capability summary below the
     expect(screen.getByTestId('settings-mcp-card')).toBeVisible();
     expect(screen.getByRole('group', { name: 'Codex MCP client' })).toBeVisible();
     expect(screen.getByRole('group', { name: 'WorkBuddy MCP client' })).toBeVisible();
+    fireEvent.click(screen.getByText('更多权限与执行规则', { selector: 'summary' }));
     expect(screen.getByRole('checkbox', { name: '读取画布' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: '编辑画布' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: '管理画布' })).toBeChecked();
@@ -1329,6 +1416,7 @@ it('keeps safe permission defaults and the workflow capability summary below the
     window.novusDesktop = undefined;
     const first = render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     fireEvent.click(screen.getByRole('tab', { name: /MCP/u }));
+    fireEvent.click(screen.getByText('更多权限与执行规则', { selector: 'summary' }));
     fireEvent.click(screen.getByRole('checkbox', { name: '外部文件读写' }));
     expect(screen.getByRole('checkbox', { name: '外部文件读写' })).toBeChecked();
 
@@ -1336,6 +1424,7 @@ it('keeps safe permission defaults and the workflow capability summary below the
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     fireEvent.click(screen.getByRole('tab', { name: /MCP/u }));
 
+    fireEvent.click(screen.getByText('更多权限与执行规则', { selector: 'summary' }));
     expect(screen.getByRole('checkbox', { name: '外部文件读写' })).toBeChecked();
     localStorage.removeItem(storageKey);
   });
@@ -1345,8 +1434,10 @@ it('keeps safe permission defaults and the workflow capability summary below the
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     fireEvent.click(screen.getByRole('tab', { name: /MCP/u }));
 
+    fireEvent.click(screen.getByText('更多权限与执行规则', { selector: 'summary' }));
     expect(screen.getByText('预留权限；当前 MCP 没有新建、切换、重命名或复制整张画布的工具。')).toBeVisible();
-    expect(screen.getByText('预留权限；当前 MCP 没有导出文件工具。')).toBeVisible();
+    expect(screen.getByText('允许 MCP 经画布确认和保存对话框导出通过质量检查的正式分层 PSD。')).toBeVisible();
+    expect(screen.queryByText('预留权限；当前 MCP 没有导出文件工具。')).not.toBeInTheDocument();
     expect(screen.getByText('只能打开 Canvas Atelier 自己的图片或视频选择器；MCP 不能读写任意外部路径。')).toBeVisible();
     expect(screen.queryByText('允许访问项目外部文件，默认关闭。')).not.toBeInTheDocument();
   });
@@ -1463,8 +1554,7 @@ it('keeps safe permission defaults and the workflow capability summary below the
     window.novusDesktop = { provider: { listProfiles: vi.fn(async () => profiles), updateProfiles } } as unknown as typeof window.novusDesktop;
     const first = render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 
-    await screen.findByLabelText('启用 Beta Image');
-    expect(screen.getByLabelText('生图默认模型')).toHaveValue('comfly:image/alpha');
+    await waitFor(() => expect(screen.getByLabelText('生图默认模型')).toHaveValue('comfly:image/alpha'));
     fireEvent.change(screen.getByLabelText('生图默认模型'), { target: { value: 'comfly:image/beta' } });
     fireEvent.click(screen.getByRole('button', { name: '保存 Comfly 模型选择' }));
 
@@ -1486,6 +1576,7 @@ it('keeps safe permission defaults and the workflow capability summary below the
     window.novusDesktop = { provider: { listProfiles: vi.fn(async () => profiles), updateProfiles } } as unknown as typeof window.novusDesktop;
     render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 
+    fireEvent.click(screen.getByText('模型目录', { selector: 'summary strong' }));
     const familyToggle = await screen.findByRole('checkbox', { name: '启用 GPT Image 2.5 Flare' });
     expect(screen.getByRole('region', { name: '生图模型' }).querySelectorAll('[role="listitem"]')).toHaveLength(2);
     fireEvent.click(familyToggle);
@@ -1514,6 +1605,7 @@ it('keeps safe permission defaults and the workflow capability summary below the
     } } as unknown as typeof window.novusDesktop;
     render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 
+    fireEvent.click(screen.getByText('模型目录', { selector: 'summary strong' }));
     expect(await screen.findByLabelText('启用 GPT Image 2')).toBeDisabled();
     expect(screen.getByLabelText('生图默认模型')).toHaveValue('comfly:image/gpt-image-1.5');
     fireEvent.click(screen.getByRole('button', { name: '保存 Comfly 模型选择' }));
@@ -1534,6 +1626,7 @@ it('keeps safe permission defaults and the workflow capability summary below the
     window.novusDesktop = { provider: { listProfiles, checkConnection } } as unknown as typeof window.novusDesktop;
     render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 
+    fireEvent.click(screen.getByText('模型目录', { selector: 'summary strong' }));
     expect(await screen.findByLabelText('启用 Disabled Image')).not.toBeChecked();
     fireEvent.click(screen.getByRole('button', { name: '检测连接' }));
 

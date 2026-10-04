@@ -15,6 +15,26 @@ export interface LayeredPsdOpenDependencies {
   launchPhotoshop(executablePath: string, psdPath: string): Promise<void>;
 }
 
+export async function saveLayeredPsd(bytes: unknown, dependencies: Pick<LayeredPsdOpenDependencies, 'chooseDestination' | 'writePsd'>): Promise<
+  { readonly ok: true; readonly saved: true } | { readonly ok: false; readonly code: 'invalid_psd' | 'cancelled' | 'dialog_failed' | 'save_failed' }
+> {
+  if (!isPsdV1Rgb(bytes)) return { ok: false, code: 'invalid_psd' };
+  let selectedPath: string | null;
+  try { selectedPath = await dependencies.chooseDestination(); } catch { return { ok: false, code: 'dialog_failed' }; }
+  if (!selectedPath) return { ok: false, code: 'cancelled' };
+  const psdPath = extname(selectedPath).toLowerCase() === '.psd' ? selectedPath : `${selectedPath}.psd`;
+  try { await dependencies.writePsd(psdPath, bytes); } catch { return { ok: false, code: 'save_failed' }; }
+  return { ok: true, saved: true };
+}
+
+export function createLayeredPsdSaveHandler(getTrustedSender: () => unknown, dependencies: Pick<LayeredPsdOpenDependencies, 'chooseDestination' | 'writePsd'>) {
+  return async (event: { readonly sender: unknown }, bytes: unknown) => {
+    const trusted = getTrustedSender();
+    if (!trusted || event.sender !== trusted) return { ok: false as const, code: 'invalid_psd' as const };
+    return saveLayeredPsd(bytes, dependencies);
+  };
+}
+
 /** Save only user-chosen PSD bytes, then open that independent document in Photoshop. */
 export async function saveAndOpenLayeredPsdInPhotoshop(
   bytes: unknown,

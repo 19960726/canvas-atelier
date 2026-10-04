@@ -56,8 +56,11 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(box).toBeVisible();
     await page.screenshot({ path: path.join(output, `${theme}-region.png`) });
     await page.evaluate(() => window.__NOVUS_E2E__!.queueLayeringAnalysisReply(JSON.stringify({ layers: [
-      { layerId: 'background', kind: 'background', name: '厨房背景', description: '保留框外原图，补全框内移除物品的背景', included: true },
-      { layerId: 'blender', kind: 'transparent', name: '红色料理机', description: '仅选区内料理机，保持原图位置，不含阴影', included: true, sourceBounds: { x: .3, y: .3, width: .4, height: .4 } },
+      { layerId: 'background', kind: 'background', name: '厨房背景', description: '保留框外原图，补全框内移除物品的背景', included: true, elementIds: ['background'] },
+      { layerId: 'blender', kind: 'transparent', name: '红色料理机', description: '仅选区内料理机，保持原图位置，不含阴影', included: true, sourceBounds: { x: .3, y: .3, width: .4, height: .4 }, elementIds: ['blender'] },
+    ], elements: [
+      { elementId: 'background', name: '厨房背景', layerId: 'background', kind: 'object' },
+      { elementId: 'blender', name: '红色料理机', layerId: 'blender', kind: 'object' },
     ] })));
     await dialog.getByRole('button', { name: '分析图片' }).click();
     await expect(dialog.getByRole('list', { name: '可编辑分层方案' })).toBeVisible();

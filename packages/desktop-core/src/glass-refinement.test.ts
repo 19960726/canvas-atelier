@@ -31,3 +31,19 @@ it('keeps confidently opaque dark internal components continuous across a keep r
   ]);
   expect(result).toEqual(foreground);
 });
+
+it('does not recolor a neighboring pixel beyond an integer glass rectangle after normalization', () => {
+  const width = 76, height = 24, source = new Uint8Array(width * height * 4), foreground = new Uint8Array(source.length);
+  for (let p = 0; p < width * height; p++) source.set([200, 180, 160, 255], p * 4);
+  for (let y = 4; y < 20; y++) for (let x = 20; x < 60; x++) {
+    const p = (y * width + x) * 4;
+    source.set([180, 162, 144, 255], p); foreground.set([180, 162, 144, 255], p);
+  }
+  // 52/76 + 4/76 maps to 56.00000000000001 with IEEE arithmetic.
+  const result = refineGlassForeground(source, foreground, width, height, { x: 20 / width, y: 0, width: 40 / width, height: 1 }, [
+    { mode: 'glass', box: { x: 52 / width, y: 4 / height, width: 4 / width, height: 16 / height } },
+  ]);
+  expect(result[(10 * width + 55) * 4 + 3]).toBeLessThan(255);
+  const neighbor = (10 * width + 56) * 4;
+  expect(result.slice(neighbor, neighbor + 4)).toEqual(foreground.slice(neighbor, neighbor + 4));
+});

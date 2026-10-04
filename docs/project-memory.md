@@ -1,5 +1,129 @@
 # Canvas Atelier project memory
 
+## 2026-10-03 R12：已有 RGBA 局部清除与可撤销基线
+
+- 原生重新分割会改动明确 clear 框外的独立颜色。`local-clear-refinement.ts` 对已受管独立RGBA，及保留全部既有标记后追加clear的legacy prepared层，直接解码并校验真实原尺寸PNG；只将明确clear域内RGBA置零，框外包括低alpha和隐藏RGB逐字节保留。受保护的 `foregroundProvenance.localClear` 保存源图身份、独立PNG baseline、固定原标记和新clear，使删除/移动新标记能恢复基线；初始keep/glass继续原生流程，公开替换PNG清除旧历史。
+- 源码helper实跑8896真实手部PNG：清除33点/132bytes，域外RGBA/alpha/隐藏RGB差0，删除clear精确恢复原PNG SHA；证据 `work/repair-185/local-clear-refinement-r12-20261003-225000/real-png-clear-receipt.json`。仅证明像素算法，安装版实际操作另验。
+- 独立review补现三处：空clear history的真实但无关baseline跳过派生校验；异步读取后confirmation字段变化未绑；独立v2首次清除前已有keep标记可删除但domain不允许。正式回归在 `app-store.test.ts` 与 `ImageLayeringWorkbench.local-clear.test.tsx`，分别独立校验baseline/current关系、操作确认身份及真实Workbench传参。精修UI独立RGBA只提供clear并锁定原标记，保存history的新标记仍可撤销；legacy工具不变。
+- 修复前完整回归5528 PASS/2 opt-in SKIP，精修UI补修RED1 FAIL/1 PASS后相关5files38 PASS。最后代码补修后须重新跑全量、types/build及实际独立身份安装；禁止把此前DIB同appid安装当成隔离通过。新命令 `npm.cmd test`、`npm.cmd run build`；实际操作actor与fixture固定在 `work/repair-185/installed-local-clear-r12-20261003-prepared`，准备/自检不替代GUI通过。
+
+## 2026-10-03 R12：默认独立 RGBA、确认绑定、精修框坐标及日用安装恢复
+
+- 新分析仍默认灰度 `source-alpha-matte-v1`，虽然下游已有独立RGBA支持；单图源色混合无法靠反复重新分析唯一拆出金属/水滴/接触光学贡献。最小修复保留 `pixelMode:source`，新增可确认的 `foregroundOutputContract`，新成功分析用v2，旧缺字段保持v1；plan/draft/graph/jobs/Dialog/proof完整保存并绑定。MCP保护字段同步；startConfirmedLayering在catalog前和held jobs绑定事务内核对当前组/每个子层/原图/确认摘要/合同，错组不调provider，等待后改变不派发。
+- 独立复查再现legacy计划跳过所有子层实际合同，8新增case先4FAIL/11PASS后15/15，graph/store327/327；仅legacy子层absent允许，已存在必须为正确v1前景/opaque背景，v2/错角色拒绝。新全源码 `r12-full-source-final-20261003.log` 332file5507PASS/2 opt-inSKIP，9workspace types exit0；后续local-clear若再改源码必须重新核验/build/repackage，不能复用此hash。路线RED/GREEN、proof、Dialog、MCP/store回归均保留在work/repair-185。
+- 原生 refine-local-layer 用确切IPC重现已安装ElevenROI手部RGBA差0。四污染框33点均SAM0→trimap128→ViTalpha199–255，不统一腐蚀/阈值损伤透明物和细指。另真正RED3FAIL/8PASS复现整数归一化几ULP使floor/ceil多行列，共享 `sourceMattingBoxPixels` 只恢复几ULP整数，trimap/glass一致，真实fractional保持；focused11/11、相关7file168/168、desktop-core types0。坐标修复同真实IPC仍diff0，不能称钢污染已清理。clear4原生重算会改域外321056RGBA bytes/97608alpha，保留local-only FAIL。报告 `refinement-rootcause-r12-20261003-220600/REPORT.md`。
+- **修正旧安装保护误报**：标准同appid DIB安装到QA目录并非隔离；它移除了原 `D:/CanvasAtelier/Canvas` 程序并改public desktop/start menu shortcuts、HKLM每日卸载登记。旧DIB receipt的dailyProgramChanged:false/isolation passed结论作废，精确程序复制/PS粘贴功能证据不升级为隔离安装通过。按旧 `daily-before.json` SHA107542f7…26aa9，nsis-payload-185-ILFK2r提供3277应用文件，DIB目录提供同SHA卸载器，3278旧程序文件已逐file长度/SHA完全恢复。HKLM卸载entry逐value/kind恢复；shortcut target/workingdir/icon恢复，历史仅hash无lnk bytes备份，不称byte-identical。
+- 恢复脚本均拒绝目标重解析、现有非空程序目录/未知系统状态，全部来源先hash，未跑安装器/GUI/项目写入。第一次普通注册表read-only及第二次无机器写权限失败留存，准确pin helper用Windows系统权限完成，收据 `daily-program-restore-r12-20261003/restore-receipt.json` SHA35c807dc…ebfff、`daily-windows-restore-r12-20261003/restore-receipt.json` SHAc53dd366…ad4a4。保护核验 `r12-original-project-integrity-20261003.json` SHAf6f0adac…33f5：4原项目整树及recent-index不变，主572。更正总收据 `r12-dib-installation-correction-20261003.json` 保留旧证据且明确推翻隔离结论。
+- 后续所有QA必须distinct appId `com.canvasatelier.acceptance.*`、不创建日用shortcuts，使用已审查bounded private NSIS与 `install-isolated-qa-current.ps1`，逐全tree/已有Windows登记前后核对；标准正式同appid安装只在所有实际门禁后正常升级日用目录。当前五素材整合仍FAIL（343407 FG delta>1/max227；右台面接头、杯身接触光照、手部钢边、杯口落珠漏抠），不得发布成全部通过。用户已授权本轮v1.6.185发布GH，公开Latest实际1.6.184，付费0保持。
+
+## 2026-10-03 R8F11：完整背景与独立光学层的正式导出合同修正（新构建/安装验收待完成）
+
+- 用户要求核查 YANZO 为什么抠图干净并能得到真实图层 PSD。只读本机1.9.5程序确认对方也逐层图像编辑，另有元素唯一owner、模型内容复核/重生、alignment与本地placement；普通PSD保存RGBA预览及嵌入原PNG智能对象，先写PSD再最终复核，needs-review保留，结构回读跳过pixel。未启动对方、读账号、执行provider或付费；不能据静态机制宣称同图材料清洁已通过。报告 `work/repair-185/yanzo-layering-static-195-20261003-170123/COMPARISON.md`，SHA `a0a7e3fb6ca12bfc4becc4207b77afc403c383ff071eda29c50b3ff0b833027d`。
+- 直接运行冻结生产模块的零网络4×4证据确认两处本方合同冲突：明确replace且已完整审核的未覆盖BG像素改40仍被全图原图等价误拒；已审核独立body+water重合成RGB/alpha误差0仍因不透明carrier源色无法从单图证明而永久review-required。实际codec另行写入并decode3个RGBA层成功。不是PSD编码失败，也不把当前79%实体返图重叠归为已修好。收据 `work/repair-185/offline-layering-gap-review-r8f10-20261003/contract-probe-receipt.json` SHA `26de1dfc4c99501f99b6bf3de830917f0243ec7ce62ad38c7652c82271e67544`。
+- 最小修正在 `source-layer-document.ts` 的strict决策层消费现有完整local-review/assembly摘要。strict replace须整图、当前非空group摘要、当前背景审核、每层摘要一致和真实独立RGBA候选；裸matte/legacy preparedRgb孤立flag不能授权。仅原坐标中所有FG alpha=0的背景域可改变；任何FG alpha>0（含水流、玻璃及柔边）仍与source重合成≤1。preserve全图源等价默认不放松。实际背景改变后的半透明carrier重建尚未由这一修复证明。
+- 已完整当前审核的independent RGBA、source重合成符合旧≤1、每层active/隐藏后贡献>0且唯一review原因是opaque source beneath partial upper时，formal决策可认可人工审核。standalone物理status、exactOpaqueSourceRgb=false、阈值与旧文字诊断都保持；仅增加稳定diagnosticCodes，决策必须精确匹配sole opaque-source-under-partial或source-composite-mismatch，未知/额外原因均不豁免。错误RGB、错位置、空层、有孔背景、未审核、旧摘要、raw35%强重复仍拒。FG alpha0本身无法区分真背景与漏抠，逐层对象/边缘人工检查仍是必须语义边界。
+- 独立审查实际stdin复现BG.opacity .5/0时validator按opaque背景计算而返回PSD有alpha误差127/255，本轮新的optical出口会误放行；当前strict在decode前要求背景图层opacity=1，保证物理validator和真实all-visible compositor一致。replace背景许可只限RGB，不许可改变最终alpha；audit与待修整PSD继续用于检查，不冒充formal。
+- production回归先5 FAIL/57 PASS（`production-red-final.json`），稳定原因代码先4 FAIL/5 PASS（`diagnostic-code-red.json`），BG.opacity先3 FAIL（`background-opacity-red.json`），最终focused两文件66/66，相关10文件396/396，renderer非增量tsc exit0；真实PSD encode/decode检查3层、alpha128、水流/杯身RGBA、尺寸与位置，未使用mock codec。日志 `work/repair-185/offline-layering-gap-review-r8f10-20261003/`；最终source receipt SHA `233e2000d6440c7400c3fe54f5617bd1569d2278c1191cfe093e0e19c2debdb0`。命令：`node node_modules/vitest/vitest.mjs run --config vitest.config.ts apps/renderer/src/app/source-layer-document.test.ts apps/renderer/src/app/independent-layer-validation.test.ts`；类型命令 `node node_modules/typescript/bin/tsc -p apps/renderer/tsconfig.json --noEmit`。
+- R8F10源码/浏览器/候选/安装凭据仅对应其旧字节。R8F11须新冻结、build/scan、重新打包、真实新安装UI/PSD/Photoshop验收；当前五角色材料语义质量、日用升级、外部Codex MCP和公开发布仍未完成。原572项目及dirty树保护保持，新增付费调用0。
+
+## 2026-10-03 R8F10：重新分析失败保留手工草稿（当前新构建与安装实测待完成）
+
+- 只读复现确认 `LayeringDialog.runAnalysis` 在调用返回前清空 plan、createdGroupId 和 started，草稿 effect 会立即持久化空状态；拒绝分支只写错误，关闭重开后丢失手工说明和已提交绑定。新增两个真实异步边界回归：等待/失败/重开保留完整方案与组，只有成功返回才替换并解除旧提交状态。RED `work/repair-185/reanalysis-draft-retention-r8f10-20261003/red.log` 为 2 FAIL/15 PASS，两个失败都发生在分析结果尚未返回的草稿清空断言。
+- 最小生产修正：等待及失败保留旧 plan/group/started/step，成功才更换；operation 区分 analyze/generate，重分析显示正确等待文案；等待中禁用名称、说明、包含、顺序及视觉模型编辑，update/move 同步 guard 防止同事件边界修改被返回结果覆盖。不自动新建或提交图层，不继承旧组 ROI 到不同新方案。
+- GREEN `green2.log` 17/17；`wider.log` 六文件 62/62（弹窗、draft、plan、graph、jobs、analysis）；`node node_modules/typescript/bin/tsc -p apps/renderer/tsconfig.json --noEmit` exit0，`renderer-tsc.log`。首次 workspace npm typecheck 命令因该包没有对应 script 而失败，保留日志，已用真实 tsc 命令核验。测试使用明确本地 callback，不代表供应商新分析通过，付费调用0。
+- 独立 review 直接复现第二个 P2：分析等待中关闭旧弹窗、同源重开并编辑后，旧结果仍通过同源父回调覆盖草稿，下次重开才显现。新增完整生命周期回归 `pending-close-red.log` 1 FAIL/17 PASS；最小 mounted guard 在卸载后拒绝迟到分析的状态与持久化写入，不禁用关闭，不取消或重新授权生成任务。最终 `pending-close-green-wider.log` 六文件 63/63，含弹窗18项；独立只读旧 P2 复现凭据 `r8f9-layering-rootcause-review-20261003/pending-close-probe-receipt.json` SHA `87030a57460cc933aba99f5d0a23a4a9717391c4d58b56a1994c175d78680de9`。
+- R8F9 冻结源码 5451 PASS/2 SKIP、九工作区 types、315 browser PASS/1 原海报缺失 SKIP、标准 stress12、build/scan/unpacked；对应 source manifest `52083ae2f47bf4104a647b45ee97f7f77de08bb30454895056ff62094d2da11f`。独立 R8F9 bounded2 NSIS exit0、3277 payload 逐字节匹配，common9+large 实际安装 gate 通过。原 seven gate 写死历史 thermos7 ID，在当前572 thermos5 项目无法定位：保留失败，不能以 Blender7 替代；当前五层与历史七层回归分开核验。本次 R8F10 源码修改使上述 R8F9 构建与安装凭据仅作为历史基线，需要重新完整冻结、重包与实机验收。
+- PSD 原生 v9 局部机械回读通过（仅全零边框裁切、原alpha/其他层/框外RGBA/合成像素严格保留），但白黑底实际裁图仍有指影与亮色拼缝，语义 FAIL；不能作为最终杯身或正式合成证明。完整四指钢/灰修整及实体接缝alpha缺口继续独立修复。新 UI 实机草稿/十一框/预览与完整材料、Photoshop、MCP、日用升级和发布尚未通过，不新增付费调用，不修改原572项目。
+
+## 2026-10-03 R8F8：实际安装版状态错误复现与修复（新包实测待完成）
+
+- R8F7 新界面完整冻结门禁通过：330 源测试文件/5430 tests、9 workspace types、315 browser PASS+1 原海报缺失 SKIP、原12次压力、build/scan/formal unpacked；source manifest `867c34f6b5037ff9bb268815005e07cdc4757cbf5454d0eae784879272359bb5`。新 R8F8 不沿用这些构建作为新源码证明。
+- R8F7c 独立 NSIS 安装实机 exit0，实际路径 `staging-canvas-build/qa-install-185-r8f7c-20261003-094500/Canvas`，3277应用文件与冻结候选逐字节相同；安装器 SHA `73dde88640644455896dcef6b99aba9aed35069c8cec8bd9c46e120a029e893f`。日用程序全树、原4项目、既有卸载项与快捷方式不变。此前 System.dll 首次安装失败保留，私有 pinned NSIS mode include 只用于当前用户 QA 安装，标准自动 uninstaller 保持；未修改上游包或正式 perMachine 安装配置。
+- 在上述真正新安装版中使用原572副本，新的精修侧栏/3工具/固定底栏与原图实际显示，SVG Delete/Backspace未删节点。错尺寸 PNG 被真实原生校验拒绝，素材/图层/证明不变；正确 e17 原生精修 PNG 实际 import1/commit7 全部 resolved，但组被格式回调错误标为 running/validating，严格 gate 保留 FAIL。实际凭据 `qa-scripts/output/local-rgba-replacement-installed-murr4hjm-c0c5906f/installed-local-rgba-replacement-receipt.json` SHA `4d0ce22584c701c49e595cb43fb9e46c7978207608905818fde104eb9a758930`；正常协调退出 exit0，原4项目和日用程序保护通过；provider/Codex/refine调用0。
+- 最小修正 `updateImageLayerQuality`：从实际相关 modelJobs/子层 queued/submitting/running 派生生成状态，不能因语义 pending 推成生成中，也不能使用组自身旧 running。组或任一子层 needsReconfirm 时仍 needs_review，不恢复旧证明；真实活动生成仍拦截替换。新增 legacy缺合同/格式字段回调/第二次替换、3类真实job、全部legacy格式passed但needsReconfirm 共5项；先4项RED，后4文件337 tests GREEN，renderer tsc exit0。source receipt `work/repair-185/local-layer-format-state-tests-agent-20261003-101452/source-state-regression-receipt.json` SHA `72cb4ec623b41a8452c49450df5b079e8a5d888812c1cd8cbf7b1df4fb871d8f`。
+- 只读追查发现 modelJobs 是全局队列，复制项目会保留同组/节点 ID。格式/复核/替换/精修4处 local guard 加项目归属，explicit foreign projectId不拦当前副本；legacy image_layer 的 jobId/group/layer/source受管绑定只通过显式 allowDurableLayerOwnership opt-in 识别。全局 dispatch/recover默认保持旧准入，不借本地保护重新授权旧queued记录。foreign同ID/legacy guard先4项RED，global默认边界再1项RED；最终6文件457 tests GREEN（含11 format-transition/21 project-model-jobs/93 job-store），日志 `work/repair-185/local-layer-project-queue-tests-agent-20261003-102737/green-final-regression.log`。需要新冻结安装实测，不以本地guard恢复语义证明。
+- R8F8 新冻结构建、独立安装、真正 UI 替换/保存重开/待修整PSD与新精修应用尚待执行。五角色材料语义质量仍 FAIL，未完成正式合成/Photoshop最终实证/MCP后续/日用升级/公开发布。不能以本次 UI、来源或数值回读通过代替语义验收。无新增付费调用，未改原项目。
+
+## 2026-10-03 R8F7：实际独立安装、原项目精修与精修面板整改（最终发布未通过）
+
+- 原项目正常退出后最新稳定修订 572，当前保护集合动态核验为 4 项；全树备份、程序与窗口保护凭据为 `work/repair-185/protection-output` 和 `staging-canvas-build/user-project-backup-185-r8-2026-10-02T23-52-17-770Z-43fe3e15/r8-backup-receipt.json`，不得用历史 542/570 或硬编码 6 项替代当前保护。日用真实路径 `D:\CanvasAtelier\Canvas\Canvas Atelier.exe`；旧 `D:\CanvasAtelier\Canvas Atelier` 为空目录，MCP 修复仍按用户顺序延后。
+- R8F6 完整冻结门禁已通过：326 源测试文件/5366 tests、9 workspace types、309 browser PASS+1 原素材缺失 SKIP、原 12 次压力和 build/scan/formal unpacked。新源码有下面修复，R8F6 凭据只绑定其历史字节，不能作为新修复的最终构建证明。日志 `work/repair-185/r8f6-frozen-final-pipeline-20261003.log`。
+- 用户要求在真正新安装版中处理分层，已用冻结 payload 制作不同 appId 的隔离 NSIS 安装，实际安装注册路径 `staging-canvas-build/qa-install-185-r8f6-20261003-080512-v2/Canvas`，3277 个应用文件逐字节匹配。安装器首次 System.dll c0000005 失败保留，第二次 exit0；builder 的 StdUtils 二次参数解析把无引号的 `/D=.../Canvas Atelier` 截为 `Canvas`，因此按实际注册目录核验，未搬动伪造安装证据。日用程序、既有 Canvas 卸载项和快捷方式不变；更广的注册表键未有完整前态，不声明全注册表不变。
+- 真实新安装版、真实 preload、无 E2E/fake native 返回：从 572 保护副本查看五层与保存分析，实际界面导出待修整 PSD、正常保存关闭和重开再次导出，六个 PSD 图层原坐标/RGBA 一致。第一次完整结果 `qa-scripts/output/five-local-inspection-installed-murndjpr-fb2cb20f`；正式合成依旧因杯盖/手部重叠 79% 拦截，语义质量和最终发布仍 FAILED，付费/供应商/原项目写入均 0。
+- 在同一真实安装版中又用原图正负 4 个小框执行真正本地精修，原生 refine1/import1、最终 commit7/7，无挂起；副本修订 580→581，实际 UI PSD 两次 SHA `517d6bcce528dfca915470b118b6a8893428f8a5652cf502f06de90f9ee6704a` 且像素/坐标一致。结果 `qa-scripts/output/five-local-inspection-installed-muro886p-3405d83c`；新手部 PNG `e17d8d011a821788.png` 有真实原图 RGB，但边缘/孔洞仍需检查，不自动接受质量，原四项目全树不变。
+- 实操发现精修 SVG 的 Delete/Backspace 被 CanvasWorkspace window capture 当画布删除处理，会误删选中分层组。新增真实 CanvasWorkspace+portaled refinement SVG 两项 RED，最小 guard 排除 modal 内的 Element（含 SVG），11 项 Delete/Backspace focused GREEN，全 CanvasWorkspace 187 tests GREEN。普通画布删除/paste、Escape 和文档保护保持。
+- 旧白蒙版分组被重叠拦截后，ImageLayerNodeWorkbench fallback 直接显示白 RGB；修为原图 RGB+蒙版 alpha，不改独立 RGBA/prepared RGB，继续显示质量拦截。新增当前 5 项本地素材 UI 回归+原 7 项全 GREEN；绑定不符的本地 RGBA 继续拒绝，不通过预览消除语义问题。
+- 增加真实本地完整尺寸 PNG 替换入口与双阶段 native/store 操作。native 按当前 revision、源文件 SHA/尺寸/节点组计划归属、实际 PNG 解码核验；只在明确图层目标存在时保护 source-space bytes。phase2 在串行事务内重验当前所有者，保留 previousResultAssetId 与旧 v1 分析合同，绑定 source/result SHA 的 local-rgba-import 物理来源；重置整组证明并标 needsReconfirm/semantic pending。跨项目迟到 ACK 不覆盖当前 session；active job/APNG/错尺寸/空 alpha/不透明前景/有孔背景等拒绝。agent readonly 审查无 must-fix，focused 614、增补83有重叠不累加、native160 GREEN，尚待新真实安装 UI 入口实测。
+- 本地修整背景不能被旧 donor harmonic 自动重改：真实源测试发现 hidden RGB40 被变120，local-rgba-import 专门保持导入隐藏背景 bytes；preserve 模式的外部原图策略仍保留。local RGBA 不冒充 preparedRgb/v2 AI 合同，严格合成仍要求当前 SHA 摘要和逐层语义接受。
+- 用户指出精修 UI 简陋。旧界面 1100×760 的真实 browser RED 确认底部按钮在视口外。SourceLayerRefinement 改大图+工具侧栏，3 个带状态和说明的标记工具、64 区域计数/独立滚动、原图彩色编号标记，底部固定取消/应用与真实失败反馈；小于720px纵向布局，门户统一现有主题 token。原抠图算法/框坐标/逐层检查保持。取消会丢弃未应用草稿，独立 RED→GREEN；保留处理中的禁用与原图大小。`r8f7-refinement-ui-focused-green-20261003.log` 218 tests（含187 workspace），最后 `r8f7-refinement-final-focused-20261003.log` 44 tests GREEN。`layering-refinement-ui.spec.ts` 真实拖框/添加/移除/编号与主题/1100×760、1600×900、640×760 共6/6 browser GREEN，日志 `r8f7-refinement-browser-green-20261003.log`。最新源码重构建/真实安装核验仍待完成；不因这些 UI/像素链路通过发布。
+
+## 2026-10-03 R8F4 后续：独立 RGBA 候选与证明失效链
+
+- R8F4 历史候选的完整流水线与 Common 9/9 只作为旧源码阶段证据；新增独立 RGBA 合同、直 RGBA 预览和证明失效链后，必须重新冻结源码、构建和候选，旧 EXE/app.asar 不得安装或发布。
+- renderer→native bridge 传递成对的分层合同和确认摘要，普通任务与 Comfly HTTP body 保持旧协议，默认透明路线仍为 `source-alpha-matte-v1`。`source-independent-rgba-v2` 只是候选表示，不代表语义质量通过；需当前摘要绑定的逐层语义检查后才允许正式 PSD。
+- 排序、校正、背景配方、新返图、精修或重新检查会使组和子层需要复核，清除旧语义/assembly 证明；原资产对应的 prepared RGB、matting、provenance 等物理表示保留，不能在证明失效时把直 RGBA 再当原图蒙版处理。新资产不得继承旧格式证明。本地复核使用独立 assembly 摘要并复算当前计划/子节点/受管资产，保留原生成合同摘要，无 provider 调用。
+- 首个独立 RGBA 候选格式 PASS 后保留语义 pending 导致串行队列永远选中首层，真实三候选 RED 只检查 `[0,0]`；修复后 `[0,1,2]` 依次完成且仍语义 pending，旧 asset 或版本仍重新检查。相关本地闭环 6 files/437 tests、队列 5 files/429 tests 和最新 renderer 非增量 typecheck 通过。UI/PSD/readiness 聚焦 5 files/46 tests 通过；旧格式版本、旧资产或失败层不开放本地复核。较早合同 30/native 233 回归作为相应阶段证据，不冒充完整最终验收。
+- 修订 570 的 full-five v19 仍 FAIL（exactRatio 0.9654598441942794，maxChannelDifference 184，uncoveredByteDifferences 882；背景拼缝、跨层污染、手部镂空、水层光晕），因此安装版、Photoshop 实证和公开发布继续保持未完成。
+- 用户追加巨轮新增模型接入，并明确顺序：加入模型、修复之前问题、再修 MCP，随后新包真实验收后直接安装发布，不重复请求既有批准。只读官网公开目录为 24 视频 ID，本机缓存 7，17 未收录；包含别名/渠道变体，不能说 17 个新基础模型。公开证据 `work/repair-185/julun-public-catalog-20261003/`，没有付费调用或凭据输出。目录与参数协议仍在补修，不修改默认选择来冒充可用。
+- 巨轮目录及已证参数补修阶段联合 6 files/177 tests、desktop-core 非增量 typecheck 通过：预置28（当前公开24+历史兼容4），已有缓存仍可看新增候选目录；缺失项 disabled/incomplete，不改默认或私自启用。原7缓存全部错误地套用720p/5或10秒，list/submit现使用对应公开规格，保持模型ID/route/order/enable和原存储快照；完整参数证据5条，已认证旧缓存3完整/4待补，不把网站名称出现当作协议完整。视频编辑、多图/视频/音频扩展仍缺巨轮具体decoder绑定，只接既有已证文字+单图。用户给出julun.cc/pricing和docs.newapi.pro/zh，已实际读取并继续核对插件级协议。
+- 随后独立复查发现3处必须补修：显式disabled模型被刷新重新选择/仍可提交；当前参数门禁早于已接受任务恢复；旧缓存未知complete仍回退到虚构默认参数。新边界测试实际11 FAIL后修复中，不能继承177项绿灯或07:03启动的冻结流水线；旧流水线已正常Ctrl-C停止，无Canvas GUI或浏览器子进程遗留。已有付费任务恢复必须保留原映射且不重POST，新提交仍须在reservation/POST前完成停用/参数/身份校验。
+- 以上3类及真实存储双刷新/重启边界已闭合：11 FAIL/88 PASS 与 5 FAIL/25 PASS 两组有效RED保留；最终联合6 files/199 tests、desktop-core非增量typecheck均通过，集中独立review无新增must-fix。未知或显式停用新提交在reservation前拒绝；已接受任务按原job/history/provider/kind/project/session严格恢复且POST始终1。保存[]和disabled条目跨refresh/restart保持停用、显式重新勾选才启用；首次未配置目录与认证新增项均false，exactID选择不以route替代身份。旧ledger未存model ID，不冒称重启同model核验。
+- SettingsDrawer真实UI复现最后一个模型取消后点保存无回调，最小补修删除空选择提前return；新测试验证bridge[]、当前provider默认清空、其他provider默认保留和成功反馈。最新2 files/104 tests、renderer非增量typecheck通过。用户随后要求在新安装版画布中实际做AI分层；下一步从新冻结包制作独立安装身份的QA安装版，打开570保护副本沿用已有分析/素材，检查各层、合成和UI PSD，不触发付费重分析。完整实图未通过前不替换日常安装或公开发布。
+- 官方插件研究已核验registry和源码SHA，记录于 `work/repair-185/julun-public-catalog-20261003/official-video-plugin-protocol-review-20261003.md`。Julun 24个ID与registry上游声明名没有exact-case匹配，公开渠道映射缺失；通用插件不能证明自定义通道可执行多媒体或字段合同。只保留公开已证参数子集，不新增paid请求。
+- 完整明暗浏览器本地复核新增场景已通过2/2：三个真实受管图层从pending进入实际串行pixel queue、逐层检查、保存重开、UI下载PSD；普通alpha128与低alpha32原RGBA及原坐标复嵌完整回读一致，未预填格式证明，新增生成0。
+- 新独立scope-v20-hidden-body-agent-20261003实际补104575隐藏杯身像素并保留供体/估计mask，PSD与全合成字节回读一致，但实看闭环边缘接缝和反射跳变仍FAIL；杯盖similarity在杯口/下缘残差10.77/14.14px，未使用不可靠供体。正在新副本继续局部联合边界分解，不能把这一候选或字节0称素材完成。
+
+## 2026-09-30 r8 干净交接续跑：实际素材宽度、播放器海报与反推模型草稿
+
+- 从 `CANVAS-CLEAN-HANDOFF-20260930-R8.md` 续跑，HEAD/分支与交接一致，dirty/untracked 保留。只读当前真实项目仍为 revision542 / nextSequence543 / cleanClose=true，190 nodes、335 snapshot assets，索引334 images/1 video；当前保护集合为6项目。PS只读快照0文档；8个无窗Canvas EXE均精确匹配Codex拥有的stdio桥，不能作为GUI或QA孤儿处理。本节未建立fresh保护backup、未构建/安装/发布，新增付费调用0。
+- `image-slot-density.spec.ts` 实际RED为scrollWidth676 / clientWidth674，节点704px左右边框各1px，素材区702px左右padding14px；旧12槽预算错误按预览676px计算。自然素材row现在声明inline-size容器，槽位宽高同用100cqw内容预算，contain/间隔/原4项断言保持。97项定向browser全部通过（`r8-continue-ui-focused-5a8a371a1eae.log`），真实rowWidth/clientWidth/scrollWidth均674，12槽完全在行内；thumbnail4项、running22项原比例/参数/GPT横线均通过，最终完整browser/candidate/installed仍需后续门禁。
+- 暗色视频原owned fixture已有合法video src/poster，旧测试却找独立img。`ui-polish-screenshots.spec.ts`保留真实2次拖线与edgeCount1→2，改验真实播放器的owned src/poster/controls/完成状态及Image.decode1280×720，新增真实SVG路径，明暗2/2定向通过。172字节结构性MP4不证明播放，actualEXE ratio gate仍必须真实encode/decode/play本地MP4。
+- 复制原场景单跑和普通12次复验通过，但旧trace确认按钮原y约1098，Playwright临时DOM滚动rf wrapper233px后SDK立即复位0。50ms真实按键复现失败，保留`r8-continue-copy-scroll-red-3a3709dac2c1.log`与trace。验收现在先用实际ReactFlow fitview操作使按钮进入转换视口并要求中心hit-test及wrapper scrollTop0，再真实50ms点击；保留复制正文、成功反馈、两条边和持久化重开断言，记录trusted pointer/click事件。诊断自身FocusEvent非有限坐标错误已补Number.isFinite保护，须使用其修后fresh复验结果。
+- 连续8次原反推场景还取得1次真实模型route被旧默认草稿回写失败（`r8-continue-copy-repeat-81a52b5be378.log`）。新增component RED保护显式选择/未编辑外部hydrate，修复对待保存的本地route保护；进一步补实际RED保护已确认后的外部更新和同项目durable reset，reverse key加入canvasDraftResetKey。前一轮组件328/328通过；quick选回原route外部更新又取得RED后补修，仍需fresh最终源码验收。独立审阅正在复现queued autosave边界，不能以乐观config回显冒称native ACK确认。
+- 两个新exactEXE QA入口补了真实空白canvas导入hit-test、每次恰好独立owned input/原生bytes身份、fresh目录/WX/ownedOutputPrepared、外部expectedEXE/asar绑定及bounded stderr完整hash。原9正向/10拒绝/3heldACK撤权、zero-inflight、durabletree严格不变、EOF0/signal-null和ratio12+3/原几何/四边/参数门槛保留；只做nodecheck与独立静态复审，未运行候选EXE，不写功能PASS。
+- `reverse-route-autosave-race.test.ts` 真实desktop persistence/native事务+挂起ACK取得queued旧snapshot的有效RED：store观测selected→old→selected，最终durable正确仍不能通过。最小修复在autosave stable callback除generation外要求latestProjectAutosaveSnapshot身份一致，旧queued项直接成功结束且不清新pointer，新pending由原controller继续保存；cancel/native revision/session/错误/MCP guards保持。四文件fresh相关回归643/643通过，独立复核latest/controller生命周期无must-fix。最新组件329/329通过；真实MCP旧revision/撤edit拒绝与合法route更新也在回归中通过。
+- corrected复制验收最终`r8-continue-copy-scroll-final-*`真实50ms按钮点击4/4通过，trusted click的scrollTop0和中心目标正确，原反馈/正文/持久化断言保留，无诊断pageerror。随后开始最终完整源/browser/原12次性能/build门禁；本节定向PASS不代替候选或安装版。
+
+## 2026-09-30 r8 四页设置已按用户确认实施，新增 Agent 能力对比
+
+- 用户明确回复“可以了那个设置页面按照这个来”，批准四页统一骨架及既有墨绿色。设置抽屉采用 62px 顶栏、180px 导航、最大 1120px 面板，横向表单、薄分隔线、独立六项默认模型及折叠目录/诊断；MCP 常用四权限与客户端操作直接可用，其他权限保留在展开区；同步页应用更新移至主区域。凭据、供应商编辑/优先路由、目录迁移保护、MCP 同意/信任和手动更新处理函数保留。
+- `ProviderModelDefaults` 只允许已启用且可运行的家族代表路线；旧 alias 可识别对应家族，但提交仍使用可运行路线。源码 RED/GREEN 与 alias RED/GREEN 已记录。设置相关最新 103 项通过，包含六种能力选择不同组合后保存并重新打开逐项核验；全量源码回归 4448 通过、2 跳过，`work/repair-185/source-r8-full.log`，之后增强的六项保存集成用例在 `settings-r8-unit-final.log` 复验通过。
+- 四页骨架浏览器最新一次 7/7 通过，16 张明暗/1100/1600px 截图与几何指标在 `work/repair-185/settings-ui-r8`。各页横向溢出 0，1100px 默认模型保存按钮和同步更新按钮在首屏；深色标题/内容 #202523、导航 #191e1c、字段 #272d2a。其余 16 个旧设置场景全部有通过证据（首轮 14+2 失败，修正精确区域定位后该 2 项重跑通过）。完整浏览器最终为 265 通过、1 跳过、2 失败：300/500 大画布在 1920px 明暗拖动停止时 304/336ms，超过原 250ms 门槛。隔离标准复现 light 328ms 失败、dark 120ms 通过；CPU profile 中整壳 CanvasWorkspace JSX 创建为主要 JS 热点。`work/repair-185/perf-r8` 保留诊断与真实失败；未降低门槛，未交付安装包。
+- 独立只读审阅未发现 P0/P1/P2 回归，补齐其指出的六类默认路线保存与重开覆盖。CSS 与产品设置结构已冻结；需完整 build、r8 exact candidate/installed gates、NSIS payload 与发布指纹。r6/r7 仅为历史候选，日用安装版仍为 r5，不可代替当前版本证据。
+- 用户新增比较 `E:/BaiduNetdiskDownload/333/桥豆麻衣酱_Atelier-1.0.exe` 的 Agent 分析与反推能力并加强我们的需求分析。先只读静态审计与有证据的升级方案；原文件 99590656 bytes、SHA-256 16d2e713b1420160fae72f63d2af590bc32f59f4c4c8c656de51de4fbaa36e6b，元数据版本 3.5.1，Tauri/Rust PE，未启动/安装。不得用静态声明或模型名称虚报实测性能百分比。保持当前项目和零新增付费调用；新增 Agent 方案继续遵循用户先方案再实施的要求。
+
+## 2026-09-30 r7 分层重复标题与截断已实测，四页设置方案先审阅再实施
+
+- 用户指出“图层工作台 / 预览、整理与导出”重复标题以及边缘精修按钮截断。移除内层重复标题，将原图/合成图、边缘精修、校正位置和同步集中到工具栏；内容区不再整体滚动，仅图层列表可滚动，底部 PSD/Photoshop 操作保持独立。相关源码 39 项、浏览器 9 项通过；r7 完整 build 退出 0，候选程序在 `E:/画布项目/staging-canvas-build/formal-185-output-r7/win-unpacked`。r6 安装包已被本轮修改取代，不可安装或发布。
+- r7 用最新清洁保存 revision 490 的隔离副本实际检查七层，原项目只读。界面 body/list overflow 均为 0，工具栏完整可见，无重复标题；真实 2196x2196 七层 PSD 导出成功，每层位置和尺寸与独立本地修复参考一致，透明蒙版差异为 0，前景不透明 RGB 差异为 0。receipt: `work/repair-185/qa-scripts/output/seven-candidate-1790733777858-79143c02/current-receipt-1.6.185.json`；PSD SHA-256 `63ccdd39f8aa4e26d8b59e3f5dbe12662ef4c12b64fb2d8a40303ecf2e00611f`。背景采用独立完整补全图，不能将此解释为原始污染返图已通过。
+- r7 Photoshop 实开 UI PSD、强制重新合成以及非 GPT 4096 非中性校色/GPT 2880 智能对象三项通过，只操作自建验收文档。receipt: `work/repair-185/qa-scripts/output/photoshop-candidate-185-1790733874622/photoshop-installed-185-receipt.json`。候选证明不替代最终整合版本的安装版重验，新增付费调用为 0。
+- 设置页预览根据用户参考图复用原主题：paper #202523、rail #191e1c、field #272d2a、line #373e39、accent #8ed5be。`work/repair-185/settings-layout-preview-all.html` 可本地切换 API 与模型、存储与备份、MCP 联动、同步以及明暗主题；四页八张截图已生成，1100/1600 窗口无遮挡，外部请求和页面错误均为 0。预览状态、密钥掩码及数值均为示例，不读取真实配置。
+- 用户先批准四页静态方向，随后要求“先给我优化方案之后再进行实施”。本轮未修改 SettingsDrawer/ProviderModelCatalog/settings-atelier-polish 产品代码。下一步先呈现四页信息层次、常用操作与高级折叠的具体优化方案，再实施；保持安全凭据流程、供应商选择与优先级区分、六类默认模型/启用持久化、缓存取消及迁移失败保护、MCP 连接授权/信任和本机同步边界。
+- 设置实施后需新构建并生成 r8 候选，重跑相关源码/浏览器以及候选/安装版矩阵后再发布；不可沿用 r7/r6 指纹或旧安装包宣称新版通过。
+
+## 2026-09-30 r6 分层工作台方案已批准，真实剪贴板粘贴验收通过
+
+- 用户批准清晰预览、更大缩略图和列表、默认收起背景/分析、固定底部 PSD/Photoshop 操作及统一明暗主题。预览最长高度 210px，按原画幅比计算宽度；七层列表 52px 固定行高，滚动内容与导出操作分离。列表所在 grid 的收缩曾使实际高度从 400px 变成 380px，改用不收缩的纵向内容流后七层完整显示。背景设置只改变显隐，不改变既有合成选择。
+- 主题文件旧 `button:last-child` 规则造成调整顺序后的 Photoshop 按钮文字与背景混合，改为按明确导出类应用强调色；源码浏览器明暗/比例/显隐/排序/PSD/导航 9 项通过，分层与源像素 39 项通过。完整 build 通过后，按钮主题修复另做最终 renderer build，必须以该产物打包。
+- 本机 Electron 43 的 4K 剪贴板在同步写入后先发布 image/png 格式，立即读取有时仍为空；最小本地探针 64/512 像素立即可读，4096 像素约 100ms 后才可读。验收读回必须有限等待，避免把格式发布与位图可读视为同一时刻。QA 不在写入中循环查询主进程，也不在计时段重复 toPNG 编码。
+- r5 安装版真实 UI 4K 复制→系统剪贴板→自建 sRGB Photoshop 文档粘贴通过：复制 2586ms，renderer/main 最大事件间隔 61.8/816.4ms；边界 0,0–4096,4096；逐通道颜色差为 0。剪贴板保留在内存并恢复后核验，PS 文档前后均为 0。首次 PS 窗口消失导致 COM 验收中断，用户正常打开且确认无文档后重跑通过；保留失败证据。最终 r6 安装后需再次运行，r5 凭据不替代 r6。
+- r5 实际七层 PSD 在 Photoshop 切换可见性重算后与预存合成逐通道完全一致；非 GPT 4K 非中性校色和 GPT 2880 智能对象均仅导入一层，像素、比例和位置通过。r6 新界面候选/安装与公开发布仍需最后验收，不能提前宣称已发布或在线付费供应商通过。
+
+## 2026-09-30 r5 紧凑导航、居中图标和 PSD 实际叠放修复（待候选/安装重验）
+
+- 用户撤回宽版顶部导航：去掉重复品牌/项目入口的可见区域，顶部按内容宽度保留保存、新建、AI、主题和关闭。项目管理继续从保存旁下拉进入。最终样式在 `navigation-atelier.css`，不恢复旧整段覆盖。
+- 左侧 AI 图标 22px 被放在 18px glyph 中，实测中心向右偏 2px；调整 glyph 与图标盒尺寸并停用侧栏图标自身的上下漂移动画，光晕仍保留。真实浏览器中心误差要求 <=0.5px，覆盖明暗主题与 1100/1600px。
+- 实际 Photoshop 回读发现 PSD 背景置顶：`encodeLayeredPsd` 把底到顶输入反转，但 ag-psd `children` 本身就是底到顶。旧预存合成图正常，PS 切换可见性并重新计算后仅剩背景。已移除反转，回归先红后绿；QA 回读以名称匹配独立参考，PS 顶到底顺序必须对应反向 children，且导出 PS 重新合成 PNG 逐通道对比预存合成，不能只检查预览。
+- Photoshop QA 中文名称经 cscript ANSI 输出发生乱码，验收 JSON 改用 ASCII Unicode 转义，生产导出名称保持原文。
+- `psd-stack-green.log` 四文件 39 项通过；`navigation-compact-green.log` 导航/左栏/Agent 浏览器 8 项通过；完整 `npm.cmd run build` 通过，退出码记录在 `build-r5-receipt.json`。r4 真实 PSD 顺序失败，因此不能发布；r5 候选和安装版须重新实测。原项目只用于备份/只读核验，没有付费调用。
+
+## 2026-09-30 r3 实机发现的两项补修（待 r4 重验）
+
+- 独立 188 节点项目副本新建后，图片已写入快照，但最近项目仍显示 0 节点/0 图片。普通 commit 会更新索引，图片/视频导入绕过了该路径。各媒体导入成功提交后现在使用同一异步索引队列；辅助索引不阻塞主提交，关闭仍等待其完成。`project-image-bridge.test.ts` 新增空项目导入后的计数验收，先红后绿。
+- Agent 候选实测保留了追问参考图且真实建立连线，但选择“模型默认”仍失败。捕获异步异常为 `Selected image model family does not provide a verified 2K route`：通用节点默认 2K 覆盖了 Agent 未指定的清晰度。Agent 新建图片节点在已指定模型而未指定清晰度时移除通用默认，交由模型约束解析；显式 1K/4K 保留。`app-store.test.ts` 新增三项，默认项先红后绿。
+- 这两项及图片/视频/最近项目、app-store 全文件回归共 351 项通过，日志 `work/repair-185/candidate-discoveries-regression.log`。r3 不能交付，重构建 r4 后重跑实际流程。原项目未修改，无付费调用。
+- r3 非 GPT 4096x4096 智能对象真实 PS 实测：只新增一层，非中性校色输出 RGB 差异为 0，位置和大小正确，自建文档关闭后 PS 文档数为 0。新 r4 安装版仍须重验，不能沿用 r3 证明。
+
 ## 2026-09-28 1.6.184 待修整 PSD、图片操作与 AI 分层入口（候选与安装版实测通过）
 
 - 草稿 PSD 按钮之前只看正式预览是否报错；旧项目若已有返图但缺少前景原图位置，正式准备器和草稿准备器都会在 `sourceBounds` 解析处失败，界面却误称可导出。`ImageLayeringWorkbench` 现在先核对源图尺寸、1 个背景加 1–16 个前景及每个前景的有效位置，再显示草稿入口；重叠返图仍可进入待修整流程。`ImageLayeringWorkbench.test.tsx` 的缺失位置回归先红后绿，聚焦 15/15 通过，完整 `npm.cmd run typecheck` 通过。源码更新后既有候选与安装包指纹作废，需重建并重跑候选/安装版验收。
@@ -1854,3 +1978,217 @@ Before producing an installer, verify at minimum:
 - 回归：SourceLayerAlignment.test.tsx 新增 portal/Escape/回焦红绿回归；LayeringFailurePresentation.test.tsx 复现共享失败不应显示通过。聚焦 26/26；renderer 类型检查、完整构建、源码扫描通过。scripts/verify-layering-repair-ui.mjs 使用真实组件和生产 CSS 验证深浅主题、1280/800 窗口、缩放画布，4/4 通过。候选 EXE 图标像素通过；候选离线桌面图片粘贴、顶部 AI 分层及三种范围通过，页面错误 0。
 - 首轮全量测试与首次生成 desktop-core 产物并行，导致 7 项模块缺失失败；构建完成后已改为顺序全量重跑。正式安装与 GH 发布尚未完成，以后续报告为准。本轮新增付费调用 0。
 - 最终全量顺序重跑 290 文件通过/2 跳过，4247 项通过/2 跳过；退出 0。NSIS 1.6.180 安装退出 0；EXE/app.asar/icon/全部 renderer 产物 7 文件与候选同哈希，正式 EXE 图标像素通过。实际安装版独立离线项目完成粘贴、顶部 AI 分层、三种范围、保存与 reload，pageErrors=[]、paidCalls=0。安装包 353948577 bytes / SHA256 4ff959eca58cbaea1b8081a1622518a45db5691f092fbf2dabdc19e5b68e3139，latest.yml SHA512/size 通过。报告 docs/release-1.6.180.md；GH 公开状态仍以远端后续核对为准。
+
+### 2026-09-28 — 1.6.185 生图恢复与画布导航
+
+- 用户要求继续处理偶发生图失败、历史状态和画布左侧＋顶部导航，保留真实项目与已打开窗口，不新增付费调用；正式安装与发布须以本版完整构建、候选及安装态证据为准。
+- 生图队列根因：新任务可能在上一轮最后一次队列读取之后、`activeRun` 清空之前到达；旧 `run()` 只返回旧 Promise，丢失唤醒。现在合并后保留一次后续运行请求；即使最后一次读取暂时失败，后来的明确唤醒仍会重放，停止时清除。RED/GREEN 在 `apps/renderer/src/jobs/job-store.test.ts`，命令 `npm.cmd test -- apps/renderer/src/jobs/job-store.test.ts`。
+- Comfly 下载根因：供应商已返回成功图片地址，但 CDN 临时 503、超时或 DNS `EAI_AGAIN` 曾被视为永久无效结果；直接返图甚至会在已预约的任务上丢掉结果地址。现在安全下载器只把已知临时网络错误设为可重试，仍拒绝重定向、内网地址和超大文件；直接 URL 先写入加密任务账本，由轮询下载，跨服务重启也不重发供应商 POST。测试在 `provider-result-security.test.ts`、`provider-bridge.test.ts`，命令 `npm.cmd test -- packages/desktop-core/src/provider-result-security.test.ts packages/desktop-core/src/provider-bridge.test.ts`。
+- 账本根因：`Error.message` 不是可枚举属性，失败记录序列化后缺少消息会阻断读取。写入前规范化错误，并安全迁移已有 v4/v5 失败记录；缺少其他必需字段仍拒绝。RED/GREEN 在 `provider-task-ledger.test.ts`，命令 `npm.cmd test -- packages/desktop-core/src/provider-task-ledger.test.ts`。
+- RelayMe 根因：预约结果未用于阻止同 job ID 重复付费提交；任务登记之后的历史 running 写入失败还会把已成功提交的任务误判为失败。现在任务映射用于去重并保留 providerTaskId；已登记任务可继续轮询。图片/视频轮询若项目素材已存但历史成功写入暂时失败，只返回可重试错误，不再把历史标为永久失败；明确无效媒体仍终结。RED/GREEN 在 `relayme-provider-service.test.ts`，命令 `npm.cmd test -- packages/desktop-core/src/relayme-provider-service.test.ts`。
+- Comfly 视频同样保护已登记任务句柄；历史成功写入暂时失败时继续可重试轮询，明确无效 MP4 仍终结。项目素材以内容哈希寻址，重试可能重复一次存储事务，但不产生不同的素材 ID。RED/GREEN 在 `comfly-video-jobs.test.ts`，命令 `npm.cmd test -- packages/desktop-core/src/comfly-video-jobs.test.ts`。
+- Comfly 视频补充发现：历史已存在 queued/running、但任务映射文件丢失时，旧提交入口会再次 POST。现在历史预约 `created:false` 时先核对旧映射，找不到便以“提交状态不确定”阻断同 job ID 的第二次付费请求；已有 handle 可继续复用。因 queued 历史无法区分“未发 POST 的 ledger 故障”和“POST 已受理但句柄落盘失败”，两者都保守阻断自动重试。`comfly-video-jobs.test.ts` 离线 RED→GREEN 21/21，desktop-core 类型检查通过；此项不是实网供应商验证。
+- Comfly 图片在素材已保存后，先把图片暂存、任务句柄和素材 ID 持久化，再写历史成功态；历史持续故障保留 running/pending，重启按原任务号恢复，不重发供应商 POST。异步、直接返图和 Gemini 返图的受控跨重启测试在 `provider-bridge.test.ts` 通过；候选/安装版及真实供应商质量仍须分别验收。若图片暂存与账本同时不可写，只能保留提交状态不确定并禁止新任务号付费重试，不能宣称自动恢复。
+- 付费任务状态根因：renderer 曾把轮询抛错、取消超时或无明确终态、提交 IPC 中断及已获句柄的本地写入失败记为可重试的普通失败/取消，另有取消与 queued→submitting 写入竞态。现在只有供应商明确终态才确认取消；未知提交标记不确定、阻止新 job ID；已获句柄优先重存并继续轮询；取消意图在提交前阻止 POST，提交中则拿到句柄后再向供应商确认。轮询临时故障显示在任务卡，按每任务 1–30 秒退避，正常响应清除错误。RED/GREEN 在 `apps/renderer/src/jobs/job-store.test.ts`；命令 `npm.cmd test -- --maxWorkers=2 --no-file-parallelism apps/renderer/src/jobs/job-store.test.ts`，90/90 通过。供应商错误码不能普遍证明请求尚未发出，不能据此开放新付费重试。
+- 空或缺失的 IPC 提交回执曾留下永久 `submitting`，或因空任务号解析异常而无终态；现在若供应商调用已发出但回执无有效任务号，记为提交状态不确定并阻止新任务号重试。`job-store.test.ts` 两例 RED→GREEN；最新任务状态回归 90/90。历史墓碑冲突提示也改为保留原任务、勿新建付费任务，`generation-history-provider.integration.test.ts` 定向 RED→GREEN。
+- 正式图片/视频重试根因：新任务先写 queued，随后项目绑定若抛恢复异常，旧 catch 只清理分层重试，留下无归属的排队记录。现在正式生成与分层两类都取消新排队任务，释放 dispatch hold 后不会遗留孤儿。`apps/renderer/src/app/app-store.test.ts` 注入 `RECOVERY_REQUIRED` 的 RED/GREEN，287/287 通过。
+- Comfly 图片历史预约根因：把历史预约提前到付费账本前后，遗漏了“已有 queued/running 历史但无 handle”及“历史已删除 tombstone”的拒绝分支，可能再次 POST。`comfly-image-submission-reservation.ts` 统一历史与账本的预约判断；已有或已删除任务号一律拒绝新的付费 POST，已获 handle 仍按原任务恢复。`generation-history-provider.integration.test.ts` 34/34、`provider-bridge.test.ts` 165/165 通过；均为离线替身。
+- 导航根因：最终 CSS 隐藏了项目身份、项目菜单和关闭入口；左栏混用小 Unicode 字形与 SVG，悬停/键盘聚焦缺少可见名称。经用户批准后，顶部改为项目、保存/新建、AI/主题/关闭三段，左栏保持 8 个 40px 操作并分组，统一 SVG/薄荷绿状态及中文提示；更窄的 Agent 打开状态仍保留项目入口。RED/GREEN 在 `CanvasWorkspace.test.tsx`、`tests/e2e/navigation-chrome-185.spec.ts` 及更新的左栏 E2E；源码截图和隔离 1.6.184 基线见 `work/repair-185/navigation-audit/audit.md`。设置导航维持同一明暗配色。
+- 最终取消 E2E 的旧断言把 3 秒本地超时当成供应商已取消，与保留付费任务句柄的安全行为冲突。`tests/e2e/image-generation-execution.spec.ts` 现检查超时后原 handle/运行态和仅一次提交，再验证明确取消后恢复按钮；测试桥接快照增加 providerTaskId。定向浏览器 1/1 通过，生产取消逻辑未放宽。
+- 候选启动发现：main 在解析显式 QA 根之前无条件读取 Windows 默认 userData；隔离环境无法发现默认目录时提前崩溃。`resolveDesktopDataRoots` 现优先使用已验证的独立 QA 根，QA 模式不读默认目录、不迁移日用项目；普通启动保留原目录发现与迁移。`qa-user-data-root.test.ts`、离线门禁与迁移回归 22/22 通过；候选需要重新构建后实启确认。
+- 本版完整 Vitest 4410 通过、2 跳过，typecheck/build、持久化与知识库性能门槛通过。首次全量浏览器 256 通过、1 跳过、1 个上述旧断言失败；修正后最终浏览器 257 通过、1 跳过（`work/repair-185/e2e-185-final.log`）。首个 NSIS 3277/3277 载荷一致，但隔离启动失败，不能安装发布。启动修复后的完整 Vitest、构建、候选和安装版检查正在继续；Photoshop 实开与公开 Release 资产核对尚待完成。真实在线供应商成品质量仍未通过零付费 fixture 证明。
+
+### 2026-09-30 — 1.6.185 新反馈继续修复（尚未发布）
+
+- 新建空画布后先保存再编辑报 INVALID_REQUEST：界面 newWorkflow 与 persistence.close 各生成一个空项目 ID。现在只创建一次并传递给持久化模块；关闭旧项目失败时保留画布，不能靠无法取消的超时清空当前项目。`app-store.test.ts` 两个先红后绿用例覆盖首次空保存与关闭失败。
+- 打开大项目等待恢复版本和所有媒体完整性校验后才展示画布：现在先采用持久化节点/连线，后台恢复清单用 `readRecoverySnapshotIds` 回填，媒体读取以项目 ID 与持久化 generation 防止新建/切换后的迟到污染。没有跳过文件完整性验证。`open-latency-red.log` 两例先红，`app-store.test.ts` 与 `desktop-persistence.test.ts` 复核；后者最新 93/93，`persistence-final-green.log`。实际大项目仍需候选测时。
+- PS 重复放入：成功执行 JSX 后读取 COM activeLayer 代理可能抛错，旧 catch 无条件再 directLayerTransfer。现在 JSX 完成智能对象转换、比例和定位后返回明确回执；只有整次导入已回滚才允许后备路径，丢失回执不得再放一次。JSX 的半成功 Place 和后续失败恢复历史状态。`photoshop-script.test.ts` 12/12 受控测试通过，真实 Photoshop 仍须本版实测。
+- Agent 追问丢图：没有新 @ 引用时未携带上一轮参考素材。现在只在明确承接语境时继承同模式上一条用户消息的引用，通过现有素材目录解析，拒绝已丢失素材；明确不用旧图或重新设计不继承。已保存的旧追问方案也使用上一条同模式引用上下文。确认动作仍需选择方案和确认执行。
+- Agent 创作带图：renderer 要求 JSON 方案，desktop 系统却强制八段反推文章。创作模式系统指令现遵循 options/prompt/workflow 合同，反推对话仍保留八段分析。解析接受夹在文字中的完整 JSON fence；无 options 的分析以结构化摘要展示并提供“补全可执行方案”填入请求，用户点击发送才调用模型，不伪造执行提示词、不自动付费重试。测试在 `skill-chat-visual-analysis.test.ts`、`creative-plan.test.ts`、`SkillChatWorkbench.test.tsx`。
+- 语音、动画等明确媒体输出型号从聊天目录剔除；创作模式“分析深度”与模型“思考能力”分别标识。`provider-profiles.test.ts`、`CodexReasoningPopover.test.tsx` 通过，真实浏览器 `codex-reasoning-slider` 与 `release-agent-layout` 5/5（`agent-layout-185.log`），含深浅主题和窄窗口。
+- 当前 1.6.185 r2 候选仅证明此前启动修复，其源码早于本节新改动；必须重建/重包/重验，不能安装旧候选交付。本轮未新增付费调用。09-30 只读核对用户当前七层副本 revision=477、188 节点、331 图片、1 视频、cleanClose=true；旧 09-28 备份并非最新项目。Photoshop 只读 snapshot documentCount=0，后续验收仍应每次检查。
+- 用户截图的反推滑轨细线在真实浏览器长目录复现：30 个模型、380px Agent 窗口时，flex 布局把 16px 轨道压成 1.9375px。`agent-floating.css` 给轨道固定 flex basis/min-height，模型目录保留内部滚动。`tests/e2e/agent-depth-long-catalog.spec.ts` RED→GREEN，`depth-long-catalog-red.log` 与 `depth-long-catalog-green.log`；实测轨道 16px、滑块中心偏差不超过 1px，截图已查看。
+- 首轮新增问题全量回归 4423 通过、3 项旧合同断言失败：两项仍假设未知 COM 错误会自动二次导入，一项仍要求创作带图输出反推长文。按新安全行为更新测试输入/断言，并增加未知回执禁止后备导入检查；完整 Photoshop adapter 与 Skill chat 两文件 64/64 通过（`full-contract-rerun.log`）。正在取得最终完整回归报告；此处不把首次全量标为通过。
+
+#### 2026-09-30 — r8 素材导入保存闭环、节点文案及实际验收状态
+
+- 实际运行界面复现了导入成功后源节点素材丢失，并按无参考图提交。根因是旧 idle autosave 已进入稳定队列，之后使用新 revision 提交旧整图；原生事务路径也会清空 source.assetId。图片／视频节点与 Agent 图片／视频入口现先 drain 旧稿，再以独立 autosave generation 拒绝已出队旧稿；ACK 只合并受管素材目录和实际目标绑定。导入 await 期间的新提示词、4K 参数与已排队保存坐标保留，pointermove 的临时坐标不落盘。普通保存 ACK 不取消后续新稿。有效 RED 为节点入口 8 例与 Agent 入口 4 例，修复后 `media-import-autosave.test.ts` 15 例及相关 7 文件 **423/423**，日志 `import-autosave-all-entry-focused.log`；浏览器和当前打包版仍待复验。
+- 文案排查修复反推空素材区重复的 `0 / 20` 与反推结果重复中英标题；真实两例 RED 后完整 `ModuleNodeCard.test.tsx` **309/309**，日志 `node-copy-redundancy-red.log`／`node-copy-redundancy-green.log`。用于同名任务区分的 `#短ID`、图片引用 `@编号`、比例和有效参数分隔保留。分层目录旧“接口未核实、不发任务”说明替换为现有分析／确认／生成／质量门禁流程；domain 目录与原端口合同 **33/33**，日志 `node-catalog-copy-green.log`。
+- `all-node-clean-layout-185.spec.ts` 新增明暗主题的全部 26 注册节点截图与可见控件越界／按钮重叠／重复状态文字检查。空节点盘点只证明当前 UI 排版，不证明供应商执行、完整项目重开或 Photoshop 成功。此前 r6／r7 工件均不替代当前 r8 源码；r8 当前尚未重新构建、安装或发布。
+- MCP 保持原 14 工具，`canvas_run_node` 已加入 typed 分层分析、确认生成与 PSD 导出入口。`mcp-layering-operations`／`mcp-layering-source`／`mcp-layered-psd` 分离真实受管来源、单次批准、revision／ownership 异步 guards 与原 UI PSD 像素准备；相关定向 **137/137**。`start_layering` 回执只声明 dispatched，不能把任务创建当生成完成。`verify-mcp-layering.mjs` 仍待新 r8 bundled 候选与安装版实际运行。
+
+#### 2026-09-30 — Agent 实际提示词／生成／输出链与画布性能边界
+
+- Agent 工厂旧实现只有素材＋生成节点，与预览中的提示词／输出步骤不符。`ensureAgentGenerationNode` 现在创建可编辑 `text_prompt → image_generation → result_output` 或 `text_prompt → video_generation → video_result`，素材仍直接按原顺序接入生成节点；旧精简工厂幂等升级，原节点 ID、序号与用户已有位置保留。`agent-generation-workflow.test.ts` 使用真实 domain 解析／提交替身验证节点与 typed 连线；`pipeline-store-red-r2.log` 到 `pipeline-store-green-r2.log` 保留真实 RED→GREEN。
+- 连接的 text_prompt 是运行提示词来源，空／缺失／多边／错误端口不回退旧生成节点文字。`TextPromptEditor` 的本地预览按 projectId＋sourceNodeId 隔离并在卸载清理；直接点击生成、不先 blur 时，UI 与 MCP 执行入口先 flush 上游脏稿再走原保存边界，异步后复核 ownership／expectedRevision。保存 false／throw 保留脏稿且 0 enqueue；旧生成编辑器稿不能覆盖新源提示词。`pipeline-ui-red.log`、`pipeline-focused-green-r3.log` 和后续 `AgentGenerationPipeline.test.tsx` 覆盖真实挂载、项目切换、初始空提示词、保存中再编辑及未失焦执行。
+- 图片输出只读取本项目唯一合法上游的 current primary `resultAssetIds`，owned assets＋managed URL 同时验证；assets-only 撤销 ownership 后已挂载输出也清空。多结果画廊、沉浸预览、whole-node／header 与每图片右键菜单均接原图片操作。源 generation 按 assetId 的自定义 v2 校色传给预览／lightbox／复制／下载／PS 智能对象实际抽象入口，新 asset 不套旧任务校色；OS／PS 边界仍为受控替身，不是外部 PS 实开验收。证据 `pipeline-color-red.log`、`pipeline-color-green-r2.log`、`pipeline-owner-hydrate-red.log`、`pipeline-owner-hydrate-green.log`。
+- 视频输出校验唯一合法 typed upstream、同项目 owned video 与安全 managed URL；owned poster 不能授权 foreign video。真实 7s／720p 与 unknown metadata 分别显示实际时长／尺寸或未知，不再编造 5s／1080p；无可用媒体不标已完成。图片／视频 output 不取 `previous*` 预览作为本次完成或新参考图。`pipeline-video-output-red.log` 到 `pipeline-video-output-green.log` 335/335；图片输出状态三例真实 RED→GREEN 后仅显示“等待结果／正在生成／已完成”，不改变 aria-label 接口（`pipeline-output-status-red.log`）。
+- 垫图根因：已连接但未导入的图片源曾被静默过滤，导致生成意外变成无参考图。image reference resolver 先严格验证全部已连 wire／端口／本项目素材，再尊重合法显式 partial／[] 用户选择；undefined 保持完整原顺序，无 wire 的纯文字生成仍可运行。保留 canvas_library／legacy image_result 等原源类型；current image_generation.image 和 result_output.image 的合法 typed 路径在共享 UI 素材解析、image run 与 video media run 中保持 IDs，不取 previous 结果。实际 store 到 0 enqueue 与 mounted UI tray＋real queued reference IDs 覆盖，而不只测 pure helper。最初 UI queue 两例已被 store fallback 保护，新增可见素材槽断言才取得两项真实 UI RED；记录 `pipeline-current-material-ui-red.log`（33/33 已通过）、`pipeline-current-material-presentation-red.log`（2 真失败）与 `pipeline-current-material-final-green.log`（364/364）。最新两文件 source focused `pipeline-source-final-green.log` **76/76、exit0、3.09s**；renderer `pipeline-renderer-source-final-types.log` **tsc exit0**。这些是 source／零付费 fixture 验证，浏览器 geometry／候选／安装态仍待。
+- 拖动 ACK 整图 decode 让未改节点也变引用，引发多余重渲染。`project-structural-sharing.ts` 在两个 optimistic／decoded ACK 发布点复用 validated DTO 中相等的 arrays／plain objects：完整字段 equality、新增／删除／不等值均保留，切项目直接用 next，不突变原图、不跳 domain／Zod／persist／undo／ACK。复杂度 O(DTO 总字段／元素)，最坏临时分配 O(size)、递归 O(depth)。300 节点／500 连线／80 素材、20 warmup＋200 次 helper 测量（验证在计时外）optimistic median/p95/max **0.3155／0.5182／0.8271ms**，decoded ACK **0.3092／0.5184／1.0748ms**；`sharing-budget.log`。helper／真实 position identity RED→GREEN 不代表浏览器最终性能。
+- 画布已做两项证据对应的小修：关闭的素材 native picker 仅渲染当前项，focus／pointer 时完整展开，恢复到更换按钮旁的真实可 Tab 入口；原首次隐藏入口两例 browser FAIL 保留，修复后 `picker-browser-restored.log` **2/2 PASS**，实际 pointer/native popup 与 Tab/keyboard，无 force／selectOption／测试 CSS。`CanvasBezierEdge` 有自有 20px hover/cancel 命中区时关闭重复 SDK interaction path，无 onCancel 时保留默认命中；实际 DOM／hover／selection／cancel RED→GREEN 与旧 curve 合计 **7/7**（`edge-hit-red-r2.log`、`edge-hit-green.log`）。此前 original standard8 为 **4 PASS／4 FAIL**，1920 缩放 **268／261／270／278ms**，仍未满足原 **<250ms**；CPU／trace 只是诊断。最终必须在全部产品源码冻结、无 profiling／trace／HMR／并行 npm/browser 下跑原 300／500、1440＋1920、明暗 × repeat2 **8 条**，当前此最终门禁仍待验，不能说性能已全部通过。以上日志目录均 `work/repair-185/perf-r8/`；汇总 `pipeline-source-handoff.md`。
+
+#### 2026-09-30 — 运行预览按原素材比例，移除两侧模糊复制
+
+- 用户截图显示原图两侧出现重复模糊内容。根因是固定 676×440／676×380 预览尺寸与原图比例不同，加上 reference-fill／result-fill 的第二张 cover＋blur 图。现在删除两类装饰副本，只显示完整 contain 的原素材／上次结果；预览高度由真实宽高求得，图片或视频自身结果优先于参考图，自然解码尺寸可更新缺失／过期的摘要尺寸，多结果维持原画廊。素材栏、提示词、全部参数和节点高度随预览高度移动，端口位于预览中线；收起态和无素材态保持原布局。
+- `GenerationRunningState.test.tsx` 先取得四项真实 RED（没有媒体尺寸布局），修后 19/19；含横图、竖图不钳制比例、自然解码尺寸覆盖、unsafe URL 不用于布局、上一张结果与按 asset 的校色保留。完整 ModuleNodeCard＋两个素材槽组件共 **357/357**，`running-media-ratio-wider.log`，renderer typecheck exit0。图片生成原参数和 action handler 未改，没有付费调用。
+- 浏览器已用原水杯图取得一次真实 PASS 并查看截图：方形完整图，无模糊边条；日志 `running-ratio-browser-probe.log`。`generation-running-presentation-185.spec.ts` 同步按实际图片／视频 ratio 检查 frame、contain 的完整绘制范围、素材栏边界，并增加 720×1280／960×540／800×800 图片和视频 6 项。完整 UI 30 项正在串行重验，候选／安装版仍未构建或验收，本节不代表全量发布门禁通过。
+- 复查补齐预览身份依赖：缺尺寸视频的自然解码尺寸在取消后残留、缺尺寸图片换到另一个缺尺寸结果时沿用旧高度，两项真实 RED（`running-missing-dimensions-red-r2.log`）后修复。最新四文件 **361/361**、renderer tsc exit0。r3 browser 28/30，其中两条视频旧结果断言从不含宽高的测试快照错误回退方形 poster；回归改为读取实际视频资产 1920×1080，而不改变视频或 fixture，r4 原30 **全部PASS**。并行附加的全部26节点明暗盘点只因任意统一 width>150 假设失败，实际紧凑 video_input 为138px且标题/导入按钮完整，控件/文字/重叠检查0失败；该盘点断言修正后须独立重跑。日志 `running-ratio-current-r4-browser.log`，52类节点截图已保存；不把该盘点误报为所有节点功能成功。
+
+### 2026-09-30 r8：真实工作流端口与布局复验
+
+- pipeline6 实际浏览器4/6；factory参考图卡覆盖既有展开生图节点，reverse方案中参考图间距与结果/提示词列也有真实重叠。继续修产品布局，未修改原几何断言或素材。
+- 同次浏览器ReactFlow #008证实生成节点prompt Handle被精简UI过滤，存储的prompt edge无法画出。图片/视频各一项RED后恢复input prompt的真实视觉别名Handle，沿用既有透明alias规则，同一可见输入圆点体现prompt/reference连接；全/展开/低缩放概览均保留真实端口。prompt-handle-focused.log四文件363/363，尚不能代替最终浏览器/候选/安装门禁。
+- 全26节点明暗52截图已生成。all-node r5浅色通过，暗色一次失败：trace确定click返回后仍采样448px收起卡（仅lock/Open按钮），约130ms后截图已展开704px；验收须明确等待展开属性和真实prompt可见，再做控件几何检查。不是通过删改边界断言解决。
+
+### 2026-09-30 r8：最新浏览器闭环与剩余性能问题
+
+- all-node r6 正式等待展开属性/提示词/704px后明暗2/2通过，全26注册节点52截图；原控件边界、重叠、异常字符断言完整保留。日志workflow-and-allnode-current-r6.log实际只含这2项，不混报pipeline。
+- Agent工厂/反推布局按已有展开宽度及素材实际比例建新列/行距；3项source真实RED后5文件385/385。pipeline-browser-current-r3.log实际6/6，4种图片/视频明暗编辑链的prompt/output SVG path可见，缺失Handle #008为0；原重叠断言和素材未更换。
+- 大画布正式8次复验7/8，1920浅色一次zoom289ms longtask/267ms可见帧间隔失败，drag8全过。CPU/trace仅为定位证据，不能当正式PASS。继续针对ReactFlow已完成内部测量后被动dimensions再次写controlled nodes导致双次整图提交补修；原300/500图与250ms门禁保持。
+- 旧保护490备份本身仍健康，可以做历史固定夹具；当前真实项目已542，旧保护基线不能用于本次安装。r8保护脚本将写新的独立receipt，绝不还原490覆盖542。
+
+### 2026-09-30 r8：大画布正式门禁通过
+
+- 被动测量修复及显式resize结束/StrictMode回归完成后，标准300节点/500边、原250ms门禁、无profile/trace/diagnostic、明暗1440/1920各重复两次共8/8通过（standard-current-r9.log）。最慢停顿selection80ms、drag200ms、pan80ms、zoom230ms、connection约140ms。未降低图规模或可见连线数量，未使用偶然重跑代替根因修复。
+- 前后trace对比仅归因：wheel热点218.556→177.768ms、controlled ReactFlow重提交1→0，必要内部Background/边更新仍保留。此对比不计正式PASS。
+- 当前开启完整源码回归与全workspace类型检查，尚未完成本轮候选/安装/Photoshop门禁；不要把源与浏览器通过写成正式安装版通过。
+
+### 2026-09-30 r8：完整回归与端口类缺陷继续补修
+
+- 当前首次全量source：4718通过、4失败、2跳过；全workspace typecheck退出0。4条失败核对为已批准窄saveLayeredPsd桥接的旧白名单（2）、旧prompt Handle删除预期（1）、MCP导出仍预留的旧文案预期（1）。保留任意readFile/watchPath/fetch拒绝断言，仅更新实际已实现且经确认/保存对话框导出的窄接口/文案；四文件复测229/229。
+- 同类有效端点漏挂载再审：MCP真实任务文本→reverse.task已可持久化；video_input→reverse.video受现有分析解析器支持，但UI只挂references导致#008。图片mask/pose、video专用frame/sourceVideo及reverse.timeline也有合法现存/导入typed边，端点恢复仅证明结构/显示，不等于各executor已实现这些专用输入能力。
+- 多alias按方向保留所有定义id，同一可见主点容纳透明真实Handle；数组缓存保证port memo稳定，Detailed/Overview一致。3项真正RED、layering既有alias1PASS后修复，初定向364/364；又补9条hidden方向/数据类型/主点连接状态检查9/9。真实browser与当前全量回归待新跑。
+- reverse连接计数发现实际媒体refs/video不应占用task/line_art各自one口，继续补针对RED和最小条件，保留两个媒体口共享顺序。
+- 新候选MCP gate已补否定案例，但unowned资产在project schema更早拒绝INVALID_WORKFLOW；不伪造非法project突破护栏，不宣称直接typed source unavailable或跨项目物理读取已验。
+
+### 2026-09-30 r8：实际执行输入与最终提交边界
+
+- `App.canvas-execution.test.ts` 真实 App/store 先复现 11 条连线/缓存故障及 catalog-await 撤权限：MCP 只连 prompt/reference 时不应依赖重复缓存配置；旧缓存不能覆盖实际有序素材；反推的 task 连线必须进入实际任务。普通 UI 明确选择素材（包括空数组）的旧合同保留。未实现 mask/pose/独立视频 frame/sourceVideo/line_art 输入在确认和任务前明确拒绝，不宣称这些专用能力已经支持。
+- 独立复审发现 session、IDB、native ACK 和队列读取期间撤权限或更改草稿仍可能派发；12 条真实 RED 后在每个等待边界重查，自己的合法 ACK 以派生 nextProject/revision/hash 核验，executor 最后同步检查再进入 provider IPC。取消持久化失败时保留 hold，不能释放付费任务。
+- 真正 desktop persistence cached-session 又复现两条嵌套 Promise RED；最后 guard/started 移至 `ensureWritableSession` 之后、native analysis 之前。内部第二参数回调不进入 provider DTO；四字段仍为 media/provider/run/sessionId。最新六文件 **550/550 PASS** (`mcp-native-reverse-final-green-r3.log`)，renderer tsc exit 0。native 正向实际调用一次且 completed，撤权限/输入漂移零 native 调用。
+- 完整 source r4 **4791 PASS**，两个 opt-in 性能项随后各自真实通过，九工作区 typecheck exit 0；这些早于最后 desktop callback。最终源码/浏览器/原性能门禁仍需 fresh 运行，候选、安装及 PS 不能继承旧结果。
+- `scan:e2e` 的14条新发现全部是人工拒绝夹具或 UNC 正则语法。仅在既有 allowedFindings 增加8个 file/name/exact-evidence 条目；scanner detector 的归一化 hash 与 HEAD 一致，独立静态复核无宽免扫。扫描实际通过，不将这些人工字符串当真实凭据。
+- `verify-mcp-generation-inputs-r8.mjs` 准备真实 bundled 正向/负向与 native ACK 暂停门禁；`verify-running-media-ratio-r8.mjs` 准备横竖方明暗图片/本地 MP4、参数和顶部真实按钮。它们尚未跑 actual EXE，本地 MP4 及受控 provider 不代表新在线生成质量。原项目、凭据和付费额度保持保护；r8 尚未构建安装发布。
+
+### 2026-09-30 r8：全量浏览器失败收集与新聊天交接
+
+- 最后执行链冻结后完整源码 r5 4795 PASS/2 opt-in SKIP、316 files PASS；随后两个 opt-in 性能单独通过、九工作区 typecheck exit0。全部浏览器 r5 304项实际279 PASS/24 FAIL/1缺固定素材SKIP，19.0min；失败后压力/build没有运行。源码结果早于下面最新小范围CSS，不代替当前构建/安装/PS。
+- 20项浏览器 failure 来自新透明真实Handle与旧locator多匹配，1项clean-startup真实drop点落到既有prompt。四个spec保留真实连线/几何/数据/提交检查，补primary定位、alias真实共位/透明、SVG路径与node表面拒绝；全部补稿UNVERIFIED，不删除原failed evidence。
+- 用户最新截图指出GPT分隔线贴按钮。明确GPT route的实际浏览器RED为间距0（要求≥10），CSS在原固定总高度内改34/90px两行+12px间距，分隔线1px低对比；自然素材row移除decorativepadding/border。最新定向25项23PASS/2FAIL，运行态图片/视频完整22项（比例/参数/停止/最新横线）全部通过，但12素材676>675溢出仍FAIL；owned video fixture替换伪造id后poster仍missing。两个假设尚未闭合，保留失败继续定位；reverse-result-copy反馈失败另项未定因。日志名含green也不能冒称整体PASS。
+- 最新定向log `work/repair-185/r8-divider-slots-owned-green-r1.log`、red `r8-divider-actual-red2.log`；两个长期exec13775/18389均已退出。QA-only MCP inputs及ratio的native完成/树静止/stdio真实EOF/失败bytes/媒体padding边界补稿仅nodecheck和只读复核，未跑候选EXE。
+- 用户明确要求另开干净聊天，已写精简唯一入口 `E:/画布项目/CANVAS-CLEAN-HANDOFF-20260930-R8.md`；没有可用create_thread工具，没有声称已经创建聊天。原项目最近真实542/cleanClose、PS0docs仍需新聊天重查，未建最新用户backup、未安装/发布/付费。所有dirty/untracked保留。
+
+
+### 2026-10-01 r8：GPT 图片模型别名草稿保存与异步边界
+
+- 真实候选 EXE 的零付费 MCP 输入门禁在实际 UI 选择“不透明”、真实保存并排空稳定边界、按同一确认计划连线后，image_generation.config.imageBackground 仍为 undefined，要求 opaque 的原断言失败。原始证据保留在 work/repair-185/qa-scripts/output/mcp-inputs-r8-candidate-1790815153589-8cc5e361/receipt.json；该次 project revision 9、stdio 正常 EOF/exit0、owned project cleanClose，没有成功派发或网络调用。本项 RED 是产品草稿字段丢失，不通过更换 route 或修改 expected 处理。
+- 根因是 app-store.draftGenerationNodeConfig 仅依据 config.modelRoute 的 GPT 文本判断资格，实际目录允许 modelRoute=qa/mcp-inputs-image-r8 与 canonical modelId=gpt-image-2。UI 已按解析后的 profile 显示 GPT 控件，保存却删除 quality/format/background。现在对于携带 GPT quality 的非空不透明 route，读取本地 runnable catalog，沿用 exact route/modelId 的 profile 解析及 supportsGptImageQuality；不以显示名或默认模型授权另一条 route。明确 GPT route 保留原同步路径；非 GPT 切换仍删除三字段和旧 route metadata，无路由/空串/纯空格也保持删除三字段。
+- 本地目录 await 新增的旧稿覆盖风险先取得两条真实 RED：较早 alias 查询返回后覆盖同节点更新稿、切项目后同 nodeId/projectId 的旧稿覆盖新图。每个 generation draft 使用最新 token，等待后校验 persistence generation/projectId，并重新读取 live graph、节点和写权限；过期稿返回已完成，避免 editor 的 false 重试恢复旧稿。项目 persistence boundary 清理 tokens。没有改变 MCP 计划 revision 绑定、实际运行或付费 dispatch 入口。
+- app-store.test.ts 新增 7 条行为回归，使用实际 store/browser persistence 保存及 ACK revision/live 与 persisted config 一致性检查，覆盖 alias 保存、非 GPT 切换、undefined/空串/纯空格不采用默认 GPT、同节点最新稿和跨 persistence boundary。初次非 GPT fixture 名称 qa/non-gpt-image-r8 自身匹配既有 GPT 正则，已纠正为实际 Nano Banana 标识 qa/nano-banana-2-r8，保持原删除断言；纠正后的未修生产源码是 alias 1 RED、两个保护项 PASS。原错误命名日志仍保留，不能用来宣称原非 GPT 删除有产品缺陷。
+- 聚焦最终命令：node node_modules/vitest/vitest.mjs run --config vitest.config.ts apps/renderer/src/app/app-store.test.ts -t 'opaque catalog route alias|non-GPT catalog route|newer route is selected during catalog lookup|GPT alias draft after the project persistence boundary changes|default GPT profile for an empty draft route' --maxWorkers 1；7/7 PASS、exit0。相关 wider 命令：node node_modules/vitest/vitest.mjs run --config vitest.config.ts apps/renderer/src/app/app-store.test.ts apps/renderer/src/app/provider-profiles.test.ts apps/renderer/src/canvas/ModuleNodeCard.test.tsx --maxWorkers 1；三个文件 682/682 PASS、exit0。证据目录 work/repair-185/gpt-draft-alias-20261001-084540163-ca8e2197，含 pre-edit 副本、各阶段 RED 与 focused-final-green.log/focused-wider-final-green.log；各测试串行，未启动 EXE/browser/build。
+- 上述仅是 source 局部修复及相关回归。当前源码仍需新构建和实际候选输入门禁复跑，最终完整 source/browser/原压力门禁、候选全量、安装版与 Photoshop 尚待后续验收；安装包未发布，不继承此前候选或安装结果。
+
+### 2026-10-01 R8：原生反推复制预检与保护门禁
+
+- 原始 Copy handler、navigator.clipboard、execCommand 均保持；以真实 MCP 建立受控已完成结果、真实 UI 修改完整提示词并连到 reverse_result。完整五段正文、Unicode/emoji、输入和输出、原生 GZ 保存、重启 UI 打开都独立比较，未调用在线分析。
+- QA 实际失败原因依次为过长 profile 触发原有 180 字符项目根路径保护、选择发布版隐藏的 stock Fit View/标题、Windows 原生复制使用 CRLF 而独立 fixture 为 LF，以及正常节点点击改变选中状态。缩短自有 QA profile、使用真实画布 wheel 和可见“反推结果”标题选择，再实际保存等待原生 ACK 稳定；完整 workflow/revision/selection 断言保持。
+- Win32 helper 在实际全文写入后先绑定完整 owned snapshot，再检查 Electron 读取与反馈；恢复在同一 native lock 内严格比较序号和全部原字节。明确支持两个确证 Chromium HGLOBAL 来源格式，未知格式和 GDI handles 仍在复制前拒绝。未绑定 owned 时必须证明原快照与序号未变，否则硬失败；任何新用户写入保留。
+- `reverse-copy-r8-candidate-1790820080116-829ef878/receipt.json` 的实际保护失败保留：旧剪贴板未恢复，随后为 QA 正文；旧原始内容没有落盘，不能从 SHA 恢复。后续成功只证明恢复各自运行开始时的内容，不能抹去该失败。
+- 纯 helper 13/13 PASS：`reverse-copy-native-oracle-green-20261001-101059208-03e08a17/pure-tests-green.log`；实际短 profile 候选预检 `qa-scripts/output/reverse-copy-r8-candidate-1790821259750-8d9eabcf/receipt.json` PASS：明暗两案例、四个真实生命周期，全文/成功反馈/完整正文图结构及选择不变/原生保存/重启均通过，两次 clipboard originalBytesVerified=true，四次真实 stdin EOF 与 desktop exit 0/null、无强退、无错误和外部请求、paidCalls=0。
+- 该预检绑定 alias-preflight 的全部外置 renderer/MCP/Photoshop 文件，不继承为另一 formal 输出或安装版通过。最终冻结后重新跑 full source/type/browser、原 12 次压力、build/scan、正式候选和安装版；正式 unpacked 之后再次 wx 记录源码指纹，防止打包阶段源码漂移。
+- 复验命令：`node work/repair-185/verify-reverse-copy-feedback-r8.mjs <exact-candidate-or-installed-Canvas-Atelier.exe> candidate|installed`。真实在线反推/拆解语义质量仍未验证；污染旧返图的准确阻断和现有本地七层修复须与新 AI 成品质量分开。
+
+### 2026-10-01 R8：反推可执行性、真实分层画幅与阴影身份
+
+- 反推 parser 把非空却全部非法的 variants 过滤为 [] 后仍 runnable=true，UI/store 可生成零任务提案。object/JSON/fenced 三条 actual RED 后，空规范化方案准确加入 missing variants，intent missing 同步，runnable=false；正常混合、undefined/[] faithful fallback 和 legacy 保留。contract 14/14 PASS，未替换真实方案确认合同。
+- 分层 builder 原来只选全局最近比例，未核验 route 允许档位和返图原 0.01 log 容差。1000x719 的标准 4:3 以及仅允许 1:1/16:9 的600x900取得2 RED，正常1365x2048旧计划2:3保留。首版错误 domain barrel import 的7失败日志保留；修正 import 后继续验证真实 adapter 尺寸，不能拿名义表冒充供应商尺寸。
+- actual Comfly 2K/2:3为1360x2048而非domain名义1365x2048：1348x2048可接受却被名义表拒绝，1378x2048名义通过却实际超容差，两条 actual RED 后抽取 pure image-size.ts，让实际 client 与 renderer 共用原尺寸算法。GPT2(.5)16px舍入、GPT1/1.5三种native尺寸及4K拒绝、其它模型请求分支、原client公开exports均保持；未裁剪/拉伸原图或放宽阈值。不支持受管原图编辑的RelayMe/4dai路线即使有alpha证据也在createId之前拒绝，不借用Comfly尺寸宣称其可执行。12项builder focused通过；首次额外fixture使用非合法provider newapi的Zod失败仅为测试命名，改为真实4dai后通过，不计产品RED。
+- shadow-only 旧分类依赖 shadow- ID，漏判合法cast-cup，又可能把body+shadow误判为纯阴影从而绕过重叠。原4 fail/5pass与追加4 fail/9pass均为实际RED。现按排除主体之前的明确only/仅与效果描述保守分类，不依赖ID；排除other objects、不仅/Not only、反光板/反射镜硬件词、双向物体加阴影都不授权纯阴影。保留接触陰影、shadow+reflection与合法反光板投影。13/13 focused PASS；MCP新增两个保持cup ID、仅改名称/描述为纯阴影的变更拒绝，要求无commit或生成派发。原像素提取、prepared玻璃透叠与35%重叠阈值未改。
+- 相关统一wider21文件714/714 PASS、exit0，覆盖Comfly真实mock multipart/native尺寸、反推contract/proposal/workbench/store、layering plan/route/selection/jobs、MCP角色与来源、source逐层独立像素/preview/三个workbench suites。随后builder新增2个非Comfly受管编辑保护同文件12/12 PASS；未把这两条声称为修前RED。证据目录 `work/repair-185/r8b-quality-fix-20261001-102750161-61d0aa34`，保留所有先前失败。
+- 这些是本次源修复与局部实际回归，最终full source/type/browser/原12次压力/build/scan、精确候选、最新542+全树备份、正常安装与PS验收待执行。新增paidCalls=0；任意新图自动物体身份/残影/语义质量仍须独立检查，未声称新在线AI拆解成品通过。
+
+- 首次冻结174文件的完整源回归实际4844 PASS/1 FAIL/2 opt-in SKIP，319文件，214.81秒。唯一失败为 provider-bridge.test.ts 的旧源码位置断言：native 4K拒绝字样移到实际共享 image-size.ts；请求行为未失败。现同时断言client委托共享模块、原调用、两边CAPABILITY_UNSUPPORTED及共享native 4K拒绝文本，不删除行为门禁。provider-bridge与真实Comfly client两文件231/231 PASS（40.61秒）；旧失败receipt完整保留，随后从新冻结重新执行完整流水线。对应 `r8-continuation-final-20261001-110224478-6f77c9e7/failed-stage-receipt.json` 与 `r8b-quality-fix-20261001-102750161-61d0aa34/provider-size-contract-move-focused-green.log`。
+
+### 2026-10-01 R8C：候选实际失败、原生锁定基线与阴影主体续修
+
+- 冻结174项 d7599fb17189635c3075f5810822a47c44444dcc47de533820cf8edaa031242b 的流水线 `work/repair-185/r8-continuation-final-20261001-111059295-e1f4710f` 实际完成：4845项源测试PASS、两个opt-in随后分别PASS、九工作区typecheck、浏览器303PASS/1原海报缺失SKIP、标准300节点/500边12/12、完整build/scan及正式unpacked。三份source before/after/post-unpacked字节相同。压力原始60条stall及36条frame样本独立重算均严格小于250ms（最大90/90.3ms）；旧runner未记录实际CANVAS_PERF_DIAGNOSTIC环境，不能冒认历史assert分支已执行。新runner显式移除真实开关并在本轮新receipt记录四项diagnostic环境均未定义。
+- 上述实际候选 `formal-185-output-r8b-final-20261001-1111-09880d03` 的Common门禁7项PASS后，running-media-ratio在第二项image-portrait-dark严格锁定移动检查失败：revision13→14；原Common receipt为FAILED，不称全候选通过，安装/PS/发布仍未进行。原失败完整保留在 `qa-scripts/output/media-ratio-r8-candidate-1790825881720-b2ecb022` 与 `exact-gates-candidate-common-20261001-033050974-9bb74c5b`。
+- 原生journal证明revision13为Run image generation node、revision14为Lock canvas node position（位置均440,110），没有Move MCP事务；根因是产品先乐观显示Unlock按钮再等待原生ACK，QA过早取基线。补充只读证据 `native-journal-root-cause.json` 保留原journal路径及SHA。MCP锁定校验仍在commitReplacement之前直接INVALID_WORKFLOW；未改产品锁定逻辑。
+- 仅ratio QA委托原16个native handlers记录try/finally尝试/完成/在途、原事务与ACK；真实锁定后执行一次原保存，再四份完整workflow/native/fulltree/自有recent-index SHA稳定样本且跨度≥750ms建立不可变基线，必须inFlight0/completed==attempts/saved。拒绝后只读等待，不保存/重置基线，原即时workflow断言及后续revision/selection、全部native记录、全tree/索引强比较均保留；解锁也等真实ACK后再正向移动。项目root到自有profile ancestry均拒绝symlink。node --check通过，增强QA尚待新最终EXE实际执行，未以静态检查称PASS。
+- 独立审查继续发现shadow-only遗漏顿号/逗号混合主体范围及排除另一个具体对象。新增20项focused实际6FAIL/14PASS：四项中英主体混合与两项只排除foreign vase应保持ordinary对象层，却返回纯shadow；日志 `work/repair-185/shadow-role-subject-r8c-20261001/shadow-role-subject-red.log`。这属于产品分层缺陷，继续最小保守修复及实际回归，原35%重叠/像素/坐标/PS颜色门槛保持。旧174清单和候选不能继承为后续修复版验收。
+- 唯一原海报测试要求658x1208 PNG及SHA63993fdcc46f070884691a76f0e83660422f3690d8313d12e208dcb5485f3d3c；两处默认source-image.png均不存在，限定项目文件名检索无命中，已请求用户补原文件。保持原素材要求，不用另图替代。当前仍未建542+新全树备份、正常安装、PS或发布；新增付费0，新在线AI拆解成品语义质量未验证。
+- 阴影身份续修实际阶段保持：20项6FAIL/14PASS，追加实际旧490三条正例及mixed-title后24项7FAIL/17PASS，初改24/24PASS；随后独立实际复现共享在…effect谓语丢前杯子表面、全文花瓶旁匹配foreignsubject，追加3项实际3FAIL/24PASS后27/27PASS；再复現foreign玻璃表面前范围被丢弃，新增两个实际2FAIL/27PASS后最终29/29PASS。每阶段before/after/diff/RED/GREEN/manifest均在 `shadow-role-subject-r8c-20261001`、`shadow-role-shared-r8c-20261001`、`shadow-role-scopes-r8c-20261001` 完整保留，不用初版GREEN遮住后续真实遗漏。
+- 最终产品分类删除通用sharedRelation截断与裸subject范围放行，name及included每个明列范围都须包含效果；具体排除主体只与标题中的effectsubject关联，位置参照物出现不能授权。唯有实际旧水果完整name+description合同做精确受控文本迁移，其余近似/插入objectscope均普通对象层；该迁移仍须通过原only/name/effect/排除主体/身份检查，不依赖ID，不使用像素或数学白名单。坐标/原图容差、prepared层、35%重叠、颜色及PS门槛均未改。final source SHA5ef112eb8d37ae9b8b01cf28083c370567c5df7827aa853d384d1f62698f5552，test SHA6588a37d099a8e47902b064fb7c9c94215332f512d88421707a49c9aa55d0b59；29项focused仅证明当前源回归，相关wider及新整轮冻结/构建/候选/安装/PS继续执行，未称新AI成品已通过。
+- 最新相关wider15文件147/147实际PASS、exit0、16.15秒：shadow分类、原图逐层/独立像素/document、MCP provenance/source/operations/dispatch guard、quality/plan/draft、三个ImageLayeringWorkbench suites和source preview。日志 `shadow-role-scopes-r8c-20261001/shadow-role-related-wider-green.log`。这是新完整流水线前的针对性回归，不能继承旧d759候选或安装PS验收。
+
+### 2026-10-01 R8D：重新分析的对象归属与真实错误态 footer
+
+- 用户正常安装后在日用项目中新建五层，保存退出后最新全树备份修订570；原图仍为2196方形的71cc34d6054f5e24。原七层和group在revision545由用户“Delete 8 canvas nodes”删除，新五层group在551创建；不将旧542恢复覆盖570。旧542只可作独立七层回归fixture，当前用户保护必须绑定570新备份，二者分别记录。
+- 本次真实五层返图的杯盖/手部alpha交集占杯盖有效区域约79%，手部返图包含所持杯身与杯盖；同画幅2880方形缩放不是该污染的原因。source模式本地取原图RGB并使用返回alpha，因此错误alpha会把另一对象的原图像素带入当前层。format passed与任务completed不证明对象独立；35%来源重叠门槛、连续alpha及原图坐标/颜色校验保持。
+- 查实程序缺口：source前景请求只有自身name/description/bounds，完整确认前景列表只进入背景移除请求。重新分析后“握持杯身/拿杯盖的手”等关系描述未与所有其他层的对象归属共同发送。现每个source前景自动带同一确认计划的其他前景身份、说明、是否勾选及原图范围，明确持握/接触/遮挡不转移对象归属，未勾选对象也不能吞入目标蒙版；只取可见前景，不补隐藏实体、不按peer矩形整块挖空。玻璃、水、蒸汽、发光与阴影仍按连续透明贡献处理，合法空间叠加不等于复制载体实体。背景只移除勾选对象；legacy生成RGB路线保持原合同。分析指令同步要求逐层明确接触对象排除关系。
+- 实际新增三条RED确认分析提示缺少上述约束、前景没有peer归属、async确认hash后可混入未确认plan修改。normalizeLayeringPlan深复制与profile/confirmation/evidence快照均在hash await前建立，同批任务使用同一已确认输入。追加route/tier/evidence变更RED后补快照；未引入在线复核、额外生成或自动付费重试。`layer-ownership-20261001-2b7bd3421fac472da5ecd8effc998d58`保留before/RED/GREEN；聚焦及相关五文件56/56 PASS，renderer tsc exit0。命令：`npm.cmd test -- apps/renderer/src/app/layering-jobs.test.ts apps/renderer/src/app/layering-analysis.test.ts apps/renderer/src/app/layering-plan.test.ts tests/integration/layering-request-contract.test.ts apps/renderer/src/app/source-layer-document.test.ts`。真实job→Comfly multipart受控传输断言归属约束未被普通编辑前缀覆盖、背景保留未勾选对象，外部调用0。这仅证明请求合同修复，不声称新在线返图语义质量已通过。
+- footer实际浏览器RED：错误态四动作同排，各100px，又受全局38px!important控件高度上限限制，最长Photoshop草稿标签溢出30px。仅image_layering footer改两列、自适应高度与局部max-height:none；正式阻断与草稿原图可见/候选隐藏保持。新增`tests/e2e/layering-footer-overlap.spec.ts`在真实PNG alpha重叠态检查明暗×1100/1600文字Range及XY溢出、真实草稿PSD下载读回、Photoshop桥接相同bytes。14browser/6files42unit PASS，四组XY overflow0，行高38/58px；独立只读审查无must-fix，证据`footer-overlap-20261001084718814-dba8d9d7/footer-receipt.json`。
+- 本机YANZO1.9.4仅静态审计：其有全局元素唯一owner/排除项、生成RGBA、逐层模型复核/重试、对应点对齐及嵌入智能对象；完整任务复核失败仍先保存PSD、保留psdUrl并标needs-review，Photoshop路由不要求semanticPassed。不能只归结为导出门槛宽，也不能据此推断具体返图质量更好。本次未启动竞品、调用模型或读取凭据，私有证据不打入安装包。
+- 旧R8C候选及安装器不包含上述修复，不能继承其PASS；仍须新完整源/浏览器/原压力/build/scan、新冻结候选与正常安装/Photoshop验收。用户项目570保护、已知五层实际内容问题及新生成准确性分别核验；本轮新增付费0，尚未发布。
+- 独立review又实际复现source原始透明路径的独立图层损失：已知下层[0,0,200,128]与上层[200,0,0,64]在灰底合成[125,75,150]；raw蒙版路径却清空下层并通过edgeFallback把原图留在背景，隐藏上层仍不变。prepared独立RGBA路径正常。仅凭原图+多个alpha无法唯一反解多个未知RGB，不能借整体一致认证独立可编辑。新增2条doc真实RED后保持35%实体污染诊断优先，raw参与未解决透明叠加时明确阻止正式合成；先保留原有prepared透叠与不透明上层遮挡，草稿原图可见/候选隐藏/所有alpha保留，不分配假颜色或降低阈值。混合一个raw与prepared的理论可解场景尚未实现完整栈反解，也准确提示精修。
+- 新增UI实际RED后明确“透明图层需要本地精修”而非将真实光学叠加指称为混入物体；精修默认选中完整名字匹配的问题下层。旧low-alpha coverage测试原本期望“内容重叠”，本轮真实wider失败保留后改为精确新诊断并继续检查选择相似名不误中、无隐式派发。最终7文件69/69 PASS、renderer tsc0；证据translucent-red/translucent-ui-red/translucent-wider-green（失败）/translucent-wider-final-green日志均保留。此前完整源码4865/2opt-in SKIP早于这项新增修复，仅作阶段证据，最终流水线须再次按新冻结执行。
+- 安装过程旧临时MCP stanza已在2026-10-01T09:07:56Z精确恢复；whole SHA恢复345e240b94309a0417d476a12528bc2b19075b4cac9ceb92f3f3e691a4aebe22，无其它配置改动，receipt位于r8-installed-20261001-1625-77d1。后续正常安装需要新的私有backup/禁用/恢复，不复用本次已完成恢复的快照。正常安装exit0曾实际落在D:/CanvasAtelier/Canvas，预期含空格目录为空；该identity失败保留，不称安装验收PASS。下一新安装器需实际记录内部引号D参数、完整installed tree/registry核验，不手工搬目录。
+- 新完整流水线172101927-2d15567f实际停在full-source：4864PASS/5FAIL/2opt-in SKIP，浏览器/build未执行，原failed-stage-receipt保留。四项是低alpha旧“完全覆盖”诊断预期，另一项raw杯/水透叠只检查总合成、未检查隐藏水后杯身损失。现在精确要求透明颜色未解决拒绝，MCP伪造prepared provenance仍INVALID_WORKFLOW且零commit/save/open；raw透叠草稿alpha/原坐标保持，另新增可信蓝杯/红水prepared RGBA物理正例，隐藏水后恢复蓝杯，实际原位与合成检查均通过。三文件32/32 PASS，旧七层PSD完全像素/placement原SHA回归仍通过；该旧7细节质量不随回归通过升级为新五层逐层语义PASS。
+- 独立review实际再复现mixed raw水流+prepared杯身的精修默认指向错误（先选已精修杯身）。新增mixed与上下次序/目标RED 5FAIL/35PASS后，error明确标注待精修raw图层，UI按完整该名字选取；两raw保留优先下层、相似名称不前缀误中。3文件40/40、相关7文件50/50、renderer tsc0；证据mixed-refinement-target-d1384931a78d4d56861fc3fc51f6cc4d。所有这些变更之后必须新冻结再执行完整源/浏览器/标准压力/build/scan，旧R8C/R8D失败候选结果不可继承。
+
+### 2026-10-01 R8E：不可解的单层与阴影不得原图回填假通过
+
+- R8D 正式全流水线 `r8-continuation-final-20261001-173153405-6f6362f5` 实际通过：317 个源码文件、4872 项测试，两项默认opt-in另行实际PASS；9 workspace types；浏览器307PASS/1原poster缺失SKIP；300节点/500边、3尺寸、2主题各重复2次的12组原标准压力PASS；build/scan/formal unpacked和前后177文件指纹 `ea58b0b8fb00e6f27c670ebd3aaaf94bb6ad9235b5a99856229c767ed6649d0c` 一致。当前570全部6个项目与08:38新backup逐文件核验PASS。随后独立新缺陷要求产品再次修复，R8D候选门禁仅保留历史阶段，不能继承为R8E安装验收。
+- 实际单层物理反例：黑背景、红前景[255,0,0,64]得到原图[64,0,0,255]，错误green donor却因edgeFallback接受。整图仍原样，但隐藏前景时背景仍红，独立前景错误[64,0,0,64]；属于错误成品，不是供应商错误提示即可算修复。RED 3FAIL/30PASS后最小修复明确不匹配与实际待精修名字；可信clean plate alpha64/128正例维持独立前景RGB/隐藏后干净背景，草稿原图可见/候选隐藏及alpha保持。
+- 继续实际检查发现raw shadowOnly也在存在不重叠普通对象时复用同一fallback：真实黑影alpha64 over白得到C191灰，错误black donor会把灰影保留背景。新增实际RED 2FAIL/33PASS，去除全部edgeFallback原图回填；只对原始source不可解颜色记诊断，既有35%实体重叠与多层透明诊断仍优先。prepared独立前景与extractShadowResidual路径未改。聚焦2文件35/35PASS；旧7像素/坐标SHA回归仍PASS，不能据此升级旧7细节完整度。
+- 根因证据在 `single-transparency-review-10d00ee4d0014062b58a45c0ea21f39a`。Root UI新增实际单层wrong-donor测试，先1FAIL/16PASS；修后明确“透明图层需要本地精修”，默认选Subject真实原始层，精修不隐式派发，待修整PSD仍保留原图与隐藏返图。UI两文件20/20PASS，日志 `layer-ownership-20261001-2b7bd3421fac472da5ecd8effc998d58/single-donor-ui-{red,green}.log`。
+- 当前白袖与水层在独立资产copy继续完整范围修复；v3c遗漏袖、水痕和底滴水，不能冻结为full-five PASS。新native unrepaired570副本已经真实ProjectRepository/AssetStore/JournalWriter/SnapshotScheduler创建、cleanclose/readCurrentProject重开，188nodes/341assets保持原内容，仅合法newid/name/revision变化；origin树与native依赖前后不变。完整prepared fixture等素材语义通过后建立。无原项目写入、GUI、PS或付费。
+- 共享归属prompt无法凭空提供被水覆盖的杯身cleanRGB；新返图重置prepared标记正确，不能继承上次手工质量。source alpha合同的能力边界必须明确，不能把这一张手工修好称为新在线重分析全过程语义PASS。R8E最新完整流水线、候选、正常正确目录安装、PS及发布继续执行；本轮付费0，未发布。
+- 最终相关8个实际文件66/66PASS、renderer tsc0；追加真实黑影clean白plate独立RGB/隐藏后白背景正例，wrong black donor+strong双污染仍先报84%污染，原35%门槛与诊断优先不变。`single-transparency-review-10d00ee4d0014062b58a45c0ea21f39a/receipt.json`绑定before3files、before-shadow-fix、每次RED/GREEN、独立probe前后及最终源码。后续须新冻结和完整流水线，不能只以focused关闭安装验收。
+
+### 2026-10-01 R8F：阴影实际顺序与 PNG 独立透明颜色
+
+- R8E 全流水线 `r8-continuation-final-20261001-180808715-e96fa0f8` 实际通过：317files/4880tests，两个opt-in另行PASS、9workspace types、browser307PASS/1原poster缺失SKIP、原12组压力、build/scan/formal unpacked与177文件前后指纹 `d94d11676c37ab7f85dc24c0f56b18bbaa2e0c6fa125175211876d91e28ffdae` 一致。之后发现下列真实产品缺陷，R8E成果只作历史阶段，不允许沿用旧hash安装发布。
+- 独立物理阴影/物体矩阵先得到179FAIL/118PASS（297）：prepared阴影被skip/重估/在上层下挖空，raw阴影漏检未解透明叠加，实际上下顺序被改成objects-first/shadows-last。最小集中修正后297/297PASS；相关准确8files327PASS、renderer tsc0。256组合覆盖raw/prepared×object/shadow、上下顺序、alpha32/64/128/255、共享与私有像素，检查全合成、隐藏任一层、每个可信独立RGBA、prepared重排及draft raw alpha。旧七层像素/placement SHA仍PASS，不升级为完整语义质量。
+- 单个wrong donor若数学可解不能仅凭蒙版断言不可解：source127/black donor0/alpha128允许F253，既有signed shadow/reflection residual也允许正贡献；实验性过严全scope校验已撤销并保留RED1。真正不可解alpha32/64 wrong donor仍明确拒绝、clean32/64/128/255正例保留。证据 `single-transparency-review-10d00ee4d0014062b58a45c0ea21f39a/shadow-matrix-fix/receipt.json`。
+- 真实headless浏览器执行原managed-layer-pixels读写：PNG独立RGB[37,83,129,32]被画布变为[40,80,128,32]，[100,150,200,64]变为[100,151,199,64]，alpha不变仍不是原独立颜色；真实water候选85,301个半透明像素、body候选51,699个发生RGB变化。decode和encode两条均复现，receipt SHA `5f9b342d757aea06e8726ac4b4855c9d079db1887e5826ef2bc8dd91c3459719`。原失败环境缺浏览器的记录保留，后用已安装Edge，无下载。
+- 新 `layer-png-codec` 保留8bitRGBA/RGB/灰度/调色板、PNG filters与Adam7存储通道，包括alpha0的RGB；CRC、尺寸、解压输出精确长度和内存上限检查。已有pako2.1.0离线声明直接依赖，未下载新软件或模型。工作线程30s上限、错误/超时terminate并拒绝，编码transfer副本保留PSD原数组；三个调用者改await并保留取消、真实owner与提交边界。原尺寸PNG不经Canvas，不支持的16bit/critical PNG明确拒绝，仅非PNG沿用Image。编码base64长度与既有90m读入上限一致，避免自产不可读资产。
+- 不同分辨率PNG亦不落入Canvas：浮点透明颜色仅最终量化；缩小使用面积覆盖，防止点采样遗漏水滴，放大使用alpha加权双线性；6×6孤立水滴alpha32→2×2保持RGB[37,83,129]及alpha4。独立28个物理面积检查通过；实际2840→2196恒定alpha32全像素无变化（仅CPU证据，不宣称GUI性能）。native恒等字节保持，不宣称任意缩放无损。
+- Root managed读写实际RED3FAIL/1PASS；新codec24PASS、managed14PASS、resize12PASS及store/preview/failure相关6files356PASS、renderer tsc0。UI旧假source-url和asset-id画布夹具不是真图片，新读字节路径先6FAIL；更新为独立Node-zlib/CRC真实PNG输入，仍保留所有污染/不可解颜色/草稿像素/坐标断言，联合4files320PASS。中间错误插入夹具的3个ReferenceError日志保留，不当产品故障或成功证据。
+- 独立真实Edge worker/Sharp15cases PASS后，又用实际Vite配置、实际managed模块与原生newURL Worker完成接入14cases PASS：2196²原图RGB、水/杯身RGBA完整解码和编码后独立Sharp回读均0byte差；alpha32/64、alpha0RGB和兼容缩放通过；16bit/CRC/画幅不符明确拒绝且Canvas调用0，14Worker全部正常terminate，external/pageErrors0，7source files SHA前后一致，Edge/Vite正常close。receipt `png-codec-20261001-185351610-bc3bb5fc/vite-managed-mupfredp/vite-managed-png-receipt.json` SHA `527d4deff0c716a0099e7cb01d0cd330d66a4a2943b911061423efed8d3247ce`。仅模块接入证据，不代替新候选/安装/PS；最终完整流水线须新冻结。
+- R8D候选wrapper前8gatePASS，第9个MCP输入因journal原子rename临时文件瞬时ENOENT失败，后续gate未跑。私有QA现在只对精确 `journal/.active.ndjson.tmp-[a-f0-9]{16}` 消失重扫整棵树，150ms/最多7重试，保留所有文件参与hash；持久文件消失、其它名称和junction继续硬失败。独立11实际文件系统案例PASS，实际MCP单项9positive/10negative/3撤权限PASS。旧FAIL保留，新最终候选12gate仍须全部重跑。
+- 原570全部6项目保护不变；完整五层owned副本仍FAIL，正在修杯口水下金属承载、漏水珠、杯盖小钢pin和完整补全背景拼缝。此前局部白袖/指缝/光学解算或整图复合0差不能提前冻结为完整五层PASS。没有新增付费或原项目写入，候选/安装/PS/发布都未完成。
+- R8F首次189文件冻结 `c6fc3c6e7658ba48af296cdb034f16b4f84282d82182ff0005ec03f9d2ace5e5` 的完整source停在5188PASS/3FAIL/2opt-inSKIP，319文件PASS、1文件FAIL；未跑types/browser/build。三项均为另一份coverage-refinement旧假source-url/asset-id夹具读取失败，新读字节合同不能继续把它们当PNG。将两份UI测试统一使用独立Node-zlib/CRC真实PNG夹具，保留原实体/透明诊断、相似名/混合raw的精修目标、零隐式调用、草稿原始像素及PSD坐标断言；2files20PASS。仅测试夹具与docs改变，七个PNG产品文件与真实Vite接入证据SHA仍一致；重新冻结执行完整流水线，原failed-stage-receipt保留。
+
+## 2026-10-04 R12 当前安装版 / MCP / 发布门禁续验
+
+- 当前正式候选身份仍为 1.6.185：unpacked EXE `aaa574000991b66ef8efbe4dec8046fa4add9568557b8b4c229989900682fc95`，app.asar `2831fbd8c2b57afb7cdfbf4b69a71041ae00070e0a2792c27dab89a5de9d7b64`，隔离安装目录为 `staging-canvas-build/qa-install-185-r12clear20261003-224200/Canvas`。Candidate Common 9/9、Installed Common 9/9、Candidate Large 和 Installed Large 均通过；这些是功能门禁，不代表材料语义或正式发布通过。
+- 安装版本地清除实际三阶段已通过：四个新增 clear 区域、保存重开、移除恢复、第三次重开；33 个指定污染像素清除，域外 RGBA 保持 0 差，恢复后原手部 PNG 逐字节一致。收据 `work/repair-185/installed-local-clear-r12-20261003-prepared/run-c2c06de5/receipt.json`。测试根因是深目录使项目根长 183，超过 `ProjectRepository` 的 180 字符兼容上限；QA actor 已改用短隔离 profile，未改生产项目。
+- 安装版实际 OS 剪贴板与 Photoshop 4096 gate 已通过：PNG 写入、Win32 归属序列、4096 边界、颜色通道最大差 0、归属恢复。最终收据保留在 `work/repair-185/qa-scripts/output/copy-installed-1791078896063-5150e4f4/installed-copy-receipt.json`（actor 同目录 `installed-copy-receipt.json`）。测试前残留 QA 剪贴板格式先清空，未覆盖用户文档；Photoshop 仅有本轮空文档条件。
+- MCP 配置已从不存在的 `D:\CanvasAtelier\Canvas Atelier\...` 修正为实际恢复安装 `D:\CanvasAtelier\Canvas\Canvas Atelier.exe` 与 `resources/mcp/canvasforge-mcp.cjs`。真实 stdio `initialize` 与 `tools/list` 返回 14 工具，付费调用 0；收据 `work/repair-185/mcp-init-probe-r12.json`。Codex 当前聊天的工具缓存/重载不由该子进程证明。
+- 最新日用项目已正常关闭并升至 revision 573；先前 572 保护回执因此不再作为当前日用基线。新保护回执 `staging-canvas-build/user-project-backup-185-r8-2026-10-04T01-25-10-513Z-58b56166/r8-backup-receipt.json`（7 个当前/历史项目，revision>=573）用于后续门禁；不得覆盖当前项目。
+- 发布仍被材料语义门禁阻断：水层旧主流斜接头与杯口左灰带未修，body/contact 仍存在未观测隐藏钢面估计，六层 contact-effect 只有离线数学诊断，尚未做新的 native/UI PSD/Photoshop 逐层验收。不得把局部 water v2 点状修复、离线六层 PSD、格式检查或 `formalAcceptance:false` 的 gate 收据写成完整 AI 分层/PSD 通过；GitHub v1.6.185 尚未创建 tag/release，Latest 仍是 v1.6.184。
+- 2026-10-04 定向 UI 续验：素材槽 12 项在小数列宽累加时会出现 676px/675px 的 1px 横向溢出；`generation-running.css` 将自然素材列改为容器内 `minmax(0, 1fr)`，保留完整素材比例并消除滚动条。暗色视频海报缺失的实际原因是 E2E 本地 MP4 被保存为 `data:video/mp4`，生产 `isRenderableManagedVideoUrl` 按设计拒绝非受管视频；仅测试 harness 改为受管本地 fixture URL，未放宽生产 URL 安全规则。定向浏览器 `image-slot-density.spec.ts` + `ui-polish-screenshots.spec.ts` **3/3 PASS**（`work/repair-185/ui-density-video-focused-r2.log`）；`e2e-harness.test.ts` 与 `ConnectedAgentMediaSlotAspect.test.tsx` **12/12 PASS**，renderer 全 workspace typecheck exit0（`work/repair-185/ui-fix-typecheck-r2.log`）。
+- 同日重新绑定最新 revision573 安装版时，Installed Common 首次重跑在基本历史门禁出现 `historyMainLoopMaxGapMs=1042.7505ms`（阈值 1000ms），收据 `exact-gates-installed-common-20261004-020118460-d2a7ca9d` 保留为失败证据；未降低阈值。随后 Codex stdio MCP 进程重新存在，包装器的“Canvas 必须正常关闭”护栏暂不能重跑，未强杀这些进程。该行仍需机器空闲且无 Canvas transport 后串行复验。
+- 反推结果复制反馈在当前源码的原始真实点击门禁已复验 **5/5 PASS**（`work/repair-185/result-delivery-focused-r2.log`）；包含受信任 click、`复制成功` 文案、写入编辑后的正向提示词、两条真实连线和项目重开持久化。不会把早期失败截图继承为当前失败，也不把这一条 UI 通过扩大为安装版全量通过。
+- 同轮分层/PSD 纯函数保护 **89/89 PASS**（`work/repair-185/layering-unit-r2.log`），覆盖 layering jobs、source-layer-document、PSD、proof 与 independent-validation；这些测试只证明客户端结构门禁，不能替代逐层材质验收。
+- 同轮本地复核与边缘精修 UI **8/8 PASS**（`work/repair-185/layering-ui-r2.log`），覆盖浅/暗主题、1100/1600/640 宽度、RGBA 复核重开和底部动作几何；全程 paidCalls=0，未启动供应商生成。
+- 发现并修正分层合同缺口：视觉分析不再无条件声明 `source-independent-rgba-v2`；仅与当前图像路线完全匹配且明确记录 `independentRgba:true` 的证据才启用 v2，否则保留 `source-alpha-matte-v1` 的保守路径。分层合同相关 9 个测试文件 **120/120 PASS**，workspace typecheck exit0（`work/repair-185/layering-contract-wider-r3.log`、`layering-contract-typecheck-r3.log`）。这减少错误能力承诺，但不能把单图独立反推变成可解问题；当前生产证据仍为空。
+- 该合同保护发生在既有 R12 candidate/installed 构建之后，因此旧 `aaa574…` candidate 与已安装副本不包含本次修正；在材料语义和 Installed Common 阻塞解除前不重打包、不安装、不发布，避免把过期包当作当前源结果。
+
+### 2026-10-04 R12 continuation：元素唯一归属清单与独立 RGBA 路线修正
+
+- 对照本机 YANZO 1.9.5 的静态行为完成 clean-room 修正：新视觉分析必须返回 `elements`、每层 `elementIds` 和可选 `carrierElementId`。计划校验拒绝重复/遗漏/未知归属；光学或阴影可以指向承载对象但不转移所有权，未勾选图层仍保留清单用于背景移除和前景排除。
+- 生成请求现在把同一清单分成目标 owned elements 与 forbidden peer elements，背景请求保留未勾选对象；计划确认摘要包含完整清单。图节点、草稿恢复、复核摘要及 MCP 受保护字段持久化元素归属，旧无清单计划继续兼容。工作台在每层旁显示归属对象，清单不完整时不能确认提交。
+- 修正上一版错误边界：视觉分析模型的能力或 route evidence 不能认证图像生成输出的独立 RGB。新分析在通过归属校验后请求 `source-independent-rgba-v2` 候选；这仍不是语义通过，返图必须逐层复核后才可正式合成/PSD。旧保存计划继续使用原合同。分层相关单测 28/28、工作台/图节点/草稿/MCP/app-store 联合 447/447 通过，workspace typecheck exit0；未触发付费生成。
+- 本次只修改源和本地夹具；R12 旧 candidate/installed 不包含此修正。材料语义、Installed Common 的历史间隔、候选/安装/Photoshop 和 GitHub 发布继续保持独立门禁，未解除发布阻断。
+
+- 2026-10-04 ownership-registry candidate isolated build: unpacked EXE SHA $exe, app.asar SHA $asar, PE icon PASS. Strict candidate runner used a fresh offline profile and zero paid calls but failed the unchanged history loop threshold (historyMainLoopMaxGapMs=1305.4644ms, required <1000ms); preserved in work/repair-185/verify-candidate-ownership-r12.log. No installer, install or publish followed.
+
+- Final rebuilt ownership candidate (`formal-185-ownership-r12-20261004-2045`, same EXE/app.asar identity and updated renderer footer) was rerun with a fresh isolated profile. Strict history gate still failed at `historyMainLoopMaxGapMs=1038.8621ms` (open 2031ms, paid 0, external 0, page errors 0), receipt `work/repair-185/verify-candidate-ownership-r12-r5.log`. This is retained as machine-dependent gate failure; no installer, install, or publish was performed.
+
+### 2026-10-04 candidate strict rerun
+
+The final ownership candidate (`formal-185-ownership-r12-20261004-2045`) passed the strict offline candidate gate on a fresh profile: history open 2176 ms, maximum history main-loop gap 845.2863 ms (required below 1000 ms), paid calls 0, external requests 0, page errors 0, coordinated close true. EXE SHA-256 `db6b78f0b726d3d6ff0eac12116f4be55e228da6c0ed3e469eb387d2ded2ac87`; app.asar SHA-256 `eeab6c513de539ef11667b47c31734cbe27482e29e0ed0d337ef9b54d9b05b3d`; receipt `work/repair-185/candidate-rerun-20261004-2117`.
+
+The semantic layering gate remains blocked by the existing visible-owner evidence: unresolved water seam/gray band, body/contact hidden RGB contamination, and missing native/UI PSD/Photoshop layer-by-layer proof. No installer, installed-build claim, or public release follows from this candidate-only pass.

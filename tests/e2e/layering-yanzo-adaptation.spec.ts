@@ -43,11 +43,17 @@ for (const theme of ['light', 'dark'] as const) {
     await dialog.getByRole('slider', { name: '目标图层数' }).fill('5');
     await expect(dialog.getByText('5 层')).toBeVisible();
     await page.evaluate(() => window.__NOVUS_E2E__!.queueLayeringAnalysisReply(JSON.stringify({ layers: [
-      { layerId: 'background', kind: 'background', name: '厨房台面背景', description: '补全产品与摆件移除后露出的台面区域', included: true },
-      { layerId: 'product-main', kind: 'transparent', name: '蓝色咖啡机', description: '仅咖啡机本体像素，不包含底部接触阴影', included: true, sourceBounds: { x: .45, y: .15, width: .4, height: .65 } },
-      { layerId: 'prop-vase', kind: 'transparent', name: '左侧玻璃花瓶', description: '仅花瓶本体像素，不包含投影', included: true, sourceBounds: { x: .1, y: .3, width: .25, height: .5 } },
-      { layerId: 'shadow-product', kind: 'transparent', name: '咖啡机接触阴影', description: '仅咖啡机底部接触阴影，不包含机器像素', included: true, sourceBounds: { x: .4, y: .75, width: .5, height: .15 } },
-      { layerId: 'shadow-vase', kind: 'transparent', name: '花瓶投影', description: '仅花瓶投影像素，不包含花瓶本体', included: true, sourceBounds: { x: .05, y: .75, width: .35, height: .15 } },
+      { layerId: 'background', kind: 'background', name: '厨房台面背景', description: '补全产品与摆件移除后露出的台面区域', included: true, elementIds: ['background'] },
+      { layerId: 'product-main', kind: 'transparent', name: '蓝色咖啡机', description: '仅咖啡机本体像素，不包含底部接触阴影', included: true, sourceBounds: { x: .45, y: .15, width: .4, height: .65 }, elementIds: ['product-main'] },
+      { layerId: 'prop-vase', kind: 'transparent', name: '左侧玻璃花瓶', description: '仅花瓶本体像素，不包含投影', included: true, sourceBounds: { x: .1, y: .3, width: .25, height: .5 }, elementIds: ['prop-vase'] },
+      { layerId: 'shadow-product', kind: 'transparent', name: '咖啡机接触阴影', description: '仅咖啡机底部接触阴影，不包含机器像素', included: true, sourceBounds: { x: .4, y: .75, width: .5, height: .15 }, elementIds: ['shadow-product'] },
+      { layerId: 'shadow-vase', kind: 'transparent', name: '花瓶投影', description: '仅花瓶投影像素，不包含花瓶本体', included: true, sourceBounds: { x: .05, y: .75, width: .35, height: .15 }, elementIds: ['shadow-vase'] },
+    ], elements: [
+      { elementId: 'background', name: '厨房台面背景', layerId: 'background', kind: 'object' },
+      { elementId: 'product-main', name: '蓝色咖啡机', layerId: 'product-main', kind: 'object' },
+      { elementId: 'prop-vase', name: '左侧玻璃花瓶', layerId: 'prop-vase', kind: 'object' },
+      { elementId: 'shadow-product', name: '咖啡机接触阴影', layerId: 'shadow-product', kind: 'shadow', carrierElementId: 'product-main' },
+      { elementId: 'shadow-vase', name: '花瓶投影', layerId: 'shadow-vase', kind: 'shadow', carrierElementId: 'prop-vase' },
     ] })));
     await dialog.getByRole('button', { name: '分析图片' }).click();
     const planList = dialog.getByRole('list', { name: '可编辑分层方案' });

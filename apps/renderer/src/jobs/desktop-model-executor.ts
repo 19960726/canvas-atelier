@@ -63,6 +63,20 @@ function getProviderBridge() {
 }
 
 function toImageSubmitRequest(job: ModelJob) {
+  const boundLayer = typeof job.layeringGroupId === 'string' && /^[A-Za-z0-9_-]{1,80}$/u.test(job.layeringGroupId)
+    && typeof job.layeringLayerId === 'string' && /^[A-Za-z0-9_-]{1,64}$/u.test(job.layeringLayerId)
+    && job.promptNodeId === `image-layer-${job.layeringGroupId}-${job.layeringLayerId}`;
+  const hasLayeringContract = job.layeringOutputContract !== undefined || job.layeringConfirmationDigest !== undefined;
+  if (hasLayeringContract && !boundLayer) {
+    throw new Error('Layering output contract metadata requires a bound image-layer job');
+  }
+  if (boundLayer && (job.layeringOutputContract !== undefined) !== (job.layeringConfirmationDigest !== undefined)) {
+    throw new Error('Layering output contract and confirmation digest must be supplied together');
+  }
+  if (boundLayer && job.layeringConfirmationDigest !== undefined
+    && !/^[a-f0-9]{64}$/u.test(job.layeringConfirmationDigest)) {
+    throw new Error('Layering confirmation digest must be a lowercase SHA-256 digest');
+  }
   return {
     jobId: job.id,
     provider: requireProviderField(job.provider),
@@ -70,7 +84,15 @@ function toImageSubmitRequest(job: ModelJob) {
     prompt: requireJobField(job.prompt, 'prompt'),
     conversationId: requireJobField(job.conversationId, 'conversationId'),
     ...(job.projectSessionId === undefined ? {} : { sessionId: job.projectSessionId }),
+    ...(job.projectId === undefined ? {} : { projectId: job.projectId }),
     referenceAssetIds: [...job.referenceAssetIds],
+    ...(boundLayer ? {
+      imagePurpose: 'layering' as const,
+      ...(job.layeringOutputContract === undefined ? {} : {
+        layeringOutputContract: job.layeringOutputContract,
+        layeringConfirmationDigest: job.layeringConfirmationDigest!,
+      }),
+    } : {}),
     ...(job.aspectRatio === undefined ? {} : { aspectRatio: job.aspectRatio }),
     ...(job.resolution === undefined ? {} : { resolution: job.resolution }),
     ...(job.imageQuality === undefined ? {} : { quality: job.imageQuality }),
@@ -88,6 +110,7 @@ function toVideoSubmitRequest(job: ModelJob) {
     prompt: requireJobField(job.prompt, 'prompt'),
     conversationId: requireJobField(job.conversationId, 'conversationId'),
     ...(job.projectSessionId === undefined ? {} : { sessionId: job.projectSessionId }),
+    ...(job.projectId === undefined ? {} : { projectId: job.projectId }),
     referenceAssetIds: [...job.referenceAssetIds],
     ...(job.aspectRatio === undefined ? {} : { aspectRatio: job.aspectRatio }),
     ...(job.videoResolution === undefined ? {} : { resolution: job.videoResolution }),

@@ -9,7 +9,10 @@ import {
   type BuildResultMaterialization,
   type ModelJobExecutor,
   type ModelJobRequest,
+  type ModelJobSubmission,
+  type ModelJobStorage,
 } from './job-store';
+import { canRetryModelJob } from './model-job-retry-policy';
 
 const confirmedAt = '2026-07-16T08:00:00.000Z';
 
@@ -112,6 +115,8 @@ describe('persistent model job store', () => {
   });
 
   it.each([
+    { provider: 'comfly' as const, kind: 'image' as const },
+    { provider: 'relayme' as const, kind: 'image' as const },
     { provider: 'julun' as const, kind: 'video' as const },
     { provider: '4dai' as const, kind: 'image' as const },
   ])('marks an orphaned $provider submission as uncertain and refuses a new-id retry', async ({ provider, kind }) => {
@@ -133,6 +138,26 @@ describe('persistent model job store', () => {
     await expect(store.retryJob(job!.id, { id: `unsafe-retry-${provider}` })).rejects.toThrow('提交状态不确定');
     await expect(storage.list()).resolves.toHaveLength(1);
   });
+
+  it.each(['comfly', 'relayme', 'julun', '4dai'] as const)(
+    'prevents a new paid %s job after an accepted result cannot be persisted', async (provider) => {
+      const storage = createInMemoryModelJobStorage();
+      const submit = vi.fn(async () => {
+        throw new Error('提交状态不确定：供应商已接受任务，但本地结果暂无法保存');
+      });
+      const store = createModelJobStore({ storage, executor: createExecutor({ submit }),
+        commitProjectTransaction: vi.fn(), now: fixedNow });
+      const [job] = await store.enqueueConfirmedJobs({ conversationId: `accepted-${provider}`, confirmedAt,
+        requests: [request({ id: `accepted-${provider}`, provider, referenceAssetIds: [] })] });
+      await store.processQueue();
+      const failed = (await storage.get(job!.id))!;
+      expect(failed).toMatchObject({ status: 'failed', error: expect.stringContaining('提交状态不确定') });
+      expect(canRetryModelJob(failed)).toBe(false);
+      await expect(store.retryJob(job!.id, { id: `paid-again-${provider}` })).rejects.toThrow('提交状态不确定');
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(await storage.list()).toHaveLength(1);
+    },
+  );
 
   it('returns the coalesced retry record with explicit identity and current project ownership', async () => {
     const storage = createInMemoryModelJobStorage();
@@ -248,6 +273,133 @@ describe('persistent model job store', () => {
     } } });
     expect(await store.listJobs()).toMatchObject([{ id: 'layer-job-subject', status: 'completed', resultNodeId: layerNode.id }]);
     expect(commitProjectTransaction).toHaveBeenCalledOnce();
+  });
+
+  it('materializes v2 layering results as untrusted independent-RGBA candidates', async () => {
+    const assetId = '1111111111111111';
+    const layerNode = createCanvasModuleNode('layer-contract-v2-node', 'image_layer', { x: 0, y: 0 });
+    layerNode.data.config = {
+      ...layerNode.data.config,
+      groupId: 'group-v2', layerId: 'subject', layerKind: 'transparent', sourceAssetId: 'source-v2',
+      jobId: 'layer-contract-v2-job', status: 'running',
+      resultAssetId: 'old-provider', resultJobId: 'old-provider-job',
+      pixelColorSpace: 'foreground', maskSpace: 'source', refinedFromAssetId: 'old-provider',
+      foregroundProvenance: 'provider-independent-rgba-v2', foregroundValidation: { ok: true },
+      preparedRgb: true, layerPrepared: true, mattingRegions: [{ x: 1 }],
+      qualityStatus: 'passed', qualityReason: 'old-proof', qualityValidationVersion: 7,
+      assemblyConfirmationDigest: 'a'.repeat(64), semanticReviewAccepted: true, semanticReviewDigest: 'a'.repeat(64),
+      formatQualityStatus: 'passed', qualityFormatCheckedAssetId: 'old-provider',
+    };
+    const groupNode = createCanvasModuleNode('layer-contract-v2-group', 'image_layering', { x: 0, y: 0 });
+    groupNode.data.config = { groupId: 'group-v2', assemblyConfirmationDigest: 'a'.repeat(64), resultState: 'ready', status: 'completed' };
+    const peerNode = createCanvasModuleNode('layer-contract-v2-peer', 'image_layer', { x: 0, y: 0 });
+    peerNode.data.config = { groupId: 'group-v2', layerId: 'background', resultAssetId: 'old-background', preparedRgb: true,
+      qualityStatus: 'passed', qualityValidationVersion: 2, formatQualityStatus: 'passed', qualityFormatCheckedAssetId: 'old-background',
+      assemblyConfirmationDigest: 'a'.repeat(64), semanticReviewAccepted: true, semanticReviewDigest: 'a'.repeat(64) };
+    let project: CanvasProject = { ...createStarterProject(), nodes: [layerNode, groupNode, peerNode], edges: [] };
+    const storage = createInMemoryModelJobStorage();
+    const digest = 'd'.repeat(64);
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({ status: 'completed' as const, result: {
+          assetId, width: 1024, height: 768, resultRepresentation: 'independent-rgba-candidate' as const,
+        } })),
+      }),
+      commitProjectTransaction: async (build) => {
+        const materialization = build(project);
+        project = applyProjectTransaction(project, materialization.transaction);
+        return { committed: true, resultNodeId: materialization.resultNodeId };
+      },
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'layer-contract-v2-conversation', projectId: project.id, confirmedAt,
+      requests: [request({
+        id: 'layer-contract-v2-job', promptNodeId: layerNode.id, referenceAssetIds: ['source-v2'],
+        layeringGroupId: 'group-v2', layeringLayerId: 'subject',
+        layeringOutputContract: 'source-independent-rgba-v2', layeringConfirmationDigest: digest,
+        imageOutputFormat: 'png', imageBackground: 'transparent',
+      })],
+    });
+    await store.processQueue();
+    await store.pollActiveJobs();
+
+    const config = project.nodes[0]?.type === 'module' ? project.nodes[0].data.config : {};
+    expect(config).toMatchObject({
+      resultAssetId: assetId, resultJobId: 'layer-contract-v2-job',
+      layeringOutputContract: 'source-independent-rgba-v2', layeringConfirmationDigest: digest,
+      resultRepresentation: 'independent-rgba-candidate',
+      pixelColorSpace: null, refinedFromAssetId: null, mattingRegions: [],
+      qualityStatus: 'pending', status: 'validating', qualityReason: null, qualityValidationVersion: null,
+    });
+    for (const staleField of ['foregroundProvenance', 'foregroundValidation', 'preparedRgb', 'layerPrepared',
+      'assemblyConfirmationDigest', 'semanticReviewAccepted', 'semanticReviewDigest', 'formatQualityStatus', 'qualityFormatCheckedAssetId']) {
+      expect(config).not.toHaveProperty(staleField);
+    }
+    const groupConfig = (project.nodes.find(node => node.id === groupNode.id) as typeof groupNode).data.config;
+    const peerConfig = (project.nodes.find(node => node.id === peerNode.id) as typeof peerNode).data.config;
+    expect(groupConfig).toMatchObject({ needsReconfirm: true, resultState: 'needs_review' });
+    expect(groupConfig).not.toHaveProperty('assemblyConfirmationDigest');
+    expect(peerConfig).not.toHaveProperty('semanticReviewAccepted');
+    expect(peerConfig).not.toHaveProperty('semanticReviewDigest');
+    expect(peerConfig).not.toHaveProperty('assemblyConfirmationDigest');
+    expect(peerConfig).toMatchObject({ preparedRgb: true, formatQualityStatus: 'passed', qualityFormatCheckedAssetId: 'old-background' });
+    expect(await storage.get('layer-contract-v2-job')).toMatchObject({
+      status: 'completed', layeringOutputContract: 'source-independent-rgba-v2', layeringConfirmationDigest: digest,
+    });
+  });
+
+  it('keeps legacy alpha-matte jobs and explicit v2 contract on separate retries', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const store = createModelJobStore({ storage, executor: createExecutor(), commitProjectTransaction: vi.fn(), now: fixedNow });
+    const [legacy, v2] = await store.enqueueConfirmedJobs({
+      conversationId: 'layer-contract-retry', projectId: 'project-retry', confirmedAt,
+      requests: [
+        request({ id: 'legacy-layer-retry', layeringGroupId: 'group-a', layeringLayerId: 'subject' }),
+        request({ id: 'v2-layer-retry', layeringGroupId: 'group-a', layeringLayerId: 'cup', layeringOutputContract: 'source-independent-rgba-v2', layeringConfirmationDigest: 'e'.repeat(64) }),
+      ],
+    });
+    await storage.put({ ...legacy!, status: 'failed' });
+    await storage.put({ ...v2!, status: 'failed' });
+    const legacyRetry = await store.retryJob(legacy!.id, { id: 'legacy-layer-retry-2' });
+    const v2Retry = await store.retryJob(v2!.id, { id: 'v2-layer-retry-2' });
+    expect(legacyRetry).not.toHaveProperty('layeringOutputContract');
+    expect(legacyRetry).not.toHaveProperty('layeringConfirmationDigest');
+    expect(v2Retry).toMatchObject({ layeringOutputContract: 'source-independent-rgba-v2', layeringConfirmationDigest: 'e'.repeat(64) });
+  });
+
+  it('drops a completed candidate when its confirmed contract changes while polling', async () => {
+    const layerNode = createCanvasModuleNode('layer-contract-stale-node', 'image_layer', { x: 0, y: 0 });
+    layerNode.data.config = { ...layerNode.data.config, groupId: 'group-stale', layerId: 'subject', jobId: 'layer-contract-stale-job', status: 'running' };
+    const project: CanvasProject = { ...createStarterProject(), nodes: [layerNode], edges: [] };
+    const storage = createInMemoryModelJobStorage();
+    let running!: ModelJob;
+    const commit = vi.fn();
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => {
+          await storage.put({ ...running, layeringOutputContract: 'opaque-background-v2', layeringConfirmationDigest: 'f'.repeat(64) });
+          return { status: 'completed' as const, result: { assetId: '2222222222222222' } };
+        }),
+      }),
+      commitProjectTransaction: commit,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    const [queued] = await store.enqueueConfirmedJobs({
+      conversationId: 'stale-contract', projectId: project.id, confirmedAt,
+      requests: [request({ id: 'layer-contract-stale-job', promptNodeId: layerNode.id, layeringGroupId: 'group-stale', layeringLayerId: 'subject', layeringOutputContract: 'source-independent-rgba-v2', layeringConfirmationDigest: 'a'.repeat(64) })],
+    });
+    running = { ...queued!, status: 'running', providerTaskId: 'stale-provider-task' };
+    await storage.put(running);
+    await store.pollActiveJobs();
+    expect(commit).not.toHaveBeenCalled();
+    expect(await storage.get(running.id)).toMatchObject({ status: 'running', layeringOutputContract: 'opaque-background-v2', layeringConfirmationDigest: 'f'.repeat(64) });
   });
 
   it('recovers a submitted layering job by polling its saved provider task without another submit', async () => {
@@ -547,9 +699,9 @@ describe('persistent model job store', () => {
     ]);
   });
 
-  it('retires an expired Comfly running job even when the provider ledger still claims ownership', async () => {
+  it.each(['comfly', 'relayme'] as const)('keeps an older $provider paid task recoverable with its provider id', async (provider) => {
     const stale = {
-      ...request({ id: 'job-running-expired' }),
+      ...request({ id: `job-running-expired-${provider}`, provider }),
       conversationId: 'expired-recovery',
       confirmedAt: '2026-07-15T07:00:00.000Z',
       createdAt: '2026-07-15T07:00:00.000Z',
@@ -570,8 +722,8 @@ describe('persistent model job store', () => {
 
     await restarted.recover();
 
-    expect(canRecoverRunningJob).not.toHaveBeenCalled();
-    expect(await storage.get(stale.id)).toMatchObject({ status: 'cancelled' });
+    expect(canRecoverRunningJob).toHaveBeenCalledWith(expect.objectContaining({ providerTaskId: stale.providerTaskId }));
+    expect(await storage.get(stale.id)).toMatchObject({ status: 'running', providerTaskId: stale.providerTaskId });
   });
 
   it.each([
@@ -1486,6 +1638,89 @@ describe('persistent model job store', () => {
     expect(project.nodes.filter((node) => node.type === 'image_result')).toHaveLength(6);
   });
 
+  it('does not lose a new generation wakeup while the prior run is finishing', async () => {
+    const baseStorage = createInMemoryModelJobStorage();
+    const idleReadEntered = deferred<void>();
+    const releaseIdleRead = deferred<void>();
+    let failedReads = 0;
+    const storage: ModelJobStorage = {
+      ...baseStorage,
+      list: async () => {
+        const snapshot = await baseStorage.list();
+        if (snapshot.length === 1 && snapshot[0]?.status === 'failed' && ++failedReads === 2) {
+          idleReadEntered.resolve();
+          await releaseIdleRead.promise;
+        }
+        return snapshot;
+      },
+    };
+    const submit = vi.fn(async () => {
+      throw new Error('controlled submission failure');
+    });
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({ submit }),
+      commitProjectTransaction: vi.fn(),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({ conversationId: 'wakeup', confirmedAt,
+      requests: [request({ id: 'first-generation' })] });
+
+    const firstRun = store.run();
+    await idleReadEntered.promise;
+    await store.enqueueConfirmedJobs({ conversationId: 'wakeup', confirmedAt,
+      requests: [request({ id: 'second-generation' })] });
+    const secondRun = store.run();
+    releaseIdleRead.resolve();
+    await Promise.all([firstRun, secondRun]);
+
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(await storage.get('second-generation')).toMatchObject({ status: 'failed' });
+  });
+
+  it('replays a waiting generation after a transient final queue read error', async () => {
+    const baseStorage = createInMemoryModelJobStorage();
+    const idleReadEntered = deferred<void>();
+    const releaseIdleRead = deferred<void>();
+    let failedReads = 0;
+    const storage: ModelJobStorage = {
+      ...baseStorage,
+      list: async () => {
+        const snapshot = await baseStorage.list();
+        if (snapshot.length === 1 && snapshot[0]?.status === 'failed' && ++failedReads === 2) {
+          idleReadEntered.resolve();
+          await releaseIdleRead.promise;
+          throw new Error('intermittent queue read failure');
+        }
+        return snapshot;
+      },
+    };
+    const submit = vi.fn(async () => {
+      throw new Error('controlled submission failure');
+    });
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({ submit }),
+      commitProjectTransaction: vi.fn(),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({ conversationId: 'wakeup', confirmedAt,
+      requests: [request({ id: 'first-after-read-error' })] });
+
+    const firstRun = store.run();
+    await idleReadEntered.promise;
+    await store.enqueueConfirmedJobs({ conversationId: 'wakeup', confirmedAt,
+      requests: [request({ id: 'second-after-read-error' })] });
+    const secondRun = store.run();
+    releaseIdleRead.resolve();
+    await Promise.all([firstRun, secondRun]);
+
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(await storage.get('second-after-read-error')).toMatchObject({ status: 'failed' });
+  });
+
   it('accepts runtime-profile poll and decode concurrency overrides instead of hard-coding 4 and 2', async () => {
     const storage = createInMemoryModelJobStorage();
     const submitGate = createGate();
@@ -1551,8 +1786,10 @@ describe('persistent model job store', () => {
       poll: vi.fn(async (job) => {
         pollGate.enter(job.id);
         await pollGate.wait();
+        if (job.id === 'job-submit-cancel') return { status: 'cancelled' as const };
         return { status: 'completed' as const, result: { assetId: `asset-${job.id}` } };
       }),
+      cancel: vi.fn(async () => ({ status: 'cancelled' as const })),
     });
     const store = createModelJobStore({
       storage,
@@ -1583,9 +1820,44 @@ describe('persistent model job store', () => {
 
     expect(await storage.get('job-submit-cancel')).toMatchObject({ status: 'cancelled' });
     expect(await storage.get('job-poll-cancel')).toMatchObject({ status: 'cancelled' });
+    expect(executor.cancel).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'job-submit-cancel', providerTaskId: 'task-job-submit-cancel',
+    }));
   });
 
-  it('finishes local cancellation when the provider cancel call never settles', async () => {
+  it('does not submit after cancellation races with the queued to submitting write', async () => {
+    const baseStorage = createInMemoryModelJobStorage();
+    const writeEntered = deferred<void>();
+    const cancellationWritten = deferred<void>();
+    const releaseWrite = deferred<void>();
+    const storage: ModelJobStorage = { ...baseStorage,
+      put: async (job) => {
+        if (job.id === 'job-cancel-before-post' && job.status === 'submitting') {
+          writeEntered.resolve();
+          await releaseWrite.promise;
+        }
+        await baseStorage.put(job);
+        if (job.id === 'job-cancel-before-post' && job.status === 'cancelled') cancellationWritten.resolve();
+      },
+    };
+    const submit = vi.fn(async () => ({ providerTaskId: 'must-not-submit' }));
+    const store = createModelJobStore({ storage, executor: createExecutor({ submit }),
+      commitProjectTransaction: vi.fn(), now: fixedNow, pollIntervalMs: 0 });
+    await store.enqueueConfirmedJobs({ conversationId: 'cancel-before-post', confirmedAt,
+      requests: [request({ id: 'job-cancel-before-post', provider: 'comfly' })] });
+
+    const processing = store.processQueue();
+    await writeEntered.promise;
+    const cancellation = store.cancelQueuedJob('job-cancel-before-post');
+    await cancellationWritten.promise;
+    releaseWrite.resolve();
+    await Promise.all([processing, cancellation]);
+
+    expect(await storage.get('job-cancel-before-post')).toMatchObject({ status: 'cancelled' });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('keeps the paid task pollable when provider cancellation never settles', async () => {
     vi.useFakeTimers();
     try {
       const storage = createInMemoryModelJobStorage();
@@ -1618,7 +1890,10 @@ describe('persistent model job store', () => {
       await Promise.resolve();
 
       expect(settled).toBe(true);
-      expect(await storage.get('job-cancel-provider-hang')).toMatchObject({ status: 'cancelled' });
+      expect(await storage.get('job-cancel-provider-hang')).toMatchObject({
+        status: 'running', providerTaskId: 'task-job-cancel-provider-hang',
+      });
+      expect(executor.ackTerminal).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -1860,16 +2135,51 @@ describe('persistent model job store', () => {
 
     await store.pollActiveJobs();
     expect(await storage.get('job-retryable-poll-outage')).toMatchObject({ status: 'running' });
-    expect(await storage.get('job-retryable-poll-outage')).not.toHaveProperty('error');
+    expect((await storage.get('job-retryable-poll-outage'))?.error).toContain('temporary network outage');
 
     await store.pollActiveJobs();
     expect(poll).toHaveBeenCalledTimes(2);
     expect(await storage.get('job-retryable-poll-outage')).toMatchObject({ status: 'running', progress: 0.4 });
+    expect(await storage.get('job-retryable-poll-outage')).not.toHaveProperty('error');
   });
 
-  it('does not mistake a retryable local materialization failure for a provider polling outage', async () => {
+  it('backs off repeated provider poll outages while showing the original task error', async () => {
+    const storage = createInMemoryModelJobStorage();
+    let currentTime = Date.parse(confirmedAt);
+    const poll = vi.fn()
+      .mockRejectedValueOnce({ code: 'PROVIDER_ERROR', message: 'provider temporarily unavailable', retryable: true })
+      .mockRejectedValueOnce({ code: 'PROVIDER_ERROR', message: 'provider temporarily unavailable', retryable: true })
+      .mockResolvedValueOnce({ status: 'running' as const, progress: 0.5 });
+    const store = createModelJobStore({ storage, executor: createExecutor({ poll }),
+      commitProjectTransaction: vi.fn(), now: () => new Date(currentTime).toISOString(), pollIntervalMs: 750 });
+    const [job] = await store.enqueueConfirmedJobs({ conversationId: 'poll-backoff', confirmedAt,
+      requests: [request({ id: 'job-poll-backoff', provider: 'comfly' })] });
+    await storage.put({ ...job!, status: 'running', providerTaskId: 'provider-job-poll-backoff' });
+
+    await store.pollActiveJobs();
+    expect(poll).toHaveBeenCalledTimes(1);
+    expect((await storage.get(job!.id))?.error).toContain('provider temporarily unavailable');
+    await store.pollActiveJobs();
+    expect(poll).toHaveBeenCalledTimes(1);
+    currentTime += 1_000;
+    await store.pollActiveJobs();
+    expect(poll).toHaveBeenCalledTimes(2);
+    currentTime += 1_500;
+    await store.pollActiveJobs();
+    expect(poll).toHaveBeenCalledTimes(2);
+    currentTime += 500;
+    await store.pollActiveJobs();
+    expect(poll).toHaveBeenCalledTimes(3);
+    expect(await storage.get(job!.id)).toMatchObject({ status: 'running', providerTaskId: 'provider-job-poll-backoff', progress: 0.5 });
+    expect(await storage.get(job!.id)).not.toHaveProperty('error');
+  });
+
+  it.each([
+    { code: 'PROVIDER_ERROR', retryable: true },
+    { code: 'SAVE_TIMEOUT' },
+  ])('retries a temporary local project commit ($code) with the original paid provider task', async (failure) => {
     const imageNode = createCanvasModuleNode('image-node-local-retryable-error', 'image_generation', { x: 0, y: 0 });
-    const project = { ...createStarterProject(), nodes: [imageNode], edges: [] };
+    let project: CanvasProject = { ...createStarterProject(), nodes: [imageNode], edges: [] };
     const runningJob = {
       ...request({ id: 'job-local-retryable-error', promptNodeId: imageNode.id }),
       conversationId: 'conversation-local-retryable-error',
@@ -1881,26 +2191,35 @@ describe('persistent model job store', () => {
       providerTaskId: 'provider-job-local-retryable-error',
     } as ModelJob;
     const storage = createInMemoryModelJobStorage([runningJob]);
+    const poll = vi.fn(async () => ({ status: 'completed' as const, result: { assetId: 'e'.repeat(16) } }));
+    const commitProjectTransaction = vi.fn(async (build: BuildResultMaterialization) => {
+      if (commitProjectTransaction.mock.calls.length === 1) {
+        throw Object.assign(new Error('local durable commit failed'), failure);
+      }
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
+    });
     const store = createModelJobStore({
       storage,
-      executor: createExecutor({
-        poll: vi.fn(async () => ({ status: 'completed' as const, result: { assetId: 'e'.repeat(16) } })),
-      }),
+      executor: createExecutor({ poll }),
       getProject: () => project,
-      commitProjectTransaction: vi.fn(async () => {
-        throw Object.assign(new Error('local durable commit failed'), { code: 'PROVIDER_ERROR', retryable: true });
-      }),
+      commitProjectTransaction,
       now: fixedNow,
       pollIntervalMs: 0,
     });
 
     await store.pollActiveJobs();
 
-    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'failed' });
+    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'running', providerTaskId: runningJob.providerTaskId });
     expect(await storage.get(runningJob.id)).not.toHaveProperty('resultAssetId');
+    await store.pollActiveJobs();
+    expect(poll).toHaveBeenCalledTimes(2);
+    expect(commitProjectTransaction).toHaveBeenCalledTimes(2);
+    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'completed', resultAssetId: 'e'.repeat(16) });
   });
 
-  it('does not mistake a retryable result decode failure for a provider polling outage', async () => {
+  it('retries a temporary local result decode with the original paid provider task', async () => {
     const runningJob = {
       ...request({ id: 'job-local-retryable-decode' }),
       conversationId: 'conversation-local-retryable-decode',
@@ -1912,20 +2231,17 @@ describe('persistent model job store', () => {
       providerTaskId: 'provider-job-local-retryable-decode',
     } as ModelJob;
     const storage = createInMemoryModelJobStorage([runningJob]);
-    const commitProjectTransaction = vi.fn(async () => ({ committed: true, resultNodeId: '' }));
+    const commitProjectTransaction = vi.fn(async () => ({ committed: true, resultNodeId: 'result-node-local-retryable-decode' }));
+    const decode = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('local decode failed'), { code: 'PROVIDER_ERROR', retryable: true }))
+      .mockResolvedValueOnce(undefined);
+    const poll = vi.fn(async () => ({
+      status: 'completed' as const,
+      result: { assetId: 'f'.repeat(16), decode },
+    }));
     const store = createModelJobStore({
       storage,
-      executor: createExecutor({
-        poll: vi.fn(async () => ({
-          status: 'completed' as const,
-          result: {
-            assetId: 'f'.repeat(16),
-            decode: vi.fn(async () => {
-              throw Object.assign(new Error('local decode failed'), { code: 'PROVIDER_ERROR', retryable: true });
-            }),
-          },
-        })),
-      }),
+      executor: createExecutor({ poll }),
       commitProjectTransaction,
       now: fixedNow,
       pollIntervalMs: 0,
@@ -1933,12 +2249,40 @@ describe('persistent model job store', () => {
 
     await store.pollActiveJobs();
 
-    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'failed' });
+    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'running', providerTaskId: runningJob.providerTaskId });
     expect(commitProjectTransaction).not.toHaveBeenCalled();
     expect(await storage.get(runningJob.id)).not.toHaveProperty('resultAssetId');
+    await store.pollActiveJobs();
+    expect(decode).toHaveBeenCalledTimes(2);
+    expect(poll).toHaveBeenCalledTimes(2);
+    expect((await storage.get(runningJob.id))?.error).toBeUndefined();
+    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'completed', resultAssetId: 'f'.repeat(16) });
   });
 
-  it('fails a running job when provider polling throws a non-retryable error', async () => {
+  it('blocks a new paid run when local result materialization is permanently invalid', async () => {
+    const runningJob = {
+      ...request({ id: 'job-invalid-local-result', provider: 'comfly' }),
+      conversationId: 'invalid-local-result', confirmedAt, createdAt: confirmedAt,
+      updatedAt: confirmedAt, status: 'running' as const, retryCount: 0,
+      providerTaskId: 'provider-job-invalid-local-result',
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([runningJob]);
+    const store = createModelJobStore({ storage,
+      executor: createExecutor({ poll: vi.fn(async () => ({ status: 'completed' as const,
+        result: { assetId: 'a'.repeat(16), decode: async () => { throw new Error('local media is invalid'); } },
+      })) }),
+      commitProjectTransaction: vi.fn(), now: fixedNow, pollIntervalMs: 0 });
+
+    await store.pollActiveJobs();
+
+    const failed = (await storage.get(runningJob.id))!;
+    expect(failed).toMatchObject({ status: 'failed', providerTaskId: runningJob.providerTaskId });
+    expect(failed.error).toMatch(/^提交状态不确定/u);
+    expect(canRetryModelJob(failed)).toBe(false);
+    await expect(store.retryJob(runningJob.id)).rejects.toThrow('提交状态不确定');
+  });
+
+  it('blocks another paid run when provider polling throws without a terminal result', async () => {
     const runningJob = {
       ...request({ id: 'job-provider-non-retryable' }),
       conversationId: 'conversation-provider-non-retryable',
@@ -1962,7 +2306,73 @@ describe('persistent model job store', () => {
 
     await store.pollActiveJobs();
 
-    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'failed' });
+    const failed = (await storage.get(runningJob.id))!;
+    expect(failed).toMatchObject({ status: 'failed', providerTaskId: runningJob.providerTaskId });
+    expect(failed.error).toMatch(/^提交状态不确定/u);
+    expect(canRetryModelJob(failed)).toBe(false);
+    await expect(store.retryJob(runningJob.id)).rejects.toThrow('提交状态不确定');
+  });
+
+  it('blocks a second paid submission when the desktop submit response is lost', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const submit = vi.fn(async () => { throw new Error('submit IPC timed out'); });
+    const store = createModelJobStore({ storage, executor: createExecutor({ submit }),
+      commitProjectTransaction: vi.fn(), now: fixedNow, pollIntervalMs: 0 });
+    const [job] = await store.enqueueConfirmedJobs({ conversationId: 'lost-submit', confirmedAt,
+      requests: [request({ id: 'job-lost-submit', provider: 'comfly' })] });
+
+    await store.processQueue();
+
+    const failed = (await storage.get(job!.id))!;
+    expect(failed).toMatchObject({ status: 'failed' });
+    expect(failed.error).toMatch(/^提交状态不确定/u);
+    expect(canRetryModelJob(failed)).toBe(false);
+    await expect(store.retryJob(job!.id)).rejects.toThrow('提交状态不确定');
+    expect(submit).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { label: 'missing response', response: undefined },
+    { label: 'empty task id', response: { providerTaskId: '' } },
+  ])('does not strand a paid submission after a $label from the desktop bridge', async ({ response }) => {
+    const storage = createInMemoryModelJobStorage();
+    const submit = vi.fn(async () => response as ModelJobSubmission);
+    const store = createModelJobStore({ storage, executor: createExecutor({ submit }),
+      commitProjectTransaction: vi.fn(), now: fixedNow, pollIntervalMs: 0 });
+    const [job] = await store.enqueueConfirmedJobs({ conversationId: 'malformed-submit', confirmedAt,
+      requests: [request({ id: `job-malformed-${response === undefined ? 'missing' : 'empty'}`, provider: 'comfly' })] });
+
+    await store.processQueue();
+
+    const failed = (await storage.get(job!.id))!;
+    expect(failed).toMatchObject({ status: 'failed' });
+    expect(failed.error).toMatch(/^提交状态不确定/u);
+    expect(canRetryModelJob(failed)).toBe(false);
+    expect(submit).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the provider handle when its first local running write fails', async () => {
+    const baseStorage = createInMemoryModelJobStorage();
+    let failedOnce = false;
+    const storage: ModelJobStorage = { ...baseStorage,
+      put: async (job) => {
+        if (job.status === 'running' && !failedOnce) {
+          failedOnce = true;
+          throw new Error('temporary local write failure');
+        }
+        await baseStorage.put(job);
+      },
+    };
+    const submit = vi.fn(async () => ({ providerTaskId: 'accepted-provider-task' }));
+    const store = createModelJobStore({ storage, executor: createExecutor({ submit }),
+      commitProjectTransaction: vi.fn(), now: fixedNow, pollIntervalMs: 0 });
+    const [job] = await store.enqueueConfirmedJobs({ conversationId: 'accepted-submit', confirmedAt,
+      requests: [request({ id: 'job-accepted-write-failed', provider: 'relayme' })] });
+
+    await store.processQueue();
+
+    expect(await storage.get(job!.id)).toMatchObject({ status: 'running', providerTaskId: 'accepted-provider-task' });
+    expect(submit).toHaveBeenCalledOnce();
   });
 
   it('keeps locked jobs running and acks failed/cancelled terminals after durable terminal writes', async () => {
@@ -1977,7 +2387,7 @@ describe('persistent model job store', () => {
         .mockResolvedValueOnce({ status: 'running' as const, blockedReason: 'credentials_locked' })
         .mockResolvedValueOnce({ status: 'failed' as const, error: { code: 'PROVIDER_ERROR', message: 'failed', retryable: false } })
         .mockResolvedValue({ status: 'running' as const, progress: 0.2 }),
-      cancel: vi.fn(async () => {}),
+      cancel: vi.fn(async () => ({ status: 'cancelled' as const })),
       ackTerminal,
     } as Partial<ModelJobExecutor>);
     const store = createModelJobStore({
@@ -2197,9 +2607,11 @@ describe('persistent model job store', () => {
     }));
   });
 
-  it('cancels a stale running job when its provider result cannot be committed to the active project', async () => {
+  it('keeps a completed provider result pollable when the active project cannot accept it', async () => {
     const storage = createInMemoryModelJobStorage();
+    const ackTerminal = vi.fn(async () => undefined);
     const executor = createExecutor({
+      ackTerminal,
       cancel: vi.fn(async (job) => ({
         status: 'completed' as const,
         progress: 1,
@@ -2227,7 +2639,30 @@ describe('persistent model job store', () => {
 
     await store.cancelQueuedJob('job-cancel-stale-completed');
 
-    expect(await storage.get('job-cancel-stale-completed')).toMatchObject({ status: 'cancelled' });
+    expect(await storage.get('job-cancel-stale-completed')).toMatchObject({
+      status: 'running', providerTaskId: 'provider-job-cancel-stale-completed',
+    });
+    expect(ackTerminal).not.toHaveBeenCalled();
+  });
+
+  it('keeps a paid provider handle pollable when cancellation cannot confirm its terminal state', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const cancel = vi.fn(async () => { throw new Error('cancellation IPC is temporarily unavailable'); });
+    const poll = vi.fn(async () => ({ status: 'running' as const, progress: 0.6 }));
+    const store = createModelJobStore({ storage, executor: createExecutor({ cancel, poll }),
+      commitProjectTransaction: vi.fn(), now: fixedNow, pollIntervalMs: 0 });
+    const [job] = await store.enqueueConfirmedJobs({ conversationId: 'cancel-unknown', confirmedAt,
+      requests: [request({ id: 'paid-cancel-unknown', provider: 'comfly' })] });
+    await storage.put({ ...job!, status: 'running', providerTaskId: 'provider-paid-cancel-unknown' });
+
+    await store.cancelQueuedJob(job!.id);
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(await storage.get(job!.id)).toMatchObject({ status: 'running', providerTaskId: 'provider-paid-cancel-unknown' });
+    await store.pollActiveJobs();
+    expect(poll).toHaveBeenCalledOnce();
+    expect(await storage.get(job!.id)).toMatchObject({ status: 'running', progress: 0.6 });
+    expect((await storage.get(job!.id))?.error).toBeUndefined();
   });
 
   it('notifies subscribers with sanitized clones for live progress and action errors', async () => {

@@ -24,6 +24,7 @@ import { MODULE_DRAG_MIME } from './ModuleLibrary';
 import { CONNECTED_MEDIA_DRAG_MIME, encodeConnectedMediaDragPayload } from './connected-media-drag';
 import * as mcpSelection from '../app/mcp-canvas-selection';
 import * as canvasProviderProfiles from '../app/provider-profiles';
+import { SourceLayerRefinement } from './SourceLayerRefinement';
 
 const appStyles = readFileSync('apps/renderer/src/styles/app.css', 'utf8');
 const canvasHybridStyles = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
@@ -1543,6 +1544,31 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByTestId('settings-drawer')).toBeVisible();
   });
 
+  it('groups the eight rail actions and exposes Chinese hints for pointer and keyboard users', () => {
+    render(<CanvasWorkspace />);
+    const rail = screen.getByRole('navigation', { name: '画布工具' });
+    const editing = within(rail).getByRole('group', { name: '画布编辑' });
+    const surfaces = within(rail).getByRole('group', { name: '工作区' });
+    const application = within(rail).getByRole('group', { name: '应用' });
+
+    expect(within(editing).getAllByRole('button')).toHaveLength(5);
+    expect(within(surfaces).getAllByRole('button')).toHaveLength(2);
+    expect(within(application).getAllByRole('button')).toHaveLength(1);
+    expect(within(editing).getByRole('button', { name: '添加节点' }).querySelector('svg')).not.toBeNull();
+    expect(within(application).getByRole('button', { name: '打开设置' })).toHaveTextContent('设置');
+  });
+
+  it('keeps the visible project menu as the entry to existing file actions', () => {
+    render(<CanvasWorkspace />);
+    const topbar = screen.getByTestId('topbar');
+    const projectMenu = within(topbar).getByRole('button', { name: /未命名画布/u });
+
+    expect(projectMenu).toHaveAttribute('aria-haspopup', 'menu');
+    fireEvent.click(projectMenu);
+    expect(within(topbar).getByRole('menu', { name: '文件' })).toBeVisible();
+    expect(within(topbar).getByRole('menuitem', { name: '打开已保存项目' })).toBeVisible();
+  });
+
   it('keeps the Canvas UI Gate shell labels readable instead of mojibake', () => {
     render(<CanvasWorkspace />);
 
@@ -2177,6 +2203,24 @@ describe('CanvasWorkspace', () => {
     fireEvent.keyDown(window, { key: 'Delete' });
 
     await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
+  });
+
+  it.each(['Delete', 'Backspace'])('keeps the selected canvas node when %s edits the real refinement SVG in a portaled modal', async key => {
+    const selectedNode = createCanvasModuleNode('keep-under-refinement', 'text_prompt', { x: 80, y: 120 });
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState(state => ({ project: { ...state.project, nodes: [selectedNode] } }));
+    const apply = vi.fn(async () => {});
+    render(<><CanvasWorkspace /><SourceLayerRefinement sourceUrl="novus-asset://source" width={2196} height={2196}
+      layers={[{ nodeId: 'hands', name: '手部', regions: [] }]} onApply={apply} /></>);
+    fireEvent.click(document.querySelector<HTMLElement>('.react-flow__node')!);
+    fireEvent.click(screen.getByRole('button', { name: '本地抠图与边缘精修' }));
+    const dialog = screen.getByRole('dialog', { name: '边缘精修' });
+    const overlay = within(dialog).getByRole('group', { name: '框选分层范围' });
+    expect(overlay.tagName.toLowerCase()).toBe('svg');
+    await act(async () => { fireEvent.keyDown(overlay, { key }); });
+    expect(useAppStore.getState().project.nodes.map(node => node.id)).toEqual([selectedNode.id]);
+    expect(dialog).toBeVisible();
+    expect(apply).not.toHaveBeenCalled();
   });
 
   it('deletes twenty-five pasted image nodes in one durable canvas command', async () => {

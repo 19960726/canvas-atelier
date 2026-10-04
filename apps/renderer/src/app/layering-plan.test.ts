@@ -78,4 +78,43 @@ describe('GPT assisted layering plan', () => {
     await expect(matchesLayeringConfirmation(confirmation, edited, 'comfly', 'comfly-gpt-image-2', '1K')).resolves.toBe(true);
     await expect(matchesLayeringConfirmation(confirmation, plan, 'comfly', 'comfly-gpt-image-2', '1K')).resolves.toBe(false);
   });
+
+  it('requires one explicit owner for every inventoried element and allows real optical overlap', () => {
+    const reply = {
+      layers: [
+        { layerId: 'background', kind: 'background', name: '背景', description: '场景', included: true, elementIds: ['scene'] },
+        { layerId: 'cup', kind: 'transparent', name: '杯身', description: '杯身', included: true, sourceBounds: { x: 0, y: 0, width: 1, height: 1 }, elementIds: ['cup'] },
+        { layerId: 'water', kind: 'transparent', name: '水流', description: '水流', included: true, sourceBounds: { x: 0, y: 0, width: 1, height: 1 }, elementIds: ['water'] },
+      ],
+      elements: [
+        { elementId: 'scene', name: '场景', layerId: 'background', kind: 'object' },
+        { elementId: 'cup', name: '杯身', layerId: 'cup', kind: 'object' },
+        { elementId: 'water', name: '水流', layerId: 'water', kind: 'optical', carrierElementId: 'cup' },
+      ],
+    };
+    const plan = parseLayeringAnalysis(JSON.stringify(reply), 'asset-1', 1024, 768, { requireElementInventory: true });
+    expect(plan.elements?.[2]).toMatchObject({ elementId: 'water', carrierElementId: 'cup' });
+    expect(() => parseLayeringAnalysis(JSON.stringify({ ...reply, layers: reply.layers.map(layer => layer.layerId === 'water' ? { ...layer, elementIds: ['cup'] } : layer) }), 'asset-1', 1024, 768, { requireElementInventory: true })).toThrow(/owner|ownership/u);
+    expect(() => parseLayeringAnalysis(JSON.stringify({ ...reply, elements: reply.elements.map(element => element.elementId === 'water' ? { ...element, layerId: 'missing' } : element) }), 'asset-1', 1024, 768, { requireElementInventory: true })).toThrow(/layer/u);
+    expect(() => parseLayeringAnalysis(JSON.stringify({ ...reply, elements: reply.elements.map(element => element.elementId === 'water' ? { ...element, carrierElementId: 'missing' } : element) }), 'asset-1', 1024, 768, { requireElementInventory: true })).toThrow(/carrier/u);
+  });
+
+  it('binds confirmation to ownership changes, including excluded layers', async () => {
+    const reply = {
+      layers: [
+        { layerId: 'background', kind: 'background', name: '背景', description: '场景', included: true, elementIds: ['scene'] },
+        { layerId: 'subject', kind: 'transparent', name: '主体', description: '主体', included: true, sourceBounds: { x: 0, y: 0, width: 1, height: 1 }, elementIds: ['subject'] },
+        { layerId: 'hidden', kind: 'transparent', name: '隐藏对象', description: '未导出对象', included: false, sourceBounds: { x: 0, y: 0, width: .2, height: .2 }, elementIds: ['hidden'] },
+      ],
+      elements: [
+        { elementId: 'scene', name: '场景', layerId: 'background', kind: 'object' },
+        { elementId: 'subject', name: '主体', layerId: 'subject', kind: 'object' },
+        { elementId: 'hidden', name: '隐藏对象', layerId: 'hidden', kind: 'object' },
+      ],
+    };
+    const plan = parseLayeringAnalysis(JSON.stringify(reply), 'asset-1', 1024, 768, { requireElementInventory: true });
+    const confirmation = await confirmLayeringPlan(plan, 'comfly', 'comfly-gpt-image-2', '2K', '2026-09-23T06:00:00.000Z');
+    const changed = { ...plan, elements: plan.elements!.map(element => element.elementId === 'hidden' ? { ...element, name: '不同对象' } : element) };
+    await expect(matchesLayeringConfirmation(confirmation, changed, 'comfly', 'comfly-gpt-image-2', '2K')).resolves.toBe(false);
+  });
 });

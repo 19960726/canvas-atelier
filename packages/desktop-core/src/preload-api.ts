@@ -1,5 +1,6 @@
 import type { LocalMattingRequest, LocalMattingResult } from './local-matting.js';
 export type { LocalMattingRequest, LocalMattingResult, MattingRegion } from './local-matting.js';
+export { sourceMattingBoxPixels } from './local-matting.js';
 import type {
   CloseProjectBridgeRequest,
   CommitAck,
@@ -166,6 +167,7 @@ export const BRIDGE_CHANNELS = {
   importProjectImage: 'novus-desktop:import-project-image',
   importProjectImageToPhotoshop: 'novus-desktop:import-project-image-to-photoshop',
   openLayeredPsdInPhotoshop: 'novus-desktop:open-layered-psd-in-photoshop',
+  saveLayeredPsd: 'novus-desktop:save-layered-psd',
   refineLocalLayer: 'novus-desktop:refine-local-layer',
   importPreparedLayer: 'novus-desktop:import-prepared-layer',
   importProjectVideo: 'novus-desktop:import-project-video',
@@ -333,8 +335,25 @@ export interface DesktopGenerationHistoryBridgeApi {
   purgeExpired(request: GenerationHistoryPurgeBridgeRequest): Promise<GenerationHistoryPurgeBridgeResult>;
 }
 
+export interface PreparedLayerTarget {
+  readonly projectId: string;
+  readonly nodeId: string;
+  readonly groupId: string;
+  readonly layerId: string;
+  readonly sourceAssetId: string;
+  readonly expectedResultAssetId: string | null;
+  readonly expectedRevision: number;
+}
+
+export interface ImportPreparedLayerRequest {
+  readonly sessionId: string;
+  readonly bytes: Uint8Array;
+  readonly layerTarget?: PreparedLayerTarget;
+}
+
 export interface DesktopProjectImageBridgeApi {
-  importPreparedLayer?(request: {sessionId:string;bytes:Uint8Array}): Promise<ImportDroppedProjectMediaBridgeResult | null>;
+  saveLayeredPsd?(bytes: Uint8Array): Promise<{ readonly ok: boolean; readonly code?: 'invalid_psd' | 'cancelled' | 'dialog_failed' | 'save_failed'; readonly saved?: boolean }>;
+  importPreparedLayer?(request: ImportPreparedLayerRequest): Promise<ImportDroppedProjectMediaBridgeResult | null>;
   refineLocalLayer?(request: LocalMattingRequest): Promise<LocalMattingResult>;
   importImage(request: ImportProjectImageBridgeRequest): Promise<ImportProjectImageBridgeResult | null>;
   importToPhotoshop(request: PhotoshopImportRequest): Promise<PhotoshopImportResult>;
@@ -562,6 +581,9 @@ export function createPreloadApi(
       },
       openLayeredPsdInPhotoshop(bytes) {
         return invoke(BRIDGE_CHANNELS.openLayeredPsdInPhotoshop, bytes);
+      },
+      saveLayeredPsd(bytes) {
+        return invoke(BRIDGE_CHANNELS.saveLayeredPsd, bytes);
       },
       async importDroppedMedia() {
         // A native preload replaces this method after resolving the dropped

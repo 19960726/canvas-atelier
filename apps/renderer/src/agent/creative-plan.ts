@@ -2,7 +2,13 @@ import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import { generationProfiles, type GenerationKind, type GenerationPreferences } from './generation-preferences';
 
 export interface CreativeWorkflowStep { title: string; detail: string }
-export interface CreativePlanOption { id: string; title: string; reason: string; kind: GenerationKind; prompt: string; modelRoute?: string; workflow?: CreativeWorkflowStep[] }
+export interface CreativePlanOption { id: string; title: string; reason: string; kind: GenerationKind; prompt: string; modelRoute?: string; workflow?: CreativeWorkflowStep[]; referenceMentions?: string[] }
+export interface CreativeReferenceDuty {
+  mention: string;
+  role: 'product' | 'composition' | 'lighting' | 'style' | 'context' | 'negative';
+  inherit: string[];
+  doNotCopy: string[];
+}
 export interface CreativeRequirementAnalysis {
   goal: string;
   mustKeep: string[];
@@ -10,11 +16,11 @@ export interface CreativeRequirementAnalysis {
   mustAvoid: string[];
   acceptanceCriteria: string[];
 }
-export interface CreativePlan { summary: string; requirements: CreativeRequirementAnalysis; observations: string[]; estimates: string[]; unknowns: string[]; options: CreativePlanOption[] }
+export interface CreativePlan { summary: string; requirements: CreativeRequirementAnalysis; observations: string[]; estimates: string[]; unknowns: string[]; options: CreativePlanOption[]; referenceDuties: CreativeReferenceDuty[] }
 export interface ConstrainedCreativePlan { plan: CreativePlan; selectedKind: GenerationKind; rejectedCount: number }
 export type CreativePromptQuality = { valid: true } | { valid: false; reason: 'copied' | 'contains-mention' | 'underspecified' };
 const text = (value: unknown, max = 6000): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
-const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item) => text(item, 1200)).slice(0, 12) : [];
+const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item) => text(item, 1200)) : [];
 
 function normalizeRequirements(value: unknown, fallbackGoal: string): CreativeRequirementAnalysis {
   const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -66,6 +72,42 @@ export function assessCreativeGenerationPrompt(prompt: string, request?: string)
   return { valid: true };
 }
 
+export function buildCreativeExecutionPrompt(option: CreativePlanOption, requirements: CreativeRequirementAnalysis, duties: readonly CreativeReferenceDuty[] = [], executionReferences: readonly { mention: string }[] = []): string {
+  const sections = ([
+    ['必须保留', requirements.mustKeep], ['需要修改', requirements.mustChange],
+    ['禁止事项', requirements.mustAvoid], ['交付检查', requirements.acceptanceCriteria],
+  ] as const).flatMap(([label, items]) => items.length > 0
+    ? [`${label}：\n${items.map((item) => `- ${item.replace(/@(图片|视频)(\d+)/gu, '参考$1$2')}`).join('\n')}`]
+    : []);
+  const inputs = duties.filter((duty) => option.referenceMentions === undefined || option.referenceMentions.includes(duty.mention)
+    || duty.role === 'negative' || duty.role === 'context');
+  const referenceSections = inputs.flatMap((duty) => {
+    const label = duty.mention.replace('@', '参考');
+    return [
+      ...(duty.role !== 'negative' && duty.role !== 'context' && duty.inherit.length > 0 ? [`${label}保留：${duty.inherit.join('；')}`] : []),
+      ...(duty.doNotCopy.length > 0 ? [`禁止复制：${duty.doNotCopy.join('；')}`] : []),
+    ];
+  });
+  if (referenceSections.length > 0) sections.push(`素材使用约束：\n${referenceSections.join('\n')}`);
+  if (executionReferences.length > 0) sections.unshift(`实际素材输入顺序（对应原编号）：\n${executionReferences.map((reference, index) => `第${index + 1}张输入：${reference.mention.replace('@', '参考')}`).join('\n')}`);
+  return sections.length === 0 ? option.prompt : `${option.prompt}\n\n已确认的执行约束：\n${sections.join('\n\n')}`;
+}
+
+export function resolveCreativeGenerationReferences<T extends { assetId: string; mention: string }>(
+  option: CreativePlanOption, references: readonly T[], duties: readonly CreativeReferenceDuty[] = [],
+): T[] {
+  const selected = option.referenceMentions ?? references.map((reference) => reference.mention);
+  const used = new Set<string>();
+  return selected.flatMap((mention) => {
+    const reference = references.find((candidate) => candidate.mention === mention);
+    if (!reference) throw new Error(`方案中的参考素材 ${mention} 已不可用，请重新分析或添加该素材。`);
+    const duty = duties.find((candidate) => candidate.mention === mention);
+    if (duty?.role === 'negative' || duty?.role === 'context' || used.has(reference.assetId)) return [];
+    used.add(reference.assetId);
+    return [reference];
+  });
+}
+
 function normalizePromptForQuality(value: string): string {
   return value
     .replace(/@(?:图片|视频)\d+/gu, ' ')
@@ -112,11 +154,17 @@ function bigramDice(left: string, right: string): number {
 
 export function parseCreativePlan(message: string): CreativePlan | null {
   try {
-    const source = JSON.parse(message.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, ''));
+    const source = JSON.parse(stripJsonFence(message));
     if (!source || !text(source.summary, 2000) || !Array.isArray(source.options) || source.options.length < 1 || source.options.length > 3) return null;
     const options: CreativePlanOption[] = [];
+    const optionIds = new Set<string>();
+    const executionPrompts = new Set<string>();
     for (const option of source.options) {
-      if (!option || !text(option.id, 80) || !text(option.title, 160) || !text(option.reason, 1200) || !text(option.prompt) || !['image', 'video'].includes(option.kind) || options.some((item) => item.id === option.id)) return null;
+      if (!option || !text(option.id, 80) || !text(option.title, 160) || !text(option.reason, 1200) || !text(option.prompt) || !['image', 'video'].includes(option.kind) || optionIds.has(option.id)) return null;
+      optionIds.add(option.id);
+      const promptKey = `${option.kind}:${option.prompt.trim().replace(/\s+/gu, ' ').toLocaleLowerCase()}`;
+      if (executionPrompts.has(promptKey)) continue;
+      executionPrompts.add(promptKey);
       const workflow = Array.isArray(option.workflow)
         ? option.workflow.flatMap((step: unknown) => {
           if (!step || typeof step !== 'object') return [];
@@ -126,7 +174,9 @@ export function parseCreativePlan(message: string): CreativePlan | null {
             : [];
         }).slice(0, 6)
         : [];
-      options.push({ id: option.id, title: option.title, reason: option.reason, kind: option.kind, prompt: option.prompt, ...(text(option.modelRoute, 200) ? { modelRoute: option.modelRoute } : {}), ...(workflow.length > 0 ? { workflow } : {}) });
+      if (option.referenceMentions !== undefined && (!Array.isArray(option.referenceMentions)
+        || option.referenceMentions.some((mention: unknown) => typeof mention !== 'string' || !/^@(?:图片|视频)[1-9]\d{0,8}$/u.test(mention)))) return null;
+      options.push({ id: option.id, title: option.title, reason: option.reason, kind: option.kind, prompt: option.prompt, ...(text(option.modelRoute, 200) ? { modelRoute: option.modelRoute } : {}), ...(workflow.length > 0 ? { workflow } : {}), ...(option.referenceMentions === undefined ? {} : { referenceMentions: [...new Set<string>(option.referenceMentions)] }) });
     }
     return {
       summary: source.summary,
@@ -135,6 +185,7 @@ export function parseCreativePlan(message: string): CreativePlan | null {
       estimates: strings(source.estimates),
       unknowns: strings(source.unknowns),
       options,
+      referenceDuties: normalizeCreativeReferenceDuties(source.referenceDuties),
     };
   } catch { return null; }
 }
@@ -178,7 +229,7 @@ export function recoverEmptyCreativePlan(
 ): CreativePlan | null {
   try {
     const source = JSON.parse(stripJsonFence(message));
-    if (!source || !text(source.summary, 2000) || !Array.isArray(source.options) || source.options.length !== 0) return null;
+    if (!source || !text(source.summary, 2000) || (source.options !== undefined && (!Array.isArray(source.options) || source.options.length !== 0))) return null;
     const kind = preferences.kind;
     const sourceRecord = source as Record<string, unknown>;
     const requirements = sourceRecord.requirements && typeof sourceRecord.requirements === 'object'
@@ -191,6 +242,7 @@ export function recoverEmptyCreativePlan(
       estimates: strings(source.estimates),
       unknowns: strings(source.unknowns),
       options: [],
+      referenceDuties: normalizeCreativeReferenceDuties(source.referenceDuties),
     };
   } catch {
     return null;
@@ -198,7 +250,23 @@ export function recoverEmptyCreativePlan(
 }
 
 function stripJsonFence(message: string): string {
-  return message.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
+  const fenced = message.trim().match(/```(?:json)?\s*([\s\S]*?)\s*```/iu)?.[1] ?? message.trim();
+  const start = fenced.indexOf('{');
+  const end = fenced.lastIndexOf('}');
+  return start >= 0 && end > start ? fenced.slice(start, end + 1) : fenced;
+}
+
+function normalizeCreativeReferenceDuties(value: unknown): CreativeReferenceDuty[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object' || typeof item.mention !== 'string'
+      || !/^@(?:图片|视频)[1-9]\d{0,8}$/u.test(item.mention)
+      || !['product', 'composition', 'lighting', 'style', 'context', 'negative'].includes(item.role)
+      || seen.has(item.mention)) return [];
+    seen.add(item.mention);
+    return [{ mention: item.mention, role: item.role as CreativeReferenceDuty['role'], inherit: strings(item.inherit), doNotCopy: strings(item.doNotCopy) }];
+  });
 }
 
 export function creativePlanningInstructions(
@@ -206,6 +274,7 @@ export function creativePlanningInstructions(
   profiles: readonly ProviderBridgeProfile[],
   referenceCount = 0,
   analysisDepth: 'fast' | 'standard' | 'deep' = 'standard',
+  references: readonly { assetId: string; mention: string; label: string }[] = [],
 ): string {
   const routes = (['image', 'video'] as const).map((kind) => {
     const candidates = generationProfiles(profiles, kind, referenceCount);
@@ -235,6 +304,10 @@ export function creativePlanningInstructions(
     '图片/视频生成需求明确时，返回纯 JSON：{"summary":"需求与取舍摘要","requirements":{"goal":"最终目标","mustKeep":[],"mustChange":[],"mustAvoid":[],"acceptanceCriteria":[]},"observations":[],"estimates":[],"unknowns":[],"options":[{"id":"option-1","title":"方案名称","reason":"适用原因与取舍","kind":"image 或 video","prompt":"根据你的分析重新编写的完整可执行提示词，包含主体锁定、修改范围、禁止项、构图、光线、材质、清晰度与输出要求","modelRoute":"从可用生成模型中选择","workflow":[{"title":"用户能理解的步骤名称","detail":"该步骤会使用什么输入、创建什么节点、落实哪条要求并做什么检查"}]}]}。提示词必须是你分析后的执行语言，不能原样复制用户请求、@图片标记或聊天套话。提供1至3个有实质差异的方案，每个方案提供3至6个具体 workflow 步骤，不能只给关键词或用相同提示词填充。每条要求必须落实到完整提示词或 workflow；验收标准必须出现在最后的检查步骤。',
     `本次已明确选择输出类型：${preferences.kind}。所有 options.kind 必须为 ${preferences.kind}，不得自动改成 ${preferences.kind === 'image' ? 'video' : 'image'}。如果所选类型没有兼容路线，返回 options:[] 并明确提示用户配置兼容模型；不能用另一种产物代替。固定模型与参数必须遵守，可用目录：${JSON.stringify(routes)}`,
     ...(referenceCount > 0 ? ['本次请求含有参考图，图片方案只能引用支持 image_edit 或 gemini_native 的路线；视频方案必须匹配参考图数量对应的输入模式。'] : []),
+    ...(references.length > 0 ? [
+      `有序素材清单：${JSON.stringify(references.map(({ assetId, mention, label }) => ({ assetId, mention, label: label.slice(0, 100) })))}`,
+      '为每张图返回 referenceDuties:[{"mention":"清单中的原编号","role":"product/composition/lighting/style/context/negative","inherit":[],"doNotCopy":[]}]。不得重编号。每个选项返回 referenceMentions:["要实际垫图的原编号"]；context 是只用于理解的上下文，negative 是反例，两者不连接生成模型。逐项说明借用外观、构图、光线或风格，以及禁止复制的内容。',
+    ] : []),
     '聊天模型只负责规划。选项中只引用生成目录的路线，不能使用聊天路线。没有可用生成模型时给出建议并说明需配置，不能声称可以执行。',
   ].join('\n');
 }

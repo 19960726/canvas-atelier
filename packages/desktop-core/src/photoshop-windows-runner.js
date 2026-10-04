@@ -168,8 +168,11 @@
     // omitting it keeps the second argument as the portable string array.
     var escapedPayloadPath = String(payloadPath).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     source = source.replace('__PAYLOAD_PATH__', escapedPayloadPath);
-    app.DoJavaScript(source);
-    writeResult({ kind: 'success', layerName: app.activeDocument.activeLayer.name });
+    var placementReceipt = String(app.DoJavaScript(source));
+    if (placementReceipt.indexOf('canvas-placed:') !== 0) throw new Error('placement_acknowledgement_missing');
+    // Use the receipt from inside Photoshop, without accessing a stale COM
+    // layer proxy. Only a completed conversion and fit returns this receipt.
+    writeResult({ kind: 'success', layerName: placementReceipt.substring('canvas-placed:'.length) });
   } catch (error) {
     var message = String(error && error.message ? error.message : error);
     var number = Number(error && error.number);
@@ -181,6 +184,9 @@
       writeResult({ kind: 'no_active_document' });
     } else if (typeof app !== 'undefined') {
       try {
+        // A lost COM acknowledgement can leave a placed layer. Retry only
+        // after the script explicitly confirms rollback of the entire import.
+        if (message.indexOf('canvas_placement_rolled_back:') < 0) throw error;
         var fallbackLayerName = directLayerTransfer(app, payloadPath);
         writeResult({ kind: 'success', layerName: fallbackLayerName, method: 'direct-com' });
         WScript.Quit(0);

@@ -39,7 +39,44 @@ function modelJob(overrides: Partial<ModelJob> & { id: string }): ModelJob {
   };
 }
 
+function projectWithLegacyLayer(): CanvasProject {
+  const node = createCanvasModuleNode('shared-layer-node', 'image_layer', { x: 0, y: 0 });
+  node.data.config = { groupId: 'shared-layer-group', layerId: 'subject', jobId: 'legacy-layer-job', sourceAssetId: '1'.repeat(16) };
+  const source = { assetId: '1'.repeat(16), width: 2, height: 2, mediaType: 'image/png' as const,
+    byteSize: 20, extension: 'png' as const, label: 'source', origin: 'imported' as const, sha256: '1'.repeat(64) };
+  return { ...createStarterProject(), id: 'project-current', nodes: [node], edges: [], assets: [source] };
+}
+
+function legacyLayerJob(overrides: Partial<ModelJob> = {}): ModelJob {
+  return modelJob({ id: 'legacy-layer-job', promptNodeId: 'shared-layer-node', layeringGroupId: 'shared-layer-group',
+    layeringLayerId: 'subject', referenceAssetIds: ['1'.repeat(16)], ...overrides });
+}
+
 describe('project model job ownership', () => {
+  it('keeps legacy layer jobs outside the default global queue scope without project/session ownership', () => {
+    expect(modelJobBelongsToProject(legacyLayerJob(), projectWithLegacyLayer(), null)).toBe(false);
+  });
+  it('owns an exact current managed-source legacy layer job without project or session fields', () => {
+    expect(modelJobBelongsToProject(legacyLayerJob(), projectWithLegacyLayer(), null,
+      { allowDurableLayerOwnership: true })).toBe(true);
+  });
+  it('rejects explicit foreign project ownership even when all legacy layer bindings are identical', () => {
+    expect(modelJobBelongsToProject(legacyLayerJob({ projectId: 'foreign-project' }), projectWithLegacyLayer(), null,
+      { allowDurableLayerOwnership: true })).toBe(false);
+  });
+  it.each(['job', 'node', 'group', 'layer', 'source', 'unmanaged-source', 'kind'] as const)
+  ('does not infer legacy layer ownership with a mismatched %s', field => {
+    const project = projectWithLegacyLayer();
+    const job = legacyLayerJob();
+    if (field === 'job') job.id = 'different-job';
+    if (field === 'node') job.promptNodeId = 'different-node';
+    if (field === 'group') job.layeringGroupId = 'different-group';
+    if (field === 'layer') job.layeringLayerId = 'different-layer';
+    if (field === 'source') job.referenceAssetIds = ['2'.repeat(16)];
+    if (field === 'unmanaged-source') project.assets = [];
+    if (field === 'kind') job.kind = 'video';
+    expect(modelJobBelongsToProject(job, project, null, { allowDurableLayerOwnership: true })).toBe(false);
+  });
   it('uses stable project ownership across desktop session replacement', () => {
     const project = projectWithGenerationNode();
     const owned = modelJob({

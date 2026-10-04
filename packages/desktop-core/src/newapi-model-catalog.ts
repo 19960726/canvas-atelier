@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 import type { ComflyModelCapability } from '@agent-canvas/provider-comfly';
-import { NEW_API_PROVIDER_SEEDS } from './newapi-provider-seeds.js';
+import { JULUN_HISTORICAL_SEED_MODEL_IDS, NEW_API_PROVIDER_SEEDS } from './newapi-provider-seeds.js';
+import { getJulunVideoModelSpec } from './julun-video-model-spec.js';
 import type { ProviderBridgeProfile } from './provider-contracts.js';
 
 export type NewApiProviderId = 'julun' | '4dai';
@@ -69,6 +70,8 @@ export function buildAuthenticatedNewApiCatalog(options: {
     let capabilityStatus: NewApiModelProfile['capabilityStatus'] = 'complete';
     if (options.provider === 'julun' && endpoints.has('openai-video')) {
       capabilities = ['video_generation', 'async_tasks'];
+      const spec = getJulunVideoModelSpec(entry.modelName);
+      capabilityStatus = spec?.parameterEvidenceComplete === true && spec.kind === 'generation' ? 'complete' : 'incomplete';
     } else if (
       options.provider === '4dai'
       && isAudited4daiGeminiImageModel(entry.modelName)
@@ -135,13 +138,9 @@ function constraintsFor(
   capabilities: readonly ComflyModelCapability[],
   capabilityStatus: NewApiModelProfile['capabilityStatus'],
 ): Pick<NewApiModelProfile, 'constraints'> | Record<string, never> {
-  if (provider === 'julun' && capabilities.includes('video_generation') && capabilityStatus === 'complete') {
-    return { constraints: { video: {
-      aspectRatios: ['16:9'],
-      resolutions: ['720p'],
-      duration: { mode: 'options', defaultValue: 10, options: [5, 10] },
-      outputCounts: [1],
-    } } };
+  if (provider === 'julun' && capabilities.includes('video_generation')) {
+    const spec = getJulunVideoModelSpec(modelId);
+    return spec === undefined ? {} : { constraints: { video: spec.constraints } };
   }
   if (provider !== '4dai' || !capabilities.includes('image_generation')) return {};
   if (capabilityStatus === 'incomplete') {
@@ -244,6 +243,7 @@ function assignStableModelRoutes(
   };
 
   for (const profile of profiles) {
+    if (provider === 'julun' && !JULUN_HISTORICAL_SEED_MODEL_IDS.has(profile.modelId)) continue;
     const builtInRoute = builtInRoutesByModel.get(`${provider}:${profile.modelId}`);
     if (builtInRoute !== undefined) claim(profile.modelId, builtInRoute);
   }
@@ -253,6 +253,10 @@ function assignStableModelRoutes(
   for (const profile of persistedProfiles) {
     if (profile.provider !== provider || !candidatesByModel.has(profile.modelId)) continue;
     claim(profile.modelId, profile.modelRoute);
+  }
+  for (const profile of profiles) {
+    const builtInRoute = builtInRoutesByModel.get(`${provider}:${profile.modelId}`);
+    if (builtInRoute !== undefined) claim(profile.modelId, builtInRoute);
   }
   for (const profile of profiles) {
     if (profile.modelId === routeSlug(profile.modelId)) {

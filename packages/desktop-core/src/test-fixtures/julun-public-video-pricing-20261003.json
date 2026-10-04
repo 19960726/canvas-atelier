@@ -1,0 +1,325 @@
+{
+  "source_url": "https://julun.cc/api/pricing",
+  "captured_on": "2026-10-03",
+  "data": [
+    {
+      "model_name": "sd2.5_30",
+      "description": "SD2.5 · 30秒 — 文生视频。参考素材：参考图最多 30 张；参考音频最多 10 个（须 mp3 格式，其它格式会在入口被拒）。时长 4-30 秒任意整数；固定 720p（传其它清晰度会被改写为 720p）；画面比例 16:9/9:16/1:1/4:3/3:4/21:9。支持过人脸：参考图彩铅化，默认关闭，需要时传 face 参数（如 face=true）。不支持参考视频。",
+      "tags": "SD,视频,按次 ¥0.7,720p,4-30秒,图30·音频10",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "SD 2.0-933",
+      "description": "SD 2.0-933 · 720p · 时长 4-30 秒 · 图9/音频3 · 支持过人脸（默认关闭，需要时传 face 参数） · 固定按次 ¥0.7/次",
+      "tags": "SD,视频,按次 ¥0.7,720p,4-30秒,图9·音频3",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "sd2.5",
+      "description": "SD 2.5 · 720p · 时长 4-30 秒 · 图/视频/音频参考 · 支持过人脸（默认关闭，需要时传 face 参数） · 固定按次 ¥0.7/次",
+      "tags": "SD,视频,按次 ¥0.7,720p,4-30秒,图·视频·音频",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "MINIMAX-H3-2.0采样-933",
+      "description": "Minimax H3 2.0-933 · 2K · 4-15秒 · 图9/视频3/音频3 · 固定按次 ¥1.2/次",
+      "tags": "H3,视频,933,按次 ¥1.2,2K,4-15秒,图9·视3·音3",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "wan-3.0-c2",
+      "description": "通义万相 3.0 · 按次 ¥1.8/次 · domie 肾上腺",
+      "tags": "视频,按次 ¥1.8,万相,domie",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "seedance-2.5-pro-480",
+      "description": "seedance-2.5-pro 480p 按次 ¥4.5/次（4~30秒，图30/视频10/音频10）",
+      "tags": "Seedance,视频,按次 ¥5.5,480p,4-30秒,图30·视频10·音频10",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "seedance-2.0-fast-15s",
+      "description": "seedance-2.0-fast-15s 固定15秒 720p 按次 1.2元/次",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "seedance-2.0-c2",
+      "description": "Seedance 2.0 文生/图生视频（异步）· 按次 ¥1.0/次 · domie 肾上腺",
+      "tags": "视频,按次 ¥1.0,Seedance,domie",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "seedance-2.0-fast-c2",
+      "description": "Seedance 2.0 Fast 文生/图生视频（异步）· 按次 ¥0.9/次 · domie 肾上腺",
+      "tags": "视频,按次 ¥0.9,Seedance Fast,domie",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "minimax-h3 768p",
+      "description": "Minimax H3 768p · 固定按次 ¥0.5/次 · 时长 10-15 秒 · ⚠️ 参考图只能 1 张（单图模式）或 2-6 张（多图模式），超过 6 张会被拒",
+      "tags": "H3,视频,按次 ¥0.5,768p,10-15秒,图1张或2-6张",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "video-editing",
+      "description": "换脸/视频编辑：必须上传 1 个视频 + 1 张图片（换脸用）；输出视频时长与音频均跟随上传视频；最长 30 秒（建议 30 秒）；提示词参考：帮我把@视频1中的角色换成@图片1；固定按次 1.8 元/次",
+      "tags": "工具,视频编辑,按次 ¥1.8,上传视频≤30秒",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "Seedance-933",
+      "description": "Seedance 933 · 官渠可返官链 · 720p · 4-15秒 · 参考9图/3音频（不支持参考视频）· 原生过真人 · 速度快，平均生成4-10分钟 · 固定按次 ¥2.8/次",
+      "tags": "Seedance,视频,按次 ¥2.8,720p,4-15秒,图9·音频3",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "MINIMAX-H3-768p-933",
+      "description": "Minimax H3 768p-933 · 768p · 4-15秒 · 图9/视频3/音频3 · 固定按次 ¥0.8/次",
+      "tags": "H3,视频,933,按次 ¥0.8,768p,4-15秒,图9·视3·音3",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "SD 2.0",
+      "description": "SD 2.0 · 720p · 时长 4-15 秒 · 图/视频/音频参考 · 支持过人脸（默认关闭，需要时传 face 参数） · 固定按次 ¥0.6/次",
+      "tags": "SD,视频,按次 ¥0.6,720p,4-15秒,图·视频·音频",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "seedance-2.5-720p",
+      "description": "Seedance 2.5 · 720P — 参考素材：参考图最多 30 张；参考视频最多 10 个；参考音频最多 10 个。时长 4-30 秒任意整数；固定 720p。按秒计费 ¥0.40/秒。",
+      "tags": "视频,按秒 ¥0.40,720p,4-30秒,图30·视频10·音频10",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "sd2.0-933-720p-fast-x5-15s",
+      "description": "720P · 按秒 ¥0.18/秒 · 时长5-15秒任意 · 9图3音3视频 · 不卡人脸",
+      "tags": "SD,视频,按秒 ¥0.18,720p,5-15秒,图9·视频3·音频3",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "seedance-2.5-pro-720",
+      "description": "seedance-2.5-pro 720p 按次 ¥7.5/次（4~30秒，图30/视频10/音频10）",
+      "tags": "Seedance,视频,按次 ¥7.5,720p,4-30秒,图30·视频10·音频10",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "minimax-h3 2k",
+      "description": "Minimax H3 2k · 固定按次 ¥1.0/次 · 时长 10-15 秒 · ⚠️ 参考图只能 1 张（单图模式）或 2-6 张（多图模式），超过 6 张会被拒",
+      "tags": "H3,视频,按次 ¥1.0,2k,10-15秒,图1张或2-6张",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "grok-imagine-video-1.5（按次）",
+      "description": "固定0.60元/次；支持文生视频、单图首帧、首尾帧和2-7张多参考图，最多7张公网图片；6秒起；支持480p/720p和16:9、9:16、1:1；不支持视频或音频参考。",
+      "tags": "Grok,视频,按次 ¥0.6,480p/720p,6-15秒,图7",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "minimax_h3",
+      "description": "按秒计费，0.05元/秒；支持5-15秒视频生成，最多8张参考图片、3段音频；分辨率480p/768p；画幅16:9/9:16。",
+      "tags": "H3,视频,按秒 ¥0.05,480p/768p,5-15秒,图8·音频3",
+      "supported_endpoint_types": [
+        "openai-video"
+      ],
+      "video_api": {
+        "modes": [
+          "text-to-video",
+          "image-to-video"
+        ],
+        "images_max": 8,
+        "videos_max": 0,
+        "audios_max": 3,
+        "seconds_min": 5,
+        "seconds_max": 15,
+        "sizes": [
+          "480p",
+          "768p"
+        ],
+        "ratios": [
+          "16:9",
+          "9:16"
+        ],
+        "default_ratio": "16:9",
+        "resolutions": [
+          {
+            "size": "768p",
+            "ratio": "16:9",
+            "width": 1365,
+            "height": 768
+          },
+          {
+            "size": "768p",
+            "ratio": "9:16",
+            "width": 768,
+            "height": 1365
+          },
+          {
+            "size": "480p",
+            "ratio": "16:9",
+            "width": 854,
+            "height": 480
+          },
+          {
+            "size": "480p",
+            "ratio": "9:16",
+            "width": 480,
+            "height": 854
+          }
+        ],
+        "pricing": {
+          "unit": "per_second"
+        }
+      }
+    },
+    {
+      "model_name": "sd2-mini",
+      "description": "固定按次计费 ¥0.6/次 · 文生视频 + 最多9张参考图 + 最多3段参考音频（公网直链）· ⚠️ 不支持参考视频 · 480p 最多15秒，720p 最多12秒 · 不限制人脸",
+      "tags": "SD,视频,按次 ¥0.6,480p/720p,5-15秒,图9·音频3",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "SD 2.5",
+      "description": "SD 2.5 · 720p · 时长 4-30 秒 · 图/视频/音频参考 · 支持过人脸（默认关闭，需要时传 face 参数） · 固定按次 ¥0.7/次",
+      "tags": "SD,视频,按次 ¥0.7,720p,4-30秒,图·视频·音频",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "Q10-SD2.5 全参",
+      "description": "Q10-SD2.5 全参 · 480p · 4-30 秒 · 参考图最多 30 张 / 参考视频 10 个 / 参考音频 10 个 · 画面比例仅 16:9 与 9:16 · 按秒 ¥0.26/秒",
+      "tags": "视频,按秒 ¥0.26,480p,4-30秒,图30·视频10·音频10,16:9,9:16,Q10,全参",
+      "supported_endpoint_types": [
+        "openai-video"
+      ]
+    },
+    {
+      "model_name": "Minimax-H3-768p-933-10s-15s",
+      "description": "Minimax H3 768p 933 10-15s video generation",
+      "tags": "H3,视频,按次 ¥0.09,768p,10-15秒",
+      "supported_endpoint_types": [
+        "openai-video"
+      ],
+      "video_api": {
+        "modes": [
+          "text-to-video",
+          "image-to-video",
+          "multi-ref-to-video"
+        ],
+        "images_max": 9,
+        "videos_max": 3,
+        "audios_max": 3,
+        "seconds_min": 10,
+        "seconds_max": 15,
+        "sizes": [
+          "768p"
+        ],
+        "ratios": [
+          "16:9",
+          "9:16",
+          "1:1",
+          "4:3",
+          "3:4",
+          "21:9",
+          "3:2",
+          "2:3"
+        ],
+        "default_ratio": "16:9",
+        "resolutions": [
+          {
+            "size": "768p",
+            "ratio": "16:9",
+            "width": 1365,
+            "height": 768
+          },
+          {
+            "size": "768p",
+            "ratio": "9:16",
+            "width": 768,
+            "height": 1365
+          },
+          {
+            "size": "768p",
+            "ratio": "1:1",
+            "width": 768,
+            "height": 768
+          },
+          {
+            "size": "768p",
+            "ratio": "4:3",
+            "width": 1024,
+            "height": 768
+          },
+          {
+            "size": "768p",
+            "ratio": "3:4",
+            "width": 768,
+            "height": 1024
+          },
+          {
+            "size": "768p",
+            "ratio": "21:9",
+            "width": 1792,
+            "height": 768
+          },
+          {
+            "size": "768p",
+            "ratio": "3:2",
+            "width": 1152,
+            "height": 768
+          },
+          {
+            "size": "768p",
+            "ratio": "2:3",
+            "width": 768,
+            "height": 1152
+          }
+        ],
+        "pricing": {
+          "unit": "per_second"
+        }
+      }
+    }
+  ]
+}

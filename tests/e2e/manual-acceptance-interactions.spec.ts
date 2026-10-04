@@ -9,16 +9,34 @@ test('manual acceptance keeps model, storage, and Agent controls interactive', a
   const settings = page.getByTestId('settings-drawer');
   await expect(settings).toBeVisible();
   await settings.getByRole('tab').nth(0).click();
-  const modelGroups = settings.locator('.settings-model-group');
-  await expect(modelGroups).toHaveCount(1);
-  await expect(modelGroups.nth(0).locator('.settings-model-list article')).not.toHaveCount(0);
-  const defaultImage = settings.getByLabel('生图默认模型');
-  const imageModelValue = await defaultImage.locator('option').evaluateAll((options) => (
-    options.map((option) => (option as HTMLOptionElement).value).find((value) => value.length > 0) ?? ''
-  ));
+  const catalog = settings.locator('.settings-catalog-details');
+  await expect(catalog).toHaveJSProperty('open', false);
+  const defaults = settings.getByRole('region', { name: '默认模型', exact: true });
+  for (const label of ['生图默认模型', '视频默认模型', '对话默认模型', '反推默认模型', '视觉默认模型', '视频理解默认模型']) {
+    await expect(defaults.getByLabel(label, { exact: true })).toBeVisible();
+  }
+  const defaultImage = defaults.getByLabel('生图默认模型');
+  await expect(defaultImage).toBeEnabled();
+  const previousDefault = await defaultImage.inputValue();
+  const imageModelValue = await defaultImage.locator('option').evaluateAll((options, previous) => (
+    options.map((option) => (option as HTMLOptionElement).value).find((value) => value.length > 0 && value !== previous) ?? ''
+  ), previousDefault);
   expect(imageModelValue).not.toBe('');
   await defaultImage.selectOption(imageModelValue);
   await expect(defaultImage).toHaveValue(imageModelValue);
+  await defaults.locator('.settings-model-save').click();
+  await expect(settings.getByRole('status')).toContainText(/已保存 \d+ 个 Comfly 模型/u);
+  await settings.getByTestId('settings-drawer-close').click();
+  await page.reload();
+  await expect(page.getByTestId('workspace')).toBeVisible();
+  await page.getByTestId('settings-toggle').click();
+  await expect(defaultImage).toHaveValue(imageModelValue);
+  await expect(catalog).toHaveJSProperty('open', false);
+  await catalog.locator('summary').click();
+  await expect(catalog).toHaveJSProperty('open', true);
+  const modelGroups = settings.locator('.settings-model-group');
+  await expect(modelGroups).toHaveCount(1);
+  await expect(modelGroups.nth(0).locator('.settings-model-list article')).not.toHaveCount(0);
 
   await settings.getByRole('tab').nth(1).click();
   const storageActions = settings.locator('.settings-cache-directory-actions button');

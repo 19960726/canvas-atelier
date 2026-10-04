@@ -1,9 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type { LayeringConfirmation, LayeringPlan } from '../app/layering-plan';
 import type { LayeringRouteEvidence } from '../app/layering-route-evidence';
+import type { LayeringDraft } from '../app/layering-draft';
 import { LayeringDialog } from './LayeringDialog';
 
 const sourceAsset = {
@@ -54,6 +55,18 @@ function renderDialog(analysisPlan: LayeringPlan = plan) {
 }
 
 describe('LayeringDialog', () => {
+  it('shows the independent color output contract in the actual generation confirmation', async () => {
+    const independent = { ...plan, pixelMode: 'source' as const, foregroundOutputContract: 'source-independent-rgba-v2' as const,
+      layers: plan.layers.map(layer => layer.kind === 'transparent'
+        ? { ...layer, sourceBounds: { x: .2, y: .1, width: .5, height: .6 } } : layer) };
+    const callbacks = renderDialog(independent);
+    fireEvent.click(screen.getByRole('button', { name: '分析图片' }));
+    fireEvent.click(await screen.findByRole('button', { name: '下一步：确认生成' }));
+    const review = await screen.findByRole('region', { name: '生成确认摘要' });
+    expect(within(review).getByText('独立透明颜色')).toBeInTheDocument();
+    expect(callbacks.onStart).not.toHaveBeenCalled();
+    expect(callbacks.onCreateGroup).not.toHaveBeenCalled();
+  });
   it('keeps source-position controls inside layer fields so plan rows retain their three-column layout', async () => {
     const sourcePlan: LayeringPlan = { ...plan, pixelMode: 'source', layers: plan.layers.map((layer) => layer.layerId === 'product-main'
       ? { ...layer, sourceBounds: { x: 0.25, y: 0.2, width: 0.4, height: 0.6 } }
@@ -95,6 +108,97 @@ describe('LayeringDialog', () => {
     render(<LayeringDialog {...props} initialDraft={draft as never} />);
     expect(screen.getByRole('textbox', { name: '图层说明 产品本体' })).toHaveValue('保留原位置和大小，不含投影');
     expect(onAnalyze).toHaveBeenCalledOnce();
+  });
+  it('preserves the edited saved plan and submitted group while re-analysis waits or fails, including after reopening', async () => {
+    const editedPlan: LayeringPlan = { ...plan, pixelMode: 'source', layers: plan.layers.map(layer => layer.layerId === 'product-main'
+      ? { ...layer, description: '只保留产品，不要手部；保持原图位置', sourceBounds: { x: 0.2, y: 0.3, width: 0.4, height: 0.5 } }
+      : layer.kind === 'transparent' ? { ...layer, sourceBounds: { x: 0.1, y: 0.2, width: 0.15, height: 0.3 } } : layer) };
+    const original: LayeringDraft = { sourceAssetId: sourceAsset.assetId, plan: editedPlan,
+      analysisRoute: 'comfly::vision-model', generationRoute: 'comfly::gpt-image-2', resolution: '2K',
+      layerCountMode: 'auto', targetLayerCount: 5, selection: { mode: 'whole' }, step: 'review',
+      createdGroupId: 'existing-submitted-group', started: true };
+    let saved = original;
+    const writes: LayeringDraft[] = [];
+    let rejectAnalysis!: (error: Error) => void;
+    const onAnalyze = vi.fn(() => new Promise<LayeringPlan>((_resolve, reject) => { rejectAnalysis = reject; }));
+    const props = { sourceAsset, profiles: [analysisProfile, gptImageProfile], routeEvidence, onAnalyze,
+      onCreateGroup: vi.fn(async () => true), onStart: vi.fn(async () => true), onClose: vi.fn(),
+      onDraftChange: (value: LayeringDraft) => { saved = value; writes.push(value); } };
+    const view = render(<LayeringDialog {...props} initialDraft={original} />);
+    fireEvent.click(screen.getByRole('button', { name: '重新分析' }));
+    await waitFor(() => expect(onAnalyze).toHaveBeenCalledOnce());
+    expect(writes.every(value => value.plan !== null && value.createdGroupId === original.createdGroupId && value.started)).toBe(true);
+    expect(screen.getByRole('textbox', { name: '图层说明 产品本体' })).toHaveValue(editedPlan.layers[1]!.description);
+    expect(screen.getByRole('textbox', { name: '图层说明 产品本体' })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: '图层名称 产品本体' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '排除图层 产品本体' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: '视觉分析模型' })).toBeDisabled();
+    await act(async () => { rejectAnalysis(new Error('本次分析失败')); });
+    expect(await screen.findByRole('alert')).toHaveTextContent('本次分析失败');
+    expect(saved).toMatchObject({ plan: editedPlan, createdGroupId: original.createdGroupId, started: true, step: 'review' });
+    view.unmount();
+    render(<LayeringDialog {...props} initialDraft={saved} />);
+    expect(screen.getByRole('textbox', { name: '图层说明 产品本体' })).toHaveValue(editedPlan.layers[1]!.description);
+    expect(screen.getByRole('button', { name: '该方案已提交，可在画布查看图层' })).toBeDisabled();
+    expect(props.onCreateGroup).not.toHaveBeenCalled();
+    expect(props.onStart).not.toHaveBeenCalled();
+    expect(onAnalyze).toHaveBeenCalledOnce();
+  });
+  it('replaces an existing plan and clears its submitted group only after a new analysis succeeds', async () => {
+    const original: LayeringDraft = { sourceAssetId: sourceAsset.assetId, plan,
+      analysisRoute: 'comfly::vision-model', generationRoute: 'comfly::gpt-image-2', resolution: '2K',
+      layerCountMode: 'auto', targetLayerCount: 5, selection: { mode: 'whole' }, step: 'review',
+      createdGroupId: 'existing-submitted-group', started: true };
+    const replacement: LayeringPlan = { ...plan, layers: plan.layers.map(layer => layer.layerId === 'product-main'
+      ? { ...layer, name: '新产品本体', description: '新分析的独立产品' } : layer) };
+    let saved = original;
+    let resolveAnalysis!: (value: LayeringPlan) => void;
+    const onAnalyze = vi.fn(() => new Promise<LayeringPlan>(resolve => { resolveAnalysis = resolve; }));
+    const onCreateGroup = vi.fn(async () => true), onStart = vi.fn(async () => true);
+    render(<LayeringDialog sourceAsset={sourceAsset} profiles={[analysisProfile, gptImageProfile]} routeEvidence={routeEvidence}
+      initialDraft={original} onDraftChange={value => { saved = value; }} onAnalyze={onAnalyze}
+      onCreateGroup={onCreateGroup} onStart={onStart} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '重新分析' }));
+    await waitFor(() => expect(onAnalyze).toHaveBeenCalledOnce());
+    expect(saved).toMatchObject({ plan, createdGroupId: original.createdGroupId, started: true, step: 'review' });
+    await act(async () => { resolveAnalysis(replacement); });
+    expect(await screen.findByRole('textbox', { name: '图层说明 新产品本体' })).toHaveValue('新分析的独立产品');
+    expect(saved).toMatchObject({ plan: replacement, createdGroupId: null, started: false, step: 'edit' });
+    expect(onCreateGroup).not.toHaveBeenCalled();
+    expect(onStart).not.toHaveBeenCalled();
+  });
+  it('ignores late analysis from a closed dialog so a reopened and edited draft survives another reopen', async () => {
+    const original: LayeringDraft = { sourceAssetId: sourceAsset.assetId, plan,
+      analysisRoute: 'comfly::vision-model', generationRoute: 'comfly::gpt-image-2', resolution: '2K',
+      layerCountMode: 'auto', targetLayerCount: 5, selection: { mode: 'whole' }, step: 'review',
+      createdGroupId: 'existing-submitted-group', started: true };
+    const latePlan: LayeringPlan = { ...plan, layers: plan.layers.map(layer => layer.layerId === 'product-main'
+      ? { ...layer, description: '旧弹窗迟到分析结果' } : layer) };
+    let saved = original;
+    let resolveAnalysis!: (value: LayeringPlan) => void;
+    const onAnalyze = vi.fn(() => new Promise<LayeringPlan>(resolve => { resolveAnalysis = resolve; }));
+    const onClose = vi.fn();
+    const props = { sourceAsset, profiles: [analysisProfile, gptImageProfile], routeEvidence, onAnalyze,
+      onCreateGroup: vi.fn(async () => true), onStart: vi.fn(async () => true), onClose,
+      onDraftChange: (value: LayeringDraft) => { saved = value; } };
+    const oldView = render(<LayeringDialog {...props} initialDraft={original} />);
+    fireEvent.click(screen.getByRole('button', { name: '重新分析' }));
+    await waitFor(() => expect(onAnalyze).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: '关闭 AI 图片分层' }));
+    expect(onClose).toHaveBeenCalledOnce();
+    oldView.unmount();
+    const newView = render(<LayeringDialog {...props} initialDraft={saved} />);
+    fireEvent.change(screen.getByRole('textbox', { name: '图层说明 产品本体' }), { target: { value: '重开后的最新手工说明' } });
+    const latestDraft = saved;
+    await act(async () => { resolveAnalysis(latePlan); });
+    expect(saved).toEqual(latestDraft);
+    expect(screen.getByRole('textbox', { name: '图层说明 产品本体' })).toHaveValue('重开后的最新手工说明');
+    newView.unmount();
+    render(<LayeringDialog {...props} initialDraft={saved} />);
+    expect(screen.getByRole('textbox', { name: '图层说明 产品本体' })).toHaveValue('重开后的最新手工说明');
+    expect(onAnalyze).toHaveBeenCalledOnce();
+    expect(props.onCreateGroup).not.toHaveBeenCalled();
+    expect(props.onStart).not.toHaveBeenCalled();
   });
   it('requires a selection for object mode and sends its target with analysis', async () => {
     const { onAnalyze } = renderDialog();
