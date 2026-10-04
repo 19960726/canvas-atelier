@@ -23,7 +23,8 @@ describe('manual acceptance bridge', () => {
     await useAppStore.getState().importVideoForModule(videoNode!.id, new File(['real-video'], 'real-video.mp4', { type: 'video/mp4' }));
 
     expect(useAppStore.getState().projectImages[0]?.displayUrl).toMatch(/^data:image\/png;base64,/u);
-    expect(useAppStore.getState().projectVideos[0]?.displayUrl).toMatch(/^data:video\/mp4;base64,/u);
+    expect(useAppStore.getState().projectVideos[0]?.displayUrl)
+      .toMatch(/^http:\/\/localhost:\d+\/__novus_e2e_asset\/[a-f0-9]{16}\.mp4$/u);
   });
   it('exposes selectable routes and interactive cache actions without secrets', async () => {
     window.__NOVUS_MANUAL_ACCEPTANCE__ = true;

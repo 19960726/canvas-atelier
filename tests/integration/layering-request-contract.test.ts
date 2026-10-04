@@ -21,16 +21,25 @@ const imageProfile: ProviderBridgeProfile = { provider: 'comfly', modelRoute: 'f
   displayName: 'Fixture image', capabilities: ['image_generation', 'image_edit', 'async_tasks'] };
 const plan: LayeringPlan = { sourceAssetId, canvasWidth: 64, canvasHeight: 64, pixelMode: 'source',
   layers: [
-    { layerId: 'background', kind: 'background', name: '厨房背景', description: '补全厨房台面', included: true },
+    { layerId: 'background', kind: 'background', name: '厨房背景', description: '补全厨房台面', included: true,
+      elementIds: ['kitchen-background'] },
     { layerId: 'cup', kind: 'transparent', name: '蓝色杯子', description: '仅杯体，不含手和投影', included: true,
-      sourceBounds: { x: .25, y: .25, width: .25, height: .5 } },
+      sourceBounds: { x: .25, y: .25, width: .25, height: .5 }, elementIds: ['cup-body'] },
     { layerId: 'hand', kind: 'transparent', name: '握杯的手', description: '仅手部，不含杯体', included: true,
-      sourceBounds: { x: .125, y: .375, width: .25, height: .25 } },
+      sourceBounds: { x: .125, y: .375, width: .25, height: .25 }, elementIds: ['holding-hand'] },
     { layerId: 'shadow-cup', kind: 'transparent', name: '杯子投影', description: '仅杯子投影，不含杯体', included: true,
-      sourceBounds: { x: .25, y: .75, width: .375, height: .125 } },
+      sourceBounds: { x: .25, y: .75, width: .375, height: .125 }, elementIds: ['cup-shadow'] },
     { layerId: 'unselected-vase', kind: 'transparent', name: '未选花瓶', description: '保留花瓶', included: false,
-      sourceBounds: { x: .75, y: .125, width: .125, height: .5 } },
-  ] };
+      sourceBounds: { x: .75, y: .125, width: .125, height: .5 }, elementIds: ['unselected-vase'] },
+  ],
+  elements: [
+    { elementId: 'kitchen-background', name: '厨房背景', layerId: 'background', kind: 'object' },
+    { elementId: 'cup-body', name: '蓝色杯子', layerId: 'cup', kind: 'object' },
+    { elementId: 'holding-hand', name: '握杯的手', layerId: 'hand', kind: 'object' },
+    { elementId: 'cup-shadow', name: '杯子投影', layerId: 'shadow-cup', kind: 'shadow', carrierElementId: 'cup-body' },
+    { elementId: 'unselected-vase', name: '未选花瓶', layerId: 'unselected-vase', kind: 'object' },
+  ],
+};
 const temporaryRoots: string[] = [];
 afterEach(async () => {
   vi.unstubAllGlobals();
@@ -47,7 +56,7 @@ describe('layering assembled request contracts', () => {
         createClient: () => ({ chat: async request => {
           system = String((request.messages as readonly { content?: unknown }[])[0]?.content);
           return { id: 'fixture-chat', model: 'gpt-4o',
-            choices: [{ message: { role: 'assistant', content: JSON.stringify({ layers: plan.layers }) } }] };
+            choices: [{ message: { role: 'assistant', content: JSON.stringify({ layers: plan.layers, elements: plan.elements }) } }] };
         }, responses: vi.fn() }),
         managedKnowledgeStore: {} as ManagedKnowledgeStore,
         managedSkillChatImageResolver: { readManagedSkillChatImages: async () => [
@@ -142,7 +151,8 @@ describe('layering assembled request contracts', () => {
     expect(prompt).toContain('"x":0.25');
     expect(prompt).toContain('64x64');
     expect(prompt).toContain('Preserve every unoccluded source pixel');
-    expect(prompt).not.toContain('未选花瓶');
+    expect(prompt).toContain('未选花瓶');
+    expect(prompt).toContain('preserve elements on unselected layers');
   });
 });
 
