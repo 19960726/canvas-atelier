@@ -9487,16 +9487,37 @@
   transform: none !important;
 }
 
-/* Low-zoom nodes keep their measured shell and connector geometry without
-   mounting image previews, editors, or other expensive controls. */
-.workspace--canvas-layout .module-node.module-node--overview {
+/* Overview keeps measured geometry and managed media without mounting editors. */
+html body .workspace--canvas-layout .module-node.module-node.module-node--overview {
+  width: var(--overview-width, 292px) !important;
+  min-width: var(--overview-width, 292px) !important;
+  max-width: var(--overview-width, 292px) !important;
+  height: var(--overview-height, 326px) !important;
+  min-height: var(--overview-height, 326px) !important;
+  max-height: var(--overview-height, 326px) !important;
+  contain: layout style;
+  overflow: visible !important;
+}
+
+.workspace--canvas-layout .module-node.module-node--overview > .module-node__overview-media {
+  position: absolute;
+  inset: 62px 14px 14px;
   contain: layout paint style;
   overflow: hidden;
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+.workspace--canvas-layout .module-node.module-node--overview > .module-node__overview-media > :is(img, video) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .workspace--canvas-layout .module-node.module-node--overview > .module-node__overview-content {
   position: absolute;
-  inset: 0;
+  inset: 0 0 auto;
   z-index: 6;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -9526,6 +9547,9 @@
 }
 
 .workspace--canvas-layout .module-node.module-node--overview > .module-node__overview-surface {
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: none !important;
   visibility: hidden;
   pointer-events: none;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, Check, Layers3, LoaderCircle, X } from 'lucide-react';
 import type { ProjectImageAssetSummary, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
@@ -10,7 +10,8 @@ import { LayeringSelectionEditor } from './LayeringSelectionEditor';
 import type { LayeringBox, LayeringSelection } from '../app/layering-selection';
 import type { LayeringDraft } from '../app/layering-draft';
 
-type LayeringSourceImage = Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'label' | 'width' | 'height'>;
+type LayeringSourceImage = Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'label' | 'width' | 'height'>
+  & Partial<Pick<ProjectImageAssetSummary, 'sha256'>>;
 type Resolution = '1K' | '2K' | '4K';
 type LayerCountMode = 'auto' | 'custom';
 type RouteChoice = Pick<ProviderBridgeProfile, 'provider' | 'modelRoute'>;
@@ -35,8 +36,8 @@ export interface LayeringDialogProps {
     readonly mode?: LayerCountMode;
     readonly targetLayerCount?: number;
   }) => Promise<LayeringPlan>;
-  readonly onCreateGroup: (input: { readonly plan: LayeringPlan; readonly confirmation: Awaited<ReturnType<typeof confirmLayeringPlan>>; readonly groupId: string }) => Promise<boolean>;
-  readonly onStart: (input: { readonly plan: LayeringPlan; readonly confirmation: Awaited<ReturnType<typeof confirmLayeringPlan>>; readonly groupId: string }) => Promise<boolean>;
+  readonly onCreateGroup: (input: { readonly plan: LayeringPlan; readonly confirmation: Awaited<ReturnType<typeof confirmLayeringPlan>>; readonly groupId: string; readonly executionGuard?: () => boolean }) => Promise<boolean>;
+  readonly onStart: (input: { readonly plan: LayeringPlan; readonly confirmation: Awaited<ReturnType<typeof confirmLayeringPlan>>; readonly groupId: string; readonly executionGuard?: () => boolean }) => Promise<boolean>;
   readonly onClose: () => void;
   /** Deterministic local-test seam; production loads routes from the desktop bridge. */
   readonly profiles?: readonly ProviderBridgeProfile[];
@@ -71,13 +72,21 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
   const closeRef = useRef<HTMLButtonElement>(null);
   const busyRef = useRef(false);
   const analysisMountedRef = useRef(true);
+  const closedRef = useRef(false);
+  const sourceOwnerKey = JSON.stringify([sourceAsset?.assetId, sourceAsset?.sha256, sourceAsset?.width, sourceAsset?.height]);
+  const sourceOwnerRef = useRef({ key: sourceOwnerKey });
+  if (sourceOwnerRef.current.key !== sourceOwnerKey) sourceOwnerRef.current = { key: sourceOwnerKey };
+  const closeDialog = useCallback(() => {
+    closedRef.current = true;
+    onClose();
+  }, [onClose]);
   const draftChangeRef = useRef(onDraftChange); draftChangeRef.current = onDraftChange;
   const draft: LayeringDraft = { sourceAssetId: sourceAsset?.assetId ?? '', plan, analysisRoute, generationRoute, resolution,
     layerCountMode, targetLayerCount, step, createdGroupId, started,
     scopeDraft: { mode: scope, box: selectionBox, target: selectionTarget },
     selection: scope === 'whole' || !selectionBox ? { mode: 'whole', target: selectionTarget } : { mode: scope, box: selectionBox, target: selectionTarget } };
   const draftKey = JSON.stringify(draft);
-  useEffect(() => { if (sourceAsset) draftChangeRef.current?.(draft); }, [draftKey]);
+  useEffect(() => { if (sourceAsset && !closedRef.current) draftChangeRef.current?.(draft); }, [draftKey]);
 
   useEffect(() => {
     analysisMountedRef.current = true;
@@ -164,7 +173,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        closeDialog();
       } else if (event.key === 'Tab' && dialogRef.current) {
         const candidates = [...dialogRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])')];
         if (candidates.length === 0) return;
@@ -179,10 +188,12 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
       globalThis.removeEventListener('keydown', handleKeyDown);
       previous?.focus();
     };
-  }, [onClose]);
+  }, [closeDialog]);
 
   const runAnalysis = async () => {
-    if (!sourceAsset || selectedVisionProfile === undefined || busyRef.current) return;
+    if (!sourceAsset || selectedVisionProfile === undefined || busyRef.current || closedRef.current) return;
+    const sourceOwner = sourceOwnerRef.current;
+    const isCurrent = () => analysisMountedRef.current && !closedRef.current && sourceOwnerRef.current === sourceOwner;
     if (scope !== 'whole' && !selectionBox) return;
     const width = sourceAsset.width;
     const height = sourceAsset.height;
@@ -200,7 +211,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
       const nextPlan = await onAnalyze({ sourceAssetId: sourceAsset.assetId, provider: selectedVisionProfile.provider, modelRoute: selectedVisionProfile.modelRoute, width, height,
         ...(selection ? { selection } : {}),
         mode: layerCountMode, ...(layerCountMode === 'custom' ? { targetLayerCount } : {}) });
-      if (!analysisMountedRef.current) return;
+      if (!isCurrent()) return;
       if (controlsRef.current) controlsRef.current.scrollTop = 0;
       setPlan(selection ? { ...nextPlan, selection } : nextPlan);
       setStep('edit');
@@ -208,10 +219,10 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
       setStarted(false);
       draftChangeRef.current?.({ ...draft, plan: selection ? { ...nextPlan, selection } : nextPlan, step: 'edit', createdGroupId: null, started: false });
     } catch (caught) {
-      if (analysisMountedRef.current) setError(caught instanceof Error ? caught.message : '图片分析失败，请重试。');
+      if (isCurrent()) setError(caught instanceof Error ? caught.message : '图片分析失败，请重试。');
     } finally {
       busyRef.current = false;
-      if (analysisMountedRef.current) setOperation(null);
+      if (analysisMountedRef.current && !closedRef.current) setOperation(null);
     }
   };
 
@@ -242,36 +253,42 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
   };
 
   const confirmAndStart = async () => {
-    if (!activePlan || !generationProfile || !planValid || busyRef.current || started) return;
+    if (!activePlan || !generationProfile || !planValid || busyRef.current || started || closedRef.current
+      || activePlan.sourceAssetId !== sourceAsset?.assetId) return;
+    const sourceOwner = sourceOwnerRef.current;
+    const isCurrent = () => analysisMountedRef.current && !closedRef.current && sourceOwnerRef.current === sourceOwner;
     busyRef.current = true;
     setOperation('generate');
     setError(null);
     try {
       const confirmation = await confirmLayeringPlan(activePlan, generationProfile.provider, generationProfile.modelRoute, resolution, new Date().toISOString());
+      if (!isCurrent()) return;
       const groupId = createdGroupId ?? globalThis.crypto.randomUUID();
       if (createdGroupId === null) {
-        const created = await onCreateGroup({ plan: activePlan, confirmation, groupId });
+        const created = await onCreateGroup({ plan: activePlan, confirmation, groupId, executionGuard: isCurrent });
+        if (!isCurrent()) return;
         if (!created) throw new Error('无法将分层节点保存到当前画布，请检查保存状态后重试。');
         setCreatedGroupId(groupId);
       }
-      const started = await onStart({ plan: activePlan, confirmation, groupId });
+      const started = await onStart({ plan: activePlan, confirmation, groupId, executionGuard: isCurrent });
+      if (!isCurrent()) return;
       if (!started) throw new Error('分层任务没有启动；分层节点已保存在画布，可以稍后检查并重试。');
       setStarted(true);
       draftChangeRef.current?.({ ...draft, createdGroupId: groupId, started: true });
-      onClose();
+      closeDialog();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '分层任务无法启动。');
+      if (isCurrent()) setError(caught instanceof Error ? caught.message : '分层任务无法启动。');
     } finally {
       busyRef.current = false;
-      setOperation(null);
+      if (analysisMountedRef.current && !closedRef.current) setOperation(null);
     }
   };
 
-  const modal = <div className="image-layering-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+  const modal = <div className="image-layering-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDialog(); }}>
     <section className="image-layering-dialog" role="dialog" aria-modal="true" aria-labelledby="image-layering-dialog-title" aria-describedby="image-layering-dialog-subtitle" ref={dialogRef}>
       <header className="image-layering-dialog__header">
         <div className="image-layering-dialog__title"><span className="image-layering-dialog__icon"><Layers3 size={18} aria-hidden="true" /></span><div><h2 id="image-layering-dialog-title">AI 图片分层</h2><p id="image-layering-dialog-subtitle">按产品、每件摆件和对应阴影拆分；检查可编辑方案后才提交图层任务。</p></div></div>
-        <button ref={closeRef} type="button" className="image-layering-dialog__close" aria-label="关闭 AI 图片分层" title="关闭" onClick={onClose}><X size={18} aria-hidden="true" /></button>
+        <button ref={closeRef} type="button" className="image-layering-dialog__close" aria-label="关闭 AI 图片分层" title="关闭" onClick={closeDialog}><X size={18} aria-hidden="true" /></button>
       </header>
       <div className="image-layering-dialog__body">
         <div className="image-layering-dialog__source-panel">
@@ -357,7 +374,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
           {error && <p className="image-layering-dialog__error" role="alert">{error}</p>}
         </div>
       </div>
-      <footer className="image-layering-dialog__footer"><span>保留原图；每层独立为画布节点。格式、元素归属、原图坐标和合成检查通过后才可导出正式 PSD；未通过的结果可导出待修整 PSD。</span><button type="button" className="image-layering-dialog__button image-layering-dialog__button--quiet" onClick={onClose}>关闭</button></footer>
+      <footer className="image-layering-dialog__footer"><span>保留原图；每层独立为画布节点。格式、元素归属、原图坐标和合成检查通过后才可导出正式 PSD；未通过的结果可导出待修整 PSD。</span><button type="button" className="image-layering-dialog__button image-layering-dialog__button--quiet" onClick={closeDialog}>关闭</button></footer>
     </section>
   </div>;
 

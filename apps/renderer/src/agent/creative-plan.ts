@@ -17,6 +17,17 @@ export interface CreativeRequirementAnalysis {
   acceptanceCriteria: string[];
 }
 export interface CreativePlan { summary: string; requirements: CreativeRequirementAnalysis; observations: string[]; estimates: string[]; unknowns: string[]; options: CreativePlanOption[]; referenceDuties: CreativeReferenceDuty[] }
+export function buildCreativePlanCompletionRequest(plan: CreativePlan, originalRequest: string, kind: GenerationKind, references: readonly { assetId: string; label: string; mention: string }[]): string {
+  return [
+    '请补全这次创作方案，提供完整执行提示词、兼容生成模型和工作流步骤，返回方案 JSON 供我选择。',
+    `本次输出类型：${kind === 'image' ? '图片' : '视频'}。`,
+    `原始请求：\n${originalRequest}`,
+    `原方案分析：\n${plan.summary}`,
+    `完整执行约束：\n${JSON.stringify(plan.requirements)}`,
+    `原编号素材及职责：\n${JSON.stringify({ references, duties: plan.referenceDuties })}`,
+    '仅补全以上任务，逐项保留约束、素材身份与职责；其他聊天任务不替代本次请求。',
+  ].join('\n\n');
+}
 export interface ConstrainedCreativePlan { plan: CreativePlan; selectedKind: GenerationKind; rejectedCount: number }
 export type CreativePromptQuality = { valid: true } | { valid: false; reason: 'copied' | 'contains-mention' | 'underspecified' };
 const text = (value: unknown, max = 6000): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max;

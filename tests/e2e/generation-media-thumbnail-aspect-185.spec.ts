@@ -4,7 +4,7 @@ import { makeReferenceImage } from './helpers/fixtures';
 
 for (const theme of ['light', 'dark'] as const) {
   for (const kind of ['image', 'video'] as const) {
-    test(`${kind} materials show complete portrait, landscape and square thumbnails in ${theme}`, async ({ page }, testInfo) => {
+    test(`${kind} materials use uniform frames for complete portrait, landscape and square thumbnails in ${theme}`, async ({ page }, testInfo) => {
       await page.setViewportSize({ width: 1680, height: 1200 });
       await page.addInitScript(mode => localStorage.setItem('novus.theme.mode', mode), theme);
       await openEmptyApp(page);
@@ -34,7 +34,7 @@ for (const theme of ['light', 'dark'] as const) {
       }
       await generation.getByRole('button', { name: kind === 'image' ? 'Open image generation editor' : 'Open video generation editor' }).click();
       const materials = generation.getByLabel(kind === 'image' ? 'Image generation reference slots' : 'Connected video media editor', { exact: true });
-      await expect(materials).toHaveAttribute('data-thumbnail-sizing', 'natural');
+      await expect(materials).toHaveAttribute('data-thumbnail-sizing', 'uniform');
       await expect(materials.locator('[data-slot-index]')).toHaveCount(3);
       await expect(materials.locator('img')).toHaveCount(3);
       const metrics = await materials.locator('[data-slot-index]').evaluateAll(elements => elements.map(element => {
@@ -49,12 +49,12 @@ for (const theme of ['light', 'dark'] as const) {
         expect(actual.label).toBe(expectedLabels[index]);
         expect([actual.naturalWidth, actual.naturalHeight], 'The original imported image dimensions remain intact').toEqual([expected.width, expected.height]);
         expect(actual.fit).toBe('contain');
-        expect(actual.width / actual.height, 'The thumbnail frame follows the complete image ratio without side strips').toBeCloseTo(expected.width / expected.height, 2);
+        expect(actual.width, 'Every reference has the same fixed frame width').toBeCloseTo(54, 0);
         expect(actual.height).toBeCloseTo(54, 0);
         expect(actual.number).toBe(`${index + 1}`);
       }
-      expect(metrics[0]!.width).toBeLessThan(metrics[2]!.width);
-      expect(metrics[1]!.width).toBeGreaterThan(metrics[2]!.width);
+      expect(metrics.map(item => item.width)).toEqual([metrics[0]!.width, metrics[0]!.width, metrics[0]!.width]);
+      expect(metrics.map(item => item.height)).toEqual([metrics[0]!.height, metrics[0]!.height, metrics[0]!.height]);
       await generation.screenshot({ path: testInfo.outputPath(`${kind}-complete-materials-${theme}.png`) });
       await materials.screenshot({ path: testInfo.outputPath(`${kind}-complete-materials-detail-${theme}.png`) });
       const before = (await materials.locator('img').evaluateAll(images => images.map(image => image.getAttribute('src'))));

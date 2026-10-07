@@ -352,6 +352,55 @@ describe('persistent model job store', () => {
     });
   });
 
+  it.each(['queued', 'submitting', 'running'] as const)(
+    'keeps a %s sibling executable when another layer result invalidates its review', async siblingStatus => {
+      const digest = 'd'.repeat(64);
+      const layer = createCanvasModuleNode('completed-layer-node', 'image_layer', { x: 0, y: 0 });
+      layer.data.config = { ...layer.data.config, groupId: 'active-layer-group', layerId: 'cup',
+        sourceAssetId: 'source-active-layer', jobId: 'completed-layer-job', status: 'running' };
+      const sibling = createCanvasModuleNode('active-sibling-node', 'image_layer', { x: 0, y: 0 });
+      sibling.data.config = { ...sibling.data.config, groupId: 'active-layer-group', layerId: 'background',
+        sourceAssetId: 'source-active-layer', jobId: 'active-sibling-job', status: siblingStatus,
+        layeringOutputContract: 'opaque-background-v2', layeringConfirmationDigest: digest,
+        qualityStatus: 'passed', qualityValidationVersion: 2, assemblyConfirmationDigest: digest,
+        semanticReviewAccepted: true, semanticReviewDigest: digest, foregroundValidation: { ok: true } };
+      const group = createCanvasModuleNode('active-group-node', 'image_layering', { x: 0, y: 0 });
+      group.data.config = { ...group.data.config, groupId: 'active-layer-group', sourceAssetId: 'source-active-layer',
+        status: 'queued', layeringConfirmationDigest: digest };
+      let project: CanvasProject = { ...createStarterProject(), nodes: [layer, sibling, group], edges: [] };
+      const storage = createInMemoryModelJobStorage();
+      const submit = vi.fn(async () => ({ providerTaskId: 'fixture-active-layer-task' }));
+      const poll = vi.fn(async () => ({ status: 'completed' as const, result: {
+        assetId: '1111111111111111', width: 24, height: 24, resultRepresentation: 'independent-rgba-candidate' as const,
+      } }));
+      const store = createModelJobStore({ storage, executor: createExecutor({ submit, poll }),
+        commitProjectTransaction: async build => {
+          const materialization = build(project);
+          project = applyProjectTransaction(project, materialization.transaction);
+          return { committed: true, resultNodeId: materialization.resultNodeId };
+        }, getProject: () => project, now: fixedNow, pollIntervalMs: 0 });
+      await store.enqueueConfirmedJobs({ conversationId: 'active-layer-conversation', projectId: project.id, confirmedAt,
+        requests: [request({ id: 'completed-layer-job', promptNodeId: layer.id, referenceAssetIds: ['source-active-layer'],
+          layeringGroupId: 'active-layer-group', layeringLayerId: 'cup', layeringOutputContract: 'source-independent-rgba-v2',
+          layeringConfirmationDigest: digest, imageOutputFormat: 'png', imageBackground: 'transparent' })] });
+
+      await store.processQueue();
+      await store.pollActiveJobs();
+
+      const current = project.nodes.find(node => node.id === sibling.id) as typeof sibling;
+      expect(current.data.config).toMatchObject({ status: siblingStatus, jobId: 'active-sibling-job',
+        layeringOutputContract: 'opaque-background-v2', layeringConfirmationDigest: digest,
+        needsReconfirm: true, qualityStatus: 'pending', qualityValidationVersion: null, resultState: 'needs_review' });
+      expect(current.data.config).not.toHaveProperty('resultAssetId');
+      for (const field of ['assemblyConfirmationDigest', 'semanticReviewAccepted', 'semanticReviewDigest', 'foregroundValidation']) {
+        expect(current.data.config).not.toHaveProperty(field);
+      }
+      expect(submit).toHaveBeenCalledOnce();
+      expect(poll).toHaveBeenCalledOnce();
+      expect(await storage.get('completed-layer-job')).toMatchObject({ status: 'completed' });
+    },
+  );
+
   it('keeps legacy alpha-matte jobs and explicit v2 contract on separate retries', async () => {
     const storage = createInMemoryModelJobStorage();
     const store = createModelJobStore({ storage, executor: createExecutor(), commitProjectTransaction: vi.fn(), now: fixedNow });

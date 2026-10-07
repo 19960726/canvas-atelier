@@ -3,7 +3,7 @@ import path from 'node:path';
 import { expect, test } from './helpers/e2e-test';
 import { openEmptyApp } from './helpers/app';
 
-const output = path.join(process.cwd(), 'work', 'repair-185', 'navigation-audit', 'source');
+const output = path.join(process.cwd(), 'work', process.env.CANVAS_NAVIGATION_AUDIT_DIR ?? 'repair-185/navigation-audit/source');
 
 for (const theme of ['light', 'dark'] as const) {
   for (const width of [1600, 1100]) {

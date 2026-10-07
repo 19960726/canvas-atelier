@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { openEmptyApp, queueProjectImageImport } from './helpers/app';
 import { makeReferenceImage } from './helpers/fixtures';
 
-test('twelve image references use the full editor width without hiding slots', async ({ page }, testInfo) => {
+test('twelve uniform image references use a full width scroll lane without hiding slots', async ({ page }, testInfo) => {
   test.setTimeout(120000);
   await page.setViewportSize({ width: 1680, height: 1200 });
   await openEmptyApp(page);
@@ -64,8 +64,15 @@ test('twelve image references use the full editor width without hiding slots', a
     contentType: 'application/json',
   });
   expect(geometry.rowWidth).toBeGreaterThan(geometry.availableWidth * 0.9);
-  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
+  expect(geometry.scrollWidth).toBeGreaterThan(geometry.clientWidth);
   expect(geometry.lastTop).toBeCloseTo(geometry.firstTop, 0);
-  expect(geometry.lastRight).toBeLessThanOrEqual(geometry.outerRight - 10);
+  for (const slot of geometry.boxes.slots) {
+    expect(slot.rect.width).toBeCloseTo(54, 0);
+    expect(slot.rect.height).toBeCloseTo(54, 0);
+  }
+  const row = slots.locator('.connected-agent-media-slots__row');
+  await row.hover();
+  await page.mouse.wheel(0, 2000);
+  await expect(slots.getByLabel('Agent media slot 12', { exact: true })).toBeInViewport();
   await node.screenshot({ path: testInfo.outputPath('image-twelve-slots.png') });
 });

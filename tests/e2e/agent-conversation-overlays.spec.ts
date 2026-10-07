@@ -45,12 +45,6 @@ async function expectWorkbenchRows(panel: import('@playwright/test').Locator) {
   expect(context.y + context.height).toBeLessThanOrEqual(stream.y + 1);
   expect(stream.y + stream.height).toBeLessThanOrEqual(composer.y + 6);
   expect(composer.y + composer.height).toBeLessThanOrEqual(boundary.y + boundary.height + 1);
-  const memory = await panel.locator('.agent-thread__memory').boundingBox();
-  const conversation = await panel.locator('.agent-thread__conversation').boundingBox();
-  if (memory !== null && conversation !== null) {
-    expect(conversation.y + conversation.height).toBeLessThanOrEqual(memory.y + 1);
-    expect(memory.y + memory.height).toBeLessThanOrEqual(boundary.y + boundary.height + 1);
-  }
 }
 
 for (const theme of ['light', 'dark'] as const) {
@@ -77,13 +71,13 @@ for (const theme of ['light', 'dark'] as const) {
       await openApp(page);
       await openAgentPanel(page);
       const panel = page.getByTestId('agent-panel');
-      const task = panel.getByRole('combobox', { name: 'Codex 任务' });
+      const task = panel.getByRole('button', { name: '历史对话' });
       const plan = panel.getByRole('region', { name: '创作方案' });
       const option = plan.getByRole('button', { name: '选择方案：自然窗光方案' });
       await expect(plan).toBeVisible();
       await expect(task).toBeVisible();
       await expectWorkbenchRows(panel);
-      await expectTopmost(page, '[aria-label="Codex 任务"]');
+      await expectTopmost(page, '[data-agent-history-trigger]');
       await expectTopmost(page, '[aria-label="选择方案：自然窗光方案"]');
 
       await panel.getByRole('button', { name: '历史对话' }).click();
@@ -91,9 +85,10 @@ for (const theme of ['light', 'dark'] as const) {
       await expect(history).toBeVisible();
       await expectTopmost(page, '.agent-history-popover__list > button:first-child');
       await history.getByRole('button', { name: /另一项任务/u }).click();
-      await expect(task).toHaveValue('conversation-other');
+      await expect(task).toHaveAttribute('data-active-conversation', 'conversation-other');
       await expect(plan).toHaveCount(0);
-      await task.selectOption('conversation-plan');
+      await task.click();
+      await panel.getByRole('dialog', { name: '历史对话' }).getByRole('button', { name: /方案任务/u }).click();
       await expect(plan).toBeVisible();
 
       await panel.getByRole('region', { name: '对话上下文' }).getByRole('button', { name: '展开上下文' }).click();

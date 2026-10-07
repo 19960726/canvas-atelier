@@ -261,20 +261,16 @@ describe('image layering workbench', () => {
     } finally { context.mockRestore(); preview.mockRestore(); vi.unstubAllGlobals(); Object.defineProperty(window, 'novusDesktop', { configurable: true, value: previous }); }
   });
   it('exports scoped high resolution layers without shrinking them to the source size', async () => {
-    class TestImage {
-      naturalWidth = 4; naturalHeight = 4; crossOrigin = ''; src = '';
-      decode() { return Promise.resolve(); }
-    }
-    vi.stubGlobal('Image', TestImage);
-    const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function(this: HTMLCanvasElement) {
-      let src = '';
-      return { imageSmoothingEnabled: true, imageSmoothingQuality: 'high',
-        createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
-        drawImage: (image: TestImage) => { src = image.src; },
-        getImageData: () => ({ data: Uint8ClampedArray.from(Array.from({ length: this.width * this.height }, (_, i) =>
-          src === 'source-url' ? [90, 80, 70, 255] : src.includes(subject) && i === 5 ? [0, 0, 0, 0] : [200, 50, 40, 255]).flat()) }),
-      } as never;
-    });
+    vi.stubGlobal('Blob', NodeBlob);
+    const sourcePixels = Uint8Array.from(Array.from({ length: 4 }, () => [90, 80, 70, 255]).flat());
+    const returnedPixels = Uint8Array.from(Array.from({ length: 16 }, () => [200, 50, 40, 255]).flat());
+    const subjectPixels = returnedPixels.slice();
+    subjectPixels.fill(0, 5 * 4, 6 * 4);
+    const returnedAssets = assets.slice(0, 2).map(asset => ({ ...asset, width: 4, height: 4,
+      displayUrl: fixturePng(asset.assetId === subject ? subjectPixels : returnedPixels, 4, 4) }));
+    const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+    } as never);
     const open = vi.fn(async (_bytes: Uint8Array) => ({ ok: true as const }));
     const previous = window.novusDesktop;
     Object.defineProperty(window, 'novusDesktop', { configurable: true, value: { projectImages: { openLayeredPsdInPhotoshop: open } } });
@@ -287,7 +283,7 @@ describe('image layering workbench', () => {
       });
       render(<ImageLayeringWorkbench config={{ canvasWidth: 2, canvasHeight: 2, sourceAssetId: 'source', planLayers,
         layerSelection: { mode: 'region', box: { x: .25, y: .25, width: .5, height: .5 } } }}
-        assets={[...assets, { assetId: 'source', mediaType: 'image/png', displayUrl: 'source-url' }]} layerNodes={nodes} onLayersChange={() => {}} />);
+        assets={[...returnedAssets, { assetId: 'source', mediaType: 'image/png', displayUrl: fixturePng(sourcePixels, 2, 2), width: 2, height: 2 }]} layerNodes={nodes} onLayersChange={() => {}} />);
       fireEvent.click(screen.getByRole('button', { name: '在 Photoshop 中打开' }));
       await waitFor(() => expect(open).toHaveBeenCalledOnce());
       const psd = readPsd(open.mock.calls[0]![0], { useImageData: true });

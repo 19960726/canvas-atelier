@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { applyNodeChanges } from '@xyflow/react';
 import type { Node, NodeChange, XYPosition } from '@xyflow/react';
 
@@ -29,9 +29,19 @@ export function useCanvasDraft<TNode extends Node = Node>({
   const acknowledgedPositionRef = useRef(new Map<string, { position: XYPosition; previousPosition: XYPosition }>());
   const commitTokenRef = useRef(0);
   const resetKeyRef = useRef(resetKey);
+  const measurementFrameRef = useRef<number | null>(null);
 
-  useEffect(() => {
+  useEffect(() => () => {
+    if (measurementFrameRef.current !== null) window.cancelAnimationFrame(measurementFrameRef.current);
+    measurementFrameRef.current = null;
+  }, []);
+
+  // Sync durable data before browser measurement; a passive effect can resize
+  // a sibling node while React Flow is delivering its observer notifications.
+  useLayoutEffect(() => {
     if (resetKeyRef.current !== resetKey) {
+      if (measurementFrameRef.current !== null) window.cancelAnimationFrame(measurementFrameRef.current);
+      measurementFrameRef.current = null;
       resetKeyRef.current = resetKey;
       activeDraggedNodeIdsRef.current.clear();
       pendingCommitRef.current.clear();
@@ -66,15 +76,9 @@ export function useCanvasDraft<TNode extends Node = Node>({
     // change would race that transaction and reintroduce controlled-state loops.
     const interactionChanges = changes.filter((change) => change.type !== 'remove');
     if (interactionChanges.length === 0) return;
-    if (keepPassiveMeasurementsInternal && interactionChanges.every((change) => (
+    const passiveMeasurements = interactionChanges.every((change) => (
       change.type === 'dimensions' && change.setAttributes === undefined && change.resizing === undefined
-    ))) {
-      // ResizeObserver has already updated React Flow's live measurements and
-      // handle bounds. Keep those sizes for the next edit without submitting
-      // the entire controlled graph a second time on each zoom visibility step.
-      draftNodesRef.current = applyNodeChanges(interactionChanges, draftNodesRef.current) as TNode[];
-      return;
-    }
+    ));
     for (const change of interactionChanges) {
       if (change.type === 'position' && change.dragging === true) {
         activeDraggedNodeIdsRef.current.add(change.id);
@@ -84,6 +88,21 @@ export function useCanvasDraft<TNode extends Node = Node>({
     const next = applyNodeChanges(interactionChanges, current) as TNode[];
     if (sameDraftNodeList(current, next)) return;
     draftNodesRef.current = next;
+    if (passiveMeasurements) {
+      // React Flow has already measured handles. Defer controlled rendering
+      // so it cannot change node geometry inside the observer delivery loop.
+      if (!keepPassiveMeasurementsInternal && measurementFrameRef.current === null) {
+        const frame = window.requestAnimationFrame(() => {
+          if (measurementFrameRef.current !== frame) return;
+          measurementFrameRef.current = null;
+          setNodes(draftNodesRef.current);
+        });
+        measurementFrameRef.current = frame;
+      }
+      return;
+    }
+    if (measurementFrameRef.current !== null) window.cancelAnimationFrame(measurementFrameRef.current);
+    measurementFrameRef.current = null;
     setNodes(next);
   }, [keepPassiveMeasurementsInternal]);
 
@@ -147,6 +166,8 @@ export function useCanvasDraft<TNode extends Node = Node>({
     }
   }, [onCommitPositions]);
 
+  // A queued interaction render must not send pre-measurement nodes back to
+  // React Flow when an observer updated the draft in the same batch.
   return { get nodes() { return draftNodesRef.current; }, onNodesChange, onNodeDragStop };
 }
 

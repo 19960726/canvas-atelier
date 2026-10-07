@@ -3,6 +3,26 @@ import { initializeCanvas, readPsd } from 'ag-psd';
 import { composeLayeredRgba, encodeLayeredPsd } from './layered-psd';
 import { buildDraftSourceLayerDocument, buildSourceLayerDocument } from './source-layer-document';
 
+it('keeps returned source-matte alpha outside analysis bounds in a hidden editable draft', async () => {
+  const width = 12, height = 12, source = new Uint8Array(width * height * 4), mask = new Uint8Array(source.length);
+  for (let pixel = 0; pixel < width * height; pixel++) source.set([80, 110, 140, 255], pixel * 4);
+  mask.set([255, 255, 255, 1], 0);
+  mask.set([255, 255, 255, 255], (5 * width + 5) * 4);
+  mask.set([255, 255, 255, 8], (5 * width + 6) * 4);
+  mask.set([255, 255, 255, 1], mask.length - 4);
+  const document = await buildDraftSourceLayerDocument({ width, height, source, selection: { mode: 'whole' }, layers: [
+    { id: 'background', name: 'Background', kind: 'background', visible: true, opacity: 1, load: async () => source },
+    { id: 'matte', name: 'Returned matte', kind: 'transparent', visible: true, opacity: 1, maskSpace: 'source',
+      bounds: { x: .4, y: .4, width: .2, height: .2 }, load: async () => mask },
+  ] });
+  const layer = document.layers.find(candidate => candidate.id === 'matte')!;
+  expect([layer.x, layer.y, layer.width, layer.height, layer.visible]).toEqual([0, 0, width, height, false]);
+  expect(Array.from(layer.rgba.slice(0, 4))).toEqual([80, 110, 140, 1]);
+  expect(Array.from(layer.rgba.slice((5 * width + 6) * 4, (5 * width + 6) * 4 + 4))).toEqual([80, 110, 140, 8]);
+  expect(Array.from(layer.rgba.slice(-4))).toEqual([80, 110, 140, 1]);
+  expect(composeLayeredRgba(document)).toEqual(source);
+});
+
 it('keeps explicitly imported background pixels beneath coverage without running donor harmonization again', async () => {
   const width=8,height=8,source=new Uint8Array(width*height*4),background=new Uint8Array(source.length),foreground=new Uint8Array(source.length);
   for(let p=0;p<width*height;p++){source.set([120,120,120,255],p*4);background.set([40,40,40,255],p*4);}

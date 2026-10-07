@@ -1073,7 +1073,9 @@ function registerProjectImageProtocol(handlers: DesktopBridgeHandlers): void {
 }
 
 async function createGenerationHistoryPreview(sourcePath: string, destinationPath: string): Promise<void> {
-  const source = nativeImage.createFromPath(sourcePath);
+  // Avoid retaining full-resolution native images on the main loop while a
+  // history page loads. Windows scales by width; bound the longest edge below.
+  const source = await nativeImage.createThumbnailFromPath(sourcePath, { width: 512, height: 512 });
   if (source.isEmpty()) throw new Error('Generation history preview source cannot be decoded');
   const size = source.getSize();
   const longestEdge = Math.max(size.width, size.height);

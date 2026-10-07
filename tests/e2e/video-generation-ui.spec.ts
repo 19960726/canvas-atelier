@@ -83,8 +83,8 @@ for (const theme of ['dark', 'light'] as const) {
     await expect(mediaTray).toHaveCSS('width', '614px');
     await expect(mediaTray).toHaveCSS('height', '54px');
     const pendingSlot = mediaTray.getByLabel('Video preview reference slot pending');
-    await expect(pendingSlot).toHaveCSS('width', '36px');
-    await expect(pendingSlot).toHaveCSS('height', '36px');
+    await expect(pendingSlot).toHaveCSS('width', '54px');
+    await expect(pendingSlot).toHaveCSS('height', '54px');
     await expect(mediaTray.locator('.module-node__connected-video-media-source')).toHaveCount(0);
     await expect(mediaTray.locator('.module-node__reference-slots--inline')).toHaveCount(0);
     await expect(pendingSlot.getByLabel('图槽编号 1')).toHaveText('1');

@@ -1408,8 +1408,8 @@ html body .workspace--canvas-layout .agent-panel.agent-panel--skill-chat.agent-p
   }
 
   & .creative-plan {
-    gap: 18px !important;
-    margin-top: 18px !important;
+    gap: 12px !important;
+    margin-top: 12px !important;
   }
 
   & .creative-plan > div:not(.creative-plan__option) > strong {
@@ -1421,8 +1421,8 @@ html body .workspace--canvas-layout .agent-panel.agent-panel--skill-chat.agent-p
   }
 
   & .creative-plan__requirements {
-    gap: 10px !important;
-    padding: 14px 0 0 !important;
+    gap: 6px !important;
+    padding: 10px 0 0 !important;
     border: 0 !important;
     border-top: 1px solid var(--border-subtle) !important;
     border-radius: 0 !important;
@@ -1451,8 +1451,8 @@ html body .workspace--canvas-layout .agent-panel.agent-panel--skill-chat.agent-p
 
   & .creative-plan__requirements dl > div {
     grid-template-columns: 64px minmax(0, 1fr) !important;
-    gap: 12px !important;
-    padding: 9px 0 !important;
+    gap: 8px !important;
+    padding: 6px 0 !important;
     border-bottom: 1px solid var(--border-subtle) !important;
   }
 
@@ -1476,7 +1476,7 @@ html body .workspace--canvas-layout .agent-panel.agent-panel--skill-chat.agent-p
     margin-top: 0 !important;
     padding: 14px !important;
     border: 1px solid var(--border) !important;
-    border-radius: 12px !important;
+    border-radius: 8px !important;
     background: var(--surface) !important;
     box-shadow: none !important;
   }
@@ -1512,8 +1512,8 @@ html body .workspace--canvas-layout .agent-panel.agent-panel--skill-chat.agent-p
   }
 
   & .creative-plan__workflow {
-    margin: 13px 0 !important;
-    padding: 12px 0 0 !important;
+    margin: 10px 0 !important;
+    padding: 10px 0 0 !important;
     border: 0 !important;
     border-top: 1px solid var(--border-subtle) !important;
     border-radius: 0 !important;
@@ -1526,7 +1526,7 @@ html body .workspace--canvas-layout .agent-panel.agent-panel--skill-chat.agent-p
   }
 
   & .creative-plan__workflow ol {
-    gap: 12px !important;
+    gap: 8px !important;
   }
 
   & .creative-plan__workflow li > span {
@@ -1567,7 +1567,7 @@ html body .workspace--canvas-layout .agent-panel.agent-panel--skill-chat.agent-p
   & .skill-chat-workbench__confirmation {
     padding: 14px !important;
     border: 1px solid var(--agent-action-border) !important;
-    border-radius: 12px !important;
+    border-radius: 8px !important;
     background: var(--surface) !important;
     box-shadow: inset 3px 0 0 var(--accent) !important;
   }

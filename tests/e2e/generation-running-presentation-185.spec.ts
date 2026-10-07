@@ -155,7 +155,8 @@ for (const theme of ['dark', 'light'] as const) {
           expect(sidePixels.rightRange, 'The retained result contributes pixels on the right side instead of a flat strip').toBeGreaterThan(3);
         }
       } else {
-        expect(await generation.locator('.module-node__generation-empty-stage').evaluate(element => getComputedStyle(element).borderTopStyle)).toBe('solid');
+        expect(await generation.locator('.module-node__generation-empty-stage').evaluate(element => getComputedStyle(element).borderTopStyle))
+          .toBe(kind === 'image' && previewCase === 'no-reference' ? 'none' : 'solid');
         await expect(progress.locator('.module-node__running-panel')).toHaveCSS('width', '264px');
         const previewBox = await generation.locator(kind === 'image' ? '.module-node__generation-editor-preview' : '.module-node__result').boundingBox();
         const fullState = await progress.boundingBox();

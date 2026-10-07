@@ -165,7 +165,11 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(layerNodes.nth(0).locator('.image-layer-node__heading strong')).toHaveText('背景');
     await expect(layerNodes.nth(1).getByRole('button', { name: /隐藏图层 主体/u })).toBeVisible();
     const composite = page.locator('[data-module-type="image_layering"]');
-    await expect(composite.getByRole('button', { name: '导出 PSD' })).toBeEnabled();
+    // Legacy passed flags do not authorize unreviewed full-frame materials.
+    await expect(composite.getByRole('button', { name: '导出 PSD', exact: true })).toBeDisabled();
+    await expect(composite.getByRole('button', { name: '在 Photoshop 中打开', exact: true })).toBeDisabled();
+    await expect(composite.locator('.image-layering__progress-heading')).toContainText('需复核');
+    await expect(layerNodes.nth(2).getByRole('status')).toHaveText('透明层没有透明像素，不能作为独立前景层。');
     await expect.poll(async () => (await e2eState(page)).edgeCount).toBeGreaterThanOrEqual(4);
     await page.screenshot({ path: path.join(visualArtifactDirectory, `independent-layer-nodes-${theme}.png`), fullPage: true });
     expect((await e2eState(page)).modelSubmissions).toHaveLength(0);

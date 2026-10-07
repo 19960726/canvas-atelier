@@ -24,8 +24,11 @@ import { resolveCanvasModuleIcon } from './module-icons';
 import { formatMediaDisplayAspectRatio } from './media-display';
 import { handleNodeWheelCapture } from './node-wheel-routing';
 import { resolveConnectedReverseMedia } from './reverse-agent-media';
+import { resolveConnectedGenerationMedia } from './connected-generation-media';
+import { buildConnectedMentionCatalog } from '../mentions/media-mention-model';
+import { useConnectedMentionDraft } from '../mentions/use-connected-mention-draft';
 import { ConnectedAgentMediaSlots, type ConnectedAgentMediaSlotItem } from './ConnectedAgentMediaSlots';
-import { useAppStore } from '../app/app-store';
+import { captureLayeringOperationOwner, useAppStore } from '../app/app-store';
 import { registerEditorDraft } from '../app/editor-draft-boundary';
 import { isRenderableManagedImageUrl, isRenderableManagedVideoUrl } from '../app/managed-image-url';
 import { imageQualityLabel, isGptImageQualityIdentity, supportsGptImageQuality } from '../app/image-generation-quality';
@@ -33,7 +36,8 @@ import { IMAGE_RESOLUTION_TIERS, imageModelFamilyDisplayName, imageResolutionFam
 import { resolveMediaImportMode } from '../app/media-import-capability';
 import { getActiveProjectSessionId } from '../app/desktop-persistence';
 import { queueGeneratedImageForAgent } from '../agent/generated-image-agent-transfer';
-import { filterModelJobsForProject, modelJobMatchesGenerationDraft, type GenerationJobDraftIdentity } from '../jobs/project-model-jobs';
+import { filterModelJobsForProject, modelJobBelongsToProject, modelJobMatchesGenerationDraft, type GenerationJobDraftIdentity } from '../jobs/project-model-jobs';
+import { resolveOverviewMediaAssetId, resolveOverviewMediaPosterAssetId, resolveOverviewMediaResultCount, type OverviewMediaModuleType } from './overview-media';
 
 import { readVideoGenerationResults } from './video-generation-results';
 import { supportsGenerationReferences } from '../agent/generation-preferences';
@@ -176,7 +180,7 @@ function useMentionPickerGuard(value: string) {
   };
   const update = (
     nextValue: string,
-    images: readonly ProjectImageAssetSummary[],
+    images: readonly PromptMentionCandidate[],
     selection?: MediaMentionSelection | null,
   ) => {
     if (dismissedValueRef.current !== null
@@ -293,6 +297,8 @@ const ModulePort = memo(function ModulePort({ port, aliasPorts, priority, connec
 
 interface ModuleNodeCardProps {
   id: string;
+  width?: number;
+  height?: number;
   data: CanvasModuleNodeData & {
     locked?: boolean;
     imageGenerationRoutes?: readonly ImageGenerationRouteSummary[];
@@ -525,7 +531,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard(props: ModuleNodeCard
   return renderFullCard ? <DetailedModuleNodeCard {...props} /> : <ModuleNodeOverview {...props} />;
 });
 
-const ModuleNodeOverview = memo(function ModuleNodeOverview({ id, data, selected }: ModuleNodeCardProps) {
+const ModuleNodeOverview = memo(function ModuleNodeOverview({ id, data, selected, width, height }: ModuleNodeCardProps) {
   const definition = getCanvasModuleDefinition(data.moduleType);
   const workflowLabel = resolveNodeWorkflowLabel(id, data.moduleType, data.config);
   const Icon = resolveCanvasModuleIcon(definition.type);
@@ -547,11 +553,23 @@ const ModuleNodeOverview = memo(function ModuleNodeOverview({ id, data, selected
     || data.moduleType === 'upload_image'
     || data.moduleType === 'video_input')
     && typeof data.config.assetId === 'string';
-  const generationResultCount = Array.isArray(data.config.resultAssetIds)
-    ? data.config.resultAssetIds.length
-    : Array.isArray(data.config.results)
-      ? data.config.results.length
-      : 0;
+  const overviewMediaType = data.moduleType as OverviewMediaModuleType;
+  const generationResultCount = useAppStore((state) => resolveOverviewMediaResultCount(overviewMediaType, data.config,
+    state.project.assets ?? [], state.projectImages, state.projectVideos));
+  const previewAssetId = useAppStore((state) => resolveOverviewMediaAssetId(overviewMediaType, id, data.config,
+    state.project.nodes, state.project.edges, state.project.assets ?? [], state.projectImages, state.projectVideos));
+  const posterAssetId = useAppStore((state) => resolveOverviewMediaPosterAssetId(overviewMediaType, id, data.config,
+    state.project.nodes, state.project.edges, state.project.assets ?? [], state.projectImages, state.projectVideos));
+  const previewImage = useAppStore((state) => previewAssetId === undefined ? undefined : state.projectImages.find((asset) => asset.assetId === previewAssetId
+    && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)));
+  const previewVideo = useAppStore((state) => previewAssetId === undefined ? undefined : state.projectVideos.find((asset) => asset.assetId === previewAssetId
+    && isRenderableManagedVideoUrl(asset.displayUrl, asset.assetId)));
+  const previewPoster = useAppStore((state) => posterAssetId === undefined ? undefined : state.projectImages.find((asset) => asset.assetId === posterAssetId
+    && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)));
+  const shellStyle = {
+    ...(typeof width === 'number' && width > 0 ? { '--overview-width': `${width}px` } : {}),
+    ...(typeof height === 'number' && height > 0 ? { '--overview-height': `${height}px` } : {}),
+  } as CSSProperties;
 
   return (
     <article
@@ -562,15 +580,31 @@ const ModuleNodeOverview = memo(function ModuleNodeOverview({ id, data, selected
       data-module-type={definition.type}
       data-port-label-mode={isProfessionalWorkbench ? 'interactive' : 'always'}
       data-render-detail="overview"
+      style={shellStyle}
     >
       {(data.moduleType === 'image_generation' || data.moduleType === 'video_generation') && (
         <div
           aria-hidden="true"
-          className="module-node__summary module-node__summary--generation module-node__overview-surface"
+          className="module-node__overview-surface"
           data-editor-expanded="false"
           data-has-result={generationResultCount > 0 ? 'true' : 'false'}
           data-result-count={generationResultCount}
         />
+      )}
+      {previewImage && (
+        <div className="module-node__overview-media">
+          <img src={previewImage.displayUrl} alt={previewImage.label} draggable={false} decoding="async" />
+        </div>
+      )}
+      {!previewImage && previewPoster && (
+        <div className="module-node__overview-media">
+          <img src={previewPoster.displayUrl} alt={previewPoster.label} draggable={false} decoding="async" />
+        </div>
+      )}
+      {!previewImage && !previewPoster && previewVideo && (
+        <div className="module-node__overview-media">
+          <video src={previewVideo.displayUrl} aria-label={previewVideo.label} muted playsInline preload="metadata" />
+        </div>
       )}
       <div className="module-node__overview-content">
         <span className="module-node__icon" data-icon-category={definition.category} aria-hidden="true">
@@ -657,11 +691,18 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
     },
     [activeProjectSessionId, id, modelJobs, project],
   );
+  const layeringModelJobs = useMemo(() => {
+    if (data.moduleType !== 'image_layer' && data.moduleType !== 'image_layering') return [];
+    if (!project.nodes.some((node) => node.id === id)) return projectModelJobs;
+    return modelJobs.filter((job) => modelJobBelongsToProject(job, project, activeProjectSessionId,
+      { allowDurableLayerOwnership: true }));
+  }, [activeProjectSessionId, data.moduleType, id, modelJobs, project, projectModelJobs]);
   const runReverseAgentNode = useAppStore((state) => state.runReverseAgentNode);
   const knowledgeBases = useAppStore((state) => state.knowledgeBases);
   const toggleNodeLock = useAppStore((state) => state.toggleNodeLock);
   const reorderModuleInput = useAppStore((state) => state.reorderModuleInput);
   const reorderModuleInputDurably = async (targetNodeId: string, targetPortId: string, edgeIds: string[]) => {
+    const isCurrentOwner = captureLayeringOperationOwner(useAppStore.getState);
     // A tray may show only the first 20 references. Keep the remaining edges
     // in the transaction so a visible reorder is still an exact permutation.
     const completeOrder = () => {
@@ -672,10 +713,15 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
         .map(edge => edge.id);
       return [...edgeIds, ...remaining];
     };
-    if (await reorderModuleInput(targetNodeId, targetPortId, completeOrder())) return true;
+    const reordered = await reorderModuleInput(targetNodeId, targetPortId, completeOrder());
+    if (!isCurrentOwner()) return false;
+    if (reordered) return true;
     const current = useAppStore.getState();
     if (!current.canReloadDurableProject || !await current.reloadDurableProject()) return false;
-    return useAppStore.getState().reorderModuleInput(targetNodeId, targetPortId, completeOrder());
+    if (!isCurrentOwner(undefined, { canvasDraftResetKey: useAppStore.getState().canvasDraftResetKey })) return false;
+    const isCurrentRetryOwner = captureLayeringOperationOwner(useAppStore.getState);
+    const retried = await useAppStore.getState().reorderModuleInput(targetNodeId, targetPortId, completeOrder());
+    return isCurrentRetryOwner() && retried;
   };
   const [libraryQuery, setLibraryQuery] = useState('');
   const hasImageControls = data.moduleType === 'image_input'
@@ -817,6 +863,8 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
         kind: item.kind,
         assetId: item.assetId,
         label: image?.label ?? video?.label ?? item.label ?? item.assetId,
+        width: image?.width ?? video?.width ?? undefined,
+        height: image?.height ?? video?.height ?? undefined,
         previewUrl: image && isRenderableManagedImageUrl(image.displayUrl, image.assetId)
           ? image.displayUrl
           : video?.displayUrl,
@@ -921,7 +969,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
           config={data.config}
           asset={projectImages.find((asset) => asset.assetId === data.config.resultAssetId)}
           sourceAsset={projectImages.find((asset) => asset.assetId === data.config.sourceAssetId)}
-          job={modelJobs.find((job) => job.id === data.config.jobId)}
+          job={layeringModelJobs.find((job) => job.id === data.config.jobId)}
           onQualityResult={(assetId, verdict) => persistImageLayerQuality(id, assetId, verdict)}
           onRefreshAsset={refreshProjectImages}
           onVisibilityChange={(visible) => persistImageLayerVisibility(id, visible)}
@@ -931,7 +979,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
         <ImageLayeringWorkbench
           config={data.config}
           assets={projectImages}
-          jobs={modelJobs.filter((job) => job.layeringGroupId === data.config.groupId)}
+          jobs={layeringModelJobs.filter((job) => job.layeringGroupId === data.config.groupId)}
           layerNodes={project.nodes.filter((node): node is CanvasModuleNode => node.type === 'module'
             && node.data.moduleType === 'image_layer' && node.data.config.groupId === data.config.groupId)}
           onLayersChange={(layers) => persistImageLayeringRecords(id, layers)}
@@ -1237,9 +1285,10 @@ function VideoGenerationSummary({
     .filter((item) => item.kind === 'image')
     .map((item) => projectImages.find((asset) => asset.assetId === item.assetId))
     .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined), [connectedMedia, projectImages]);
-  const mentionPreviews = useMemo(() => buildMediaMentionPreviews(connectedImages, projectVideos.filter((asset) => connectedMedia.some((item) => item.kind === 'video' && item.assetId === asset.assetId))), [connectedImages, connectedMedia, projectVideos]);
-  const [prompt, setPrompt] = useExternallyHydratedDraftState(connectedPrompt.status === 'disconnected'
+  const mentionPreviews = useMemo(() => buildConnectedMentionCatalog(connectedMedia, projectImages, projectVideos, true), [connectedMedia, projectImages, projectVideos]);
+  const [prompt, setPrompt, setPromptState] = useExternallyHydratedDraftState(connectedPrompt.status === 'disconnected'
     ? readNonEmptyString(config.prompt) ?? '' : connectedPrompt.status === 'connected' ? connectedPrompt.prompt : '');
+  useConnectedMentionDraft(mentionPreviews, readNonEmptyString(config.prompt) ?? '', setPromptState, connectedPrompt.status === 'disconnected');
   const promptSelectionRef = useRef<MediaMentionSelection | null>(null);
   const promptEditorRef = useRef<MediaMentionTextareaHandle>(null);
   const [runError, setRunError] = useState<string | null>(null);
@@ -1464,7 +1513,6 @@ function VideoGenerationSummary({
         </div>}
         {!expanded && !hasCompletedResult && hasConnectedMedia && <ConnectedMediaSlots
           ariaLabel="Connected video media"
-          preserveMediaAspect
           slotRowAriaLabel="Video preview reference slots"
           media={connectedMedia}
           projectImages={projectImages}
@@ -1474,7 +1522,7 @@ function VideoGenerationSummary({
           emptySlotAriaLabel="Video preview reference slot pending"
           onReorder={(next) => {
             const edgeIds = next.flatMap((item) => item.edgeId ? [item.edgeId] : []);
-            return edgeIds.length === next.length ? onReorderMedia(edgeIds) : false;
+            return edgeIds.length === next.length ? onReorderMedia([...new Set(edgeIds)]) : false;
           }}
           pendingKind={sourceVideoAssetId === undefined ? 'image' : 'video'}
         />}
@@ -1491,7 +1539,6 @@ function VideoGenerationSummary({
           </div>}
           {expanded && <ConnectedMediaSlots
             ariaLabel="Connected video media editor"
-            preserveMediaAspect
             slotRowAriaLabel="Video editor reference slots"
             media={connectedMedia}
             projectImages={projectImages}
@@ -1502,7 +1549,7 @@ function VideoGenerationSummary({
             pendingKind={sourceVideoAssetId === undefined ? 'image' : 'video'}
             onReorder={(next) => {
               const edgeIds = next.flatMap((item) => item.edgeId ? [item.edgeId] : []);
-              return edgeIds.length === next.length ? onReorderMedia(edgeIds) : false;
+              return edgeIds.length === next.length ? onReorderMedia([...new Set(edgeIds)]) : false;
             }}
           />}
           <section className="module-node__prompt-workspace nodrag nopan" aria-label="Video preview prompt workspace" onPointerDown={stopCanvasPointer}>
@@ -1708,9 +1755,10 @@ function ImageGenerationSummary({
     .filter((item) => item.kind === 'image')
     .map((item) => projectImages.find((asset) => asset.assetId === item.assetId))
     .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined), [connectedMedia, projectImages]);
-  const mentionPreviews = useMemo(() => buildMediaMentionPreviews(connectedImages, projectVideos.filter((asset) => connectedMedia.some((item) => item.kind === 'video' && item.assetId === asset.assetId))), [connectedImages, connectedMedia, projectVideos]);
-  const [prompt, setPrompt] = useExternallyHydratedDraftState(connectedPrompt.status === 'disconnected'
+  const mentionPreviews = useMemo(() => buildConnectedMentionCatalog(connectedMedia, projectImages, projectVideos, true), [connectedMedia, projectImages, projectVideos]);
+  const [prompt, setPrompt, setPromptState] = useExternallyHydratedDraftState(connectedPrompt.status === 'disconnected'
     ? readNonEmptyString(config.prompt) ?? '' : connectedPrompt.status === 'connected' ? connectedPrompt.prompt : '');
+  useConnectedMentionDraft(mentionPreviews, readNonEmptyString(config.prompt) ?? '', setPromptState, connectedPrompt.status === 'disconnected');
   const promptSelectionRef = useRef<MediaMentionSelection | null>(null);
   const promptEditorRef = useRef<MediaMentionTextareaHandle>(null);
   const [runError, setRunError] = useState<string | null>(null);
@@ -1721,6 +1769,10 @@ function ImageGenerationSummary({
     }
   }, [connectedImages, mentionPicker.open, prompt]);
   const [mentionedReferenceAssetIds, setMentionedReferenceAssetIds] = useState<string[]>([]);
+  const [addingReference, setAddingReference] = useState(false);
+  const addingReferenceRef = useRef(false);
+  const pendingReferenceSource = useRef<{ projectId: string; sessionId: string | null; resetKey: number;
+    assetId: string; existingSourceIds: Set<string>; sourceId?: string } | null>(null);
   const connectedReferenceAssetIds = connectedMedia.filter((item) => item.kind === 'image').map((item) => item.assetId);
   const activeMentionedReferenceAssetIds = retainMentionedAssetIds(mentionedReferenceAssetIds, prompt, connectedImages);
   // Generated results belong to the formal job store.  Reading them here keeps
@@ -1952,6 +2004,79 @@ function ImageGenerationSummary({
   const activeImageReference = useMemo(() => (activeImageJob?.referenceAssetIds ?? [])
     .map(assetId => projectImages.find(asset => asset.assetId === assetId))
     .find(asset => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [activeImageJob, projectImages]);
+  const addReferenceImage = () => {
+    if (addingReferenceRef.current || activeJobId !== undefined || connectedMedia.length >= MAX_GENERATION_REFERENCES) return;
+    const before = useAppStore.getState();
+    const projectId = before.project.id;
+    const sessionId = getActiveProjectSessionId();
+    const resetKey = before.canvasDraftResetKey;
+    const isCurrent = () => {
+      const current = useAppStore.getState();
+      return current.project.id === projectId && current.canvasDraftResetKey === resetKey
+        && getActiveProjectSessionId() === sessionId
+        && current.project.nodes.some(node => node.id === id && node.type === 'module' && node.data.moduleType === 'image_generation');
+    };
+    const completeReference = async (file?: File) => {
+      if (addingReferenceRef.current || !isCurrent()) return;
+      addingReferenceRef.current = true;
+      setAddingReference(true);
+      setRunError(null);
+      try {
+        let pending = pendingReferenceSource.current;
+        if (pending?.projectId !== projectId || pending.sessionId !== sessionId || pending.resetKey !== resetKey) pending = null;
+        if (pending === null) {
+          const asset = await useAppStore.getState().importAgentReferenceImage(file);
+          if (!isCurrent()) return;
+          if (asset === null) {
+            if (useAppStore.getState().projectImageError !== null) setRunError('参考图片导入失败，请重试。');
+            return;
+          }
+          pending = { projectId, sessionId, resetKey, assetId: asset.assetId,
+            existingSourceIds: new Set(useAppStore.getState().project.nodes.map(node => node.id)) };
+          pendingReferenceSource.current = pending;
+        }
+        if (useAppStore.getState().canRetryProjectCommit) {
+          if (!await useAppStore.getState().retryFailedProjectCommit() || !isCurrent()) return;
+        }
+        const findSource = () => useAppStore.getState().project.nodes.find(node => node.type === 'module'
+          && node.data.moduleType === 'image_input' && node.data.config.assetId === pending.assetId
+          && (node.id === pending.sourceId || !pending.existingSourceIds.has(node.id)));
+        let source = findSource();
+        if (!source) {
+          const target = useAppStore.getState().project.nodes.find(node => node.id === id)!;
+          const created = await useAppStore.getState().addProjectImageInput(pending.assetId,
+            { x: target.position.x - 420, y: target.position.y + connectedMedia.length * 80 });
+          if (!isCurrent()) return;
+          if (!created) {
+            setRunError('参考图片已导入，来源节点未保存；点击添加可重试。');
+            return;
+          }
+          source = findSource();
+        }
+        if (!source || !isCurrent()) return;
+        pending.sourceId = source.id;
+        const isConnected = () => useAppStore.getState().project.edges.some(edge => edge.source === source.id
+          && edge.sourcePortId === 'image' && edge.target === id && edge.targetPortId === 'references');
+        const connected = isConnected() || await useAppStore.getState().connectModulePorts({
+          source: source.id, sourceHandle: 'image', target: id, targetHandle: 'references',
+        });
+        if (!isCurrent()) return;
+        if (connected && isConnected()) pendingReferenceSource.current = null;
+        else setRunError('参考图片已导入，连线未保存；点击添加可重试。');
+      } catch {
+        if (isCurrent()) setRunError('参考图片未添加完成，请重试。');
+      } finally {
+        addingReferenceRef.current = false;
+        setAddingReference(false);
+      }
+    };
+    const pending = pendingReferenceSource.current;
+    const mode = resolveMediaImportMode({ desktopBridge: globalThis.window?.novusDesktop,
+      manualAcceptance: globalThis.window?.__NOVUS_MANUAL_ACCEPTANCE__ === true });
+    if (pending?.projectId === projectId && pending.sessionId === sessionId && pending.resetKey === resetKey
+      || mode === 'desktop-managed') void completeReference();
+    else openBrowserFilePicker('image/png,image/jpeg,image/webp,image/gif', file => { void completeReference(file); });
+  };
   const imageTimingJob = selectGenerationTimingJob(modelJobs, id, 'image', durablePreviewAssets.length > 0, imageDraftIdentity);
   const activePreviewAsset = previewIndex === null ? undefined : previewItems[previewIndex];
   const actionPreviewAsset = previewActionMenu === null ? undefined : previewItems[previewActionMenu.index];
@@ -2020,7 +2145,7 @@ function ImageGenerationSummary({
     setShowOriginalForComparison(false);
   }, [selectedColorAsset?.assetId]);
   return (
-    <section className={`module-node__summary module-node__summary--compact module-node__summary--generation ${hasConnectedReference ? 'is-reference-connected' : 'is-reference-empty'}${activeJobId !== undefined ? ' is-generating' : ''}`} data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedImageResult && previewItems.length > 0 ? 'true' : 'false'} data-result-count={previewItems.length > 0 ? Math.min(previewItems.length, 9) : undefined} data-result-orientation={previewItems.length > 0 ? completedImageOrientation : undefined} aria-label="生成摘要 / Generation summary">
+    <section className={`module-node__summary module-node__summary--compact module-node__summary--generation ${hasConnectedReference ? 'is-reference-connected' : 'is-reference-empty'}${activeJobId !== undefined ? ' is-generating' : ''}`} data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedImageResult && previewItems.length > 0 ? 'true' : 'false'} data-preview-frame={!hasCompletedImageResult && !activeImageReference ? 'empty' : undefined} data-result-count={previewItems.length > 0 ? Math.min(previewItems.length, 9) : undefined} data-result-orientation={previewItems.length > 0 ? completedImageOrientation : undefined} aria-label="生成摘要 / Generation summary">
       <TaskTimingBadge
         ariaLabel="Image generation task timing"
         job={imageTimingJob}
@@ -2132,16 +2257,19 @@ function ImageGenerationSummary({
           </div>}
           <ConnectedMediaSlots
             ariaLabel="Image generation reference slots"
-            preserveMediaAspect
             media={connectedMedia}
             projectImages={projectImages}
             projectVideos={projectVideos}
             title="素材输入"
             showPending
+            showEmptySlot={false}
             emptySlotAriaLabel="Image generation reference slot pending"
+            onAddReference={addReferenceImage}
+            addAriaLabel="添加参考图片 / Add reference image"
+            addDisabled={addingReference || activeJobId !== undefined}
             onReorder={(next) => {
               const edgeIds = next.flatMap((item) => item.edgeId ? [item.edgeId] : []);
-              return edgeIds.length === next.length ? onReorderMedia(edgeIds) : false;
+              return edgeIds.length === next.length ? onReorderMedia([...new Set(edgeIds)]) : false;
             }}
           />
           <section className="module-node__prompt-workspace nodrag nopan" aria-label="Image generation prompt workspace" onPointerDown={stopCanvasPointer}>
@@ -2335,23 +2463,35 @@ function ImageGenerationSummary({
   );
 }
 
+interface PromptMentionCandidate {
+  readonly assetId: string;
+  readonly label: string;
+  readonly displayUrl?: string;
+  readonly token?: string;
+  readonly kind?: 'image' | 'video';
+}
+
+function candidateMentionToken(asset: PromptMentionCandidate, position: number): string {
+  return asset.token ?? imageMentionTokenAt(position);
+}
+
 function PromptImageMentionMenu({
   images,
   prompt,
   selection,
   onSelect,
 }: {
-  images: readonly ProjectImageAssetSummary[];
+  images: readonly PromptMentionCandidate[];
   prompt: string;
   selection?: MediaMentionSelection | null;
-  onSelect: (asset: ProjectImageAssetSummary, position: number) => void;
+  onSelect: (asset: PromptMentionCandidate, position: number) => void;
 }) {
   const query = readImageMentionQuery(prompt, images, selection);
   const filteredCandidates = images
     .map((asset, position) => ({ asset, position }))
     .filter(({ asset, position }) => query.length === 0
       || asset.label.toLocaleLowerCase().includes(query.toLocaleLowerCase())
-      || imageMentionTokenAt(position).slice(1).includes(query))
+      || candidateMentionToken(asset, position).slice(1).includes(query))
     .slice(0, MAX_GENERATION_REFERENCES);
   // An @ typed in the middle of an existing Chinese sentence is not a search
   // query. Keep the picker usable even when the following prose does not match
@@ -2367,8 +2507,8 @@ function PromptImageMentionMenu({
       event.preventDefault();
       stopCanvasPointer(event);
     }} onClick={() => onSelect(asset, position)}>
-        {isRenderableManagedImageUrl(asset.displayUrl, asset.assetId) && <img src={asset.displayUrl} alt={asset.label} loading="lazy" decoding="async" />}
-      <span>{asset.label}</span><small>{imageMentionTokenAt(position)}</small>
+        {asset.kind === 'video' ? <Video aria-hidden="true" /> : asset.displayUrl && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId) && <img src={asset.displayUrl} alt={asset.label} loading="lazy" decoding="async" />}
+      <span>{asset.label}</span><small>{candidateMentionToken(asset, position)}</small>
     </button>)}
   </div>;
 }
@@ -2383,13 +2523,13 @@ function imageMentionCandidates(prompt: string): RegExpMatchArray[] {
 
 function unresolvedImageMentionCandidates(
   prompt: string,
-  images: readonly ProjectImageAssetSummary[],
+  images: readonly PromptMentionCandidate[],
 ): RegExpMatchArray[] {
-  const canonicalTokens = new Set(images.map((_, position) => imageMentionTokenAt(position)));
+  const canonicalTokens = new Set(images.map(candidateMentionToken));
   return imageMentionCandidates(prompt).filter((match) => {
     // A rendered reference chip can touch following prose. That prose does not
     // turn its canonical token back into a query (nor make 图片1 match 图片10).
-    const token = /^@图片[0-9]+/u.exec(match[0])?.[0];
+    const token = /^@(图片|视频)[0-9]+/u.exec(match[0])?.[0];
     return token === undefined || !canonicalTokens.has(token);
   });
 }
@@ -2397,7 +2537,7 @@ function unresolvedImageMentionCandidates(
 function hasNewImageMentionQuery(
   previousValue: string,
   nextValue: string,
-  images: readonly ProjectImageAssetSummary[],
+  images: readonly PromptMentionCandidate[],
 ): boolean {
   // Dismiss queries, not a complete editor serialization: whitespace changes,
   // chip rebuilds and caret restoration must not revive an older query. Counts
@@ -2416,7 +2556,7 @@ function hasNewImageMentionQuery(
 
 function isImageMentionQueryActive(
   prompt: string,
-  images: readonly ProjectImageAssetSummary[] = [],
+  images: readonly PromptMentionCandidate[] = [],
   selection?: MediaMentionSelection | null,
 ): boolean {
   if (selection !== undefined && selection !== null) {
@@ -2437,7 +2577,7 @@ function normalizeMediaMentionSelection(
 
 function unresolvedImageMentionAtSelection(
   prompt: string,
-  images: readonly ProjectImageAssetSummary[],
+  images: readonly PromptMentionCandidate[],
   selection: MediaMentionSelection,
 ): { readonly start: number; readonly end: number; readonly text: string; readonly query: string } | undefined {
   const normalized = normalizeMediaMentionSelection(prompt, selection);
@@ -2466,7 +2606,7 @@ function unresolvedImageMentionAtSelection(
 
 function lastUnresolvedImageMentionCandidate(
   prompt: string,
-  images: readonly ProjectImageAssetSummary[],
+  images: readonly PromptMentionCandidate[],
 ): RegExpMatchArray | undefined {
   const candidates = unresolvedImageMentionCandidates(prompt, images);
   return candidates[candidates.length - 1];
@@ -2474,7 +2614,7 @@ function lastUnresolvedImageMentionCandidate(
 
 function readImageMentionQuery(
   prompt: string,
-  images: readonly ProjectImageAssetSummary[],
+  images: readonly PromptMentionCandidate[],
   selection?: MediaMentionSelection | null,
 ): string {
   const selectedMatch = selection === undefined || selection === null
@@ -2486,7 +2626,7 @@ function readImageMentionQuery(
 function createImageMentionEdit(
   prompt: string,
   mention: string,
-  images: readonly ProjectImageAssetSummary[] = [],
+  images: readonly PromptMentionCandidate[] = [],
   selection?: MediaMentionSelection | null,
 ): { readonly value: string; readonly selection: MediaMentionSelection } {
   const token = mention.startsWith('@') ? mention : `@${mention}`;
@@ -2515,7 +2655,7 @@ function createImageMentionEdit(
   return { value, selection: { start: caret, end: caret } };
 }
 
-function imageMentionToken(images: readonly ProjectImageAssetSummary[], assetId: string): string {
+function imageMentionToken(images: readonly PromptMentionCandidate[], assetId: string): string {
   const index = images.findIndex((image) => image.assetId === assetId);
   return index < 0 ? '' : imageMentionTokenAt(index);
 }
@@ -2524,30 +2664,10 @@ function imageMentionTokenAt(position: number): string {
   return `@图片${position + 1}`;
 }
 
-function buildMediaMentionPreviews(
-  images: readonly ProjectImageAssetSummary[],
-  videos: readonly ProjectVideoAssetSummary[],
-): MediaMentionPreview[] {
-  return [
-    ...images.slice(0, MAX_GENERATION_REFERENCES).map((asset, position) => ({
-      token: imageMentionTokenAt(position),
-      label: asset.label,
-      displayUrl: asset.displayUrl,
-      kind: 'image' as const,
-    })),
-    ...videos.slice(0, MAX_GENERATION_REFERENCES).map((asset, position) => ({
-      token: `@视频${position + 1}`,
-      label: asset.label,
-      displayUrl: asset.displayUrl,
-      kind: 'video' as const,
-    })),
-  ];
-}
-
 export function promptContainsImageMention(prompt: string, token: string): boolean {
   if (!token) return false;
   const escapedToken = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`${escapedToken}(?![0-9A-Za-z_])`, 'u').test(prompt);
+  return new RegExp(`${escapedToken}(?![0-9])`, 'u').test(prompt);
 }
 
 function mergeAssetIds(first: readonly string[], second: readonly string[]): string[] {
@@ -2773,28 +2893,47 @@ function ReverseAgentSummary({
   onRun: (nodeId: string, config?: ReverseAgentNodeConfig) => Promise<{ positivePrompt: string }>;
   onReorderMedia: (edgeIds: string[]) => Promise<boolean>;
 }) {
+  const canvasDraftResetKey = useAppStore(state => state.canvasDraftResetKey);
+  const project = useAppStore(state => state.project);
+  const persistenceMode = useAppStore(state => state.persistenceMode);
+  const operationOwnerKey = `${project.id}:${canvasDraftResetKey}:${persistenceMode}:${getActiveProjectSessionId() ?? ''}`;
   const connectedImages = useMemo(() => connectedMedia
     .filter((item) => item.kind === 'image')
     .map((item) => projectImages.find((asset) => asset.assetId === item.assetId))
     .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined), [connectedMedia, projectImages]);
-  const [mediaPreviewAssetId, setMediaPreviewAssetId] = useState<string | null>(null);
-  const mediaPreviewAsset = connectedImages.find((asset) => asset.assetId === mediaPreviewAssetId);
-  const closeMediaPreview = useCallback(() => setMediaPreviewAssetId(null), []);
+  const [visiblePreviewMedia, setVisiblePreviewMedia] = useState<readonly ConnectedAgentMediaSlotItem[] | null>(null);
+  const previewImages = (visiblePreviewMedia ?? connectedMedia)
+    .filter(item => item.kind === 'image' && connectedMedia.some(current => current.kind === 'image'
+      && current.assetId === item.assetId && current.edgeId === item.edgeId))
+    .map(item => projectImages.find(asset => asset.assetId === item.assetId))
+    .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined
+      && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)
+      && project.assets?.some(owned => owned.assetId === asset.assetId && owned.mediaType.startsWith('image/')) === true);
+  const [mediaPreviewSelection, setMediaPreviewSelection] = useState<{ assetId: string; owner: string } | null>(null);
+  const mediaPreviewIndex = mediaPreviewSelection?.owner === operationOwnerKey
+    ? previewImages.findIndex(asset => asset.assetId === mediaPreviewSelection.assetId) : -1;
+  const mediaPreviewAsset = previewImages[mediaPreviewIndex];
+  useEffect(() => {
+    if (mediaPreviewSelection && !mediaPreviewAsset) setMediaPreviewSelection(null);
+  }, [mediaPreviewSelection, mediaPreviewAsset]);
+  const closeMediaPreview = useCallback(() => setMediaPreviewSelection(null), []);
   const stepMediaPreview = useCallback((delta: number) => {
-    setMediaPreviewAssetId((current) => {
-      if (current === null || connectedImages.length === 0) return null;
-      const currentIndex = connectedImages.findIndex((asset) => asset.assetId === current);
-      const nextIndex = (currentIndex + delta + connectedImages.length) % connectedImages.length;
-      return connectedImages[nextIndex]?.assetId ?? null;
+    setMediaPreviewSelection((current) => {
+      if (current?.owner !== operationOwnerKey || previewImages.length === 0) return null;
+      const currentIndex = previewImages.findIndex((asset) => asset.assetId === current.assetId);
+      const asset = previewImages[(currentIndex + delta + previewImages.length) % previewImages.length];
+      return asset ? { assetId: asset.assetId, owner: operationOwnerKey } : null;
     });
-  }, [connectedImages]);
-  const mentionPreviews = useMemo(() => buildMediaMentionPreviews(connectedImages, projectVideos.filter((asset) => connectedMedia.some((item) => item.kind === 'video' && item.assetId === asset.assetId))), [connectedImages, connectedMedia, projectVideos]);
+  }, [operationOwnerKey, previewImages]);
+  const mentionPreviews = useMemo(() => buildConnectedMentionCatalog(connectedMedia, projectImages, projectVideos, true), [connectedMedia, projectImages, projectVideos]);
+  const mentionCandidates = mentionPreviews;
   const [modelRoute, setModelRoute] = useState(readNonEmptyString(config.modelRoute) ?? '');
   const reverseRouteEdited = useRef(false);
   const initialRole = readNonEmptyString(config.role) ?? '';
   const initialTask = readNonEmptyString(config.task) ?? '';
   const [role, setRole] = useState(initialRole);
   const [task, setTask] = useState(initialTask);
+  useConnectedMentionDraft(mentionPreviews, initialTask, setTask);
   const [analysisDepth, setAnalysisDepth] = useState<'fast' | 'standard' | 'deep'>(() => (
     config.analysisDepth === 'fast' || config.analysisDepth === 'deep' ? config.analysisDepth : 'standard'
   ));
@@ -2922,10 +3061,10 @@ function ReverseAgentSummary({
   const [isRunningLocally, setIsRunningLocally] = useState(false);
   const mentionPicker = useMentionPickerGuard(task);
   useEffect(() => {
-    if (mentionPicker.open && task.includes('@') && !isImageMentionQueryActive(task, connectedImages, taskSelectionRef.current)) {
+    if (mentionPicker.open && task.includes('@') && !isImageMentionQueryActive(task, mentionCandidates, taskSelectionRef.current)) {
       mentionPicker.dismiss(task);
     }
-  }, [connectedImages, mentionPicker.open, task]);
+  }, [mentionCandidates, mentionPicker.open, task]);
   const [knowledgePickerOpen, setKnowledgePickerOpen] = useState(false);
   const [knowledgeQuery, setKnowledgeQuery] = useState('');
   const [knowledgeCategory, setKnowledgeCategory] = useState<'common' | 'favorite' | 'mine'>('common');
@@ -3025,16 +3164,18 @@ function ReverseAgentSummary({
             <p className="module-node__agent-media-label" aria-label="Reverse media input">素材输入 · {media.length} / {MAX_GENERATION_REFERENCES}</p>
             <ConnectedAgentMediaSlots
               ariaLabel="Connected reverse media slots"
+              operationOwnerKey={operationOwnerKey}
               media={media}
               preserveOverflow
               title="已连接素材"
               onReorder={(next) => {
                 const edgeIds = next.flatMap((item) => item.edgeId ? [item.edgeId] : []);
-                return edgeIds.length === next.length ? onReorderMedia(edgeIds) : false;
+                return edgeIds.length === next.length ? onReorderMedia([...new Set(edgeIds)]) : false;
               }}
+              onVisibleMediaChange={setVisiblePreviewMedia}
               onPreview={(item) => {
-                if (item.kind === 'image' && connectedImages.some((asset) => asset.assetId === item.assetId)) {
-                  setMediaPreviewAssetId(item.assetId);
+                if (item.kind === 'image' && previewImages.some((asset) => asset.assetId === item.assetId)) {
+                  setMediaPreviewSelection({ assetId: item.assetId, owner: operationOwnerKey });
                 }
               }}
               onAdd={mentionPicker.toggle}
@@ -3073,16 +3214,16 @@ function ReverseAgentSummary({
               const nextTask = event.target.value;
               setTaskDraft(nextTask);
               setMentionedReferenceAssetIds((current) => retainMentionedAssetIds(current, nextTask, connectedImages));
-              mentionPicker.update(nextTask, connectedImages, taskSelectionRef.current);
+              mentionPicker.update(nextTask, mentionCandidates, taskSelectionRef.current);
             }} onKeyDown={(event) => {
-              if (event.key === '@' && connectedImages.length > 0) mentionPicker.show();
+              if (event.key === '@' && mentionCandidates.length > 0) mentionPicker.show();
               if (event.key === 'Escape') mentionPicker.dismiss(task);
             }} /></label>
              {mentionPicker.open && (
-               <PromptImageMentionMenu images={connectedImages} prompt={task} selection={taskSelectionRef.current} onSelect={(asset, position) => {
-                  const token = imageMentionTokenAt(position);
-                 const edit = createImageMentionEdit(task, token, connectedImages, taskSelectionRef.current);
-                 const nextReferenceAssetIds = mergeAssetIds(mentionedReferenceAssetIds, [asset.assetId]);
+               <PromptImageMentionMenu images={mentionCandidates} prompt={task} selection={taskSelectionRef.current} onSelect={(asset, position) => {
+                  const token = candidateMentionToken(asset, position);
+                 const edit = createImageMentionEdit(task, token, mentionCandidates, taskSelectionRef.current);
+                 const nextReferenceAssetIds = asset.kind === 'video' ? mentionedReferenceAssetIds : mergeAssetIds(mentionedReferenceAssetIds, [asset.assetId]);
                  mentionPicker.dismiss(edit.value);
                  taskEditorRef.current?.applyEdit(edit.value, edit.selection);
                  setMentionedReferenceAssetIds(nextReferenceAssetIds);
@@ -3214,8 +3355,8 @@ function ReverseAgentSummary({
       />
       {mediaPreviewAsset && <ProjectImageLightbox
         asset={mediaPreviewAsset}
-        index={Math.max(0, connectedImages.findIndex((asset) => asset.assetId === mediaPreviewAsset.assetId))}
-        total={connectedImages.length}
+        index={mediaPreviewIndex}
+        total={previewImages.length}
         onClose={closeMediaPreview}
         onPrevious={() => stepMediaPreview(-1)}
         onNext={() => stepMediaPreview(1)}
@@ -3304,8 +3445,10 @@ function ConnectedMediaSlots({
   emptySlotAriaLabel = 'Media reference slot pending',
   slotRowAriaLabel,
   onAddReference,
+  addAriaLabel,
+  addDisabled,
+  showEmptySlot = true,
   onReorder,
-  preserveMediaAspect = false,
 }: {
   ariaLabel: string;
   media: readonly OrderedMediaSummary[];
@@ -3317,10 +3460,17 @@ function ConnectedMediaSlots({
   emptySlotAriaLabel?: string;
   slotRowAriaLabel?: string;
   onAddReference?: () => void;
+  addAriaLabel?: string;
+  addDisabled?: boolean;
+  showEmptySlot?: boolean;
   onReorder?: (media: ConnectedAgentMediaSlotItem[]) => void | boolean | Promise<void | boolean>;
-  preserveMediaAspect?: boolean;
 }) {
-  if (media.length === 0 && !showPending) return null;
+  const project = useAppStore(state => state.project);
+  const resetKey = useAppStore(state => state.canvasDraftResetKey);
+  const persistenceMode = useAppStore(state => state.persistenceMode);
+  const owner = `${project.id}:${resetKey}:${persistenceMode}:${getActiveProjectSessionId() ?? ''}`;
+  const [previewSelection, setPreviewSelection] = useState<{ assetId: string; owner: string } | null>(null);
+  const [visiblePreviewMedia, setVisiblePreviewMedia] = useState<readonly ConnectedAgentMediaSlotItem[] | null>(null);
   const items: ConnectedAgentMediaSlotItem[] = media.slice(0, MAX_GENERATION_REFERENCES).map((item) => {
     const image = item.kind === 'image' ? projectImages.find((asset) => asset.assetId === item.assetId) : undefined;
     const video = item.kind === 'video' ? projectVideos.find((asset) => asset.assetId === item.assetId) : undefined;
@@ -3336,23 +3486,52 @@ function ConnectedMediaSlots({
       height: image?.height ?? video?.height ?? undefined,
     };
   });
+  const previewImages = (visiblePreviewMedia ?? items)
+    .filter(item => item.kind === 'image' && items.some(current => current.assetId === item.assetId && current.edgeId === item.edgeId))
+    .map(item => projectImages.find(asset => asset.assetId === item.assetId))
+    .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined
+      && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)
+      && project.assets?.some(owned => owned.assetId === asset.assetId && owned.mediaType.startsWith('image/')) === true);
+  const previewIndex = previewSelection?.owner === owner
+    ? previewImages.findIndex(asset => asset.assetId === previewSelection.assetId) : -1;
+  const previewAsset = previewImages[previewIndex];
+  useEffect(() => {
+    if (previewSelection && !previewAsset) setPreviewSelection(null);
+  }, [previewSelection, previewAsset]);
+  const stepPreview = (direction: -1 | 1) => {
+    const asset = previewImages[(previewIndex + direction + previewImages.length) % previewImages.length];
+    if (asset) setPreviewSelection({ assetId: asset.assetId, owner });
+  };
+  if (media.length === 0 && !showPending) return null;
 
-  return <ConnectedAgentMediaSlots
+  return <><ConnectedAgentMediaSlots
     ariaLabel={ariaLabel}
+    operationOwnerKey={owner}
     media={items}
     title={title}
-    preserveMediaAspect={preserveMediaAspect}
     slotRowAriaLabel={slotRowAriaLabel}
-    emptySlotKind={items.length === 0 && showPending ? pendingKind : undefined}
+    emptySlotKind={items.length === 0 && showPending && showEmptySlot ? pendingKind : undefined}
     emptySlotAriaLabel={emptySlotAriaLabel}
-    // The connected-material tray is a status/ordering surface.  A single
-    // add affordance belongs to the node input itself; rendering another
-    // decorative plus at the far right makes empty trays look like they have
-    // two upload targets.
+    // Show an add affordance only when the tray owns an actual import action.
     showAddPlaceholder={false}
     onAdd={onAddReference}
+    addAriaLabel={addAriaLabel}
+    addDisabled={addDisabled}
     onReorder={onReorder}
-  />;
+    onVisibleMediaChange={setVisiblePreviewMedia}
+    onPreview={item => {
+      if (previewImages.some(asset => asset.assetId === item.assetId)) setPreviewSelection({ assetId: item.assetId, owner });
+    }}
+  />
+    {previewAsset && <ProjectImageLightbox
+      asset={previewAsset}
+      index={previewIndex}
+      total={previewImages.length}
+      onClose={() => setPreviewSelection(null)}
+      onPrevious={() => stepPreview(-1)}
+      onNext={() => stepPreview(1)}
+    />}
+  </>;
 }
 function isReverseAgentRoute(route: ReverseAgentRouteSummary): boolean {
   return (route.capabilities.includes('reverse_prompt') && route.capabilities.includes('gemini_native'))
@@ -4147,64 +4326,6 @@ function readTrimmedStringArray(value: unknown): string[] {
   return readStringArray(value).map((item) => item.trim()).filter((item) => item.length > 0);
 }
 
-function resolveConnectedGenerationMedia(
-  project: ReturnType<typeof useAppStore.getState>['project'],
-  nodeId: string,
-  targetPortId: 'media' | 'references',
-): OrderedMediaSummary[] {
-  const nodesById = new Map(project.nodes.map((node) => [node.id, node]));
-  const media: OrderedMediaSummary[] = [];
-  const seen = new Set<string>();
-  const append = (kind: 'image' | 'video', assetId: string, edgeId: string, label = assetId) => {
-    if (assetId.trim().length === 0 || seen.has(assetId) || media.length >= MAX_GENERATION_REFERENCES) return;
-    seen.add(assetId);
-    media.push({ edgeId, kind, assetId, label, ranges: [] });
-  };
-
-  project.edges
-    .filter((edge) => edge.target === nodeId && edge.targetPortId === targetPortId)
-    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
-    .forEach((edge) => {
-      const source = nodesById.get(edge.source);
-      if (source?.type === 'image_result' && edge.sourcePortId === 'image') {
-        append('image', source.data.assetId, edge.id);
-        return;
-      }
-      if (source?.type !== 'module') return;
-      if (edge.sourcePortId === 'image' && ['image_generation', 'result_output'].includes(source.data.moduleType)) {
-        let config = source.data.config;
-        if (source.data.moduleType === 'result_output') {
-          const incoming = project.edges.filter(candidate => candidate.target === source.id && candidate.targetPortId === 'result');
-          if (incoming.length !== 1 || incoming[0]!.sourcePortId !== 'result') return;
-          const producer = project.nodes.find(candidate => candidate.id === incoming[0]!.source);
-          if (producer?.type !== 'module' || producer.data.moduleType !== 'image_generation') return;
-          config = producer.data.config;
-        }
-        readStringArray(config.resultAssetIds).forEach(assetId => {
-          if (project.assets?.some(asset => asset.assetId === assetId && asset.mediaType.startsWith('image/'))) append('image', assetId, edge.id);
-        });
-        return;
-      }
-      const assetId = typeof source.data.config.assetId === 'string' ? source.data.config.assetId : undefined;
-      if (source.data.moduleType === 'video_input' && edge.sourcePortId === 'video' && assetId !== undefined) {
-        append('video', assetId, edge.id);
-        return;
-      }
-      if (
-        (source.data.moduleType === 'image_input' || source.data.moduleType === 'upload_image')
-        && edge.sourcePortId === 'image'
-        && assetId !== undefined
-      ) {
-        append('image', assetId, edge.id);
-        return;
-      }
-      if (source.data.moduleType === 'canvas_library' && edge.sourcePortId === 'images') {
-        readStringArray(source.data.config.assetIds).forEach((id) => append('image', id, edge.id));
-      }
-    });
-
-  return media;
-}
 function resolveConnectedVideoMedia(project: ReturnType<typeof useAppStore.getState>['project'], nodeId: string): {
   imageAssetIds: string[];
   sourceVideoAssetId: string | undefined;

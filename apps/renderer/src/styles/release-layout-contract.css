@@ -7121,9 +7121,6 @@ html body .workspace--canvas-layout .module-node.module-node.module-node[data-ge
   &:has(.module-node__generation-control-bar.has-image-quality) {
     --image-editor-height: calc(904px + var(--image-slot-extra)) !important;
   }
-  &:has(.module-node__unified-media-slots .connected-agent-media-slots__row[data-layout='two-rows']) {
-    --image-slot-extra: 60px;
-  }
   & .module-node__generation-editor-preview {
     position: absolute !important;
     top: 58px !important;

@@ -45,7 +45,8 @@ it('validates offscreen returned layers serially without mounting their canvas n
     const [current, setCurrent] = useState(nodes);
     return <ImageLayerValidationQueue projectId="project" nodes={current} assets={assets} onRefreshAssets={async () => {}}
       onQualityResult={async (nodeId, assetId, verdict) => { saved(nodeId, assetId, verdict); setCurrent(items => items.map(node => node.id !== nodeId ? node
-        : { ...node, data: { ...node.data, config: { ...node.data.config, qualityStatus: verdict.ok ? 'passed' : 'failed', qualityValidationVersion: 2 } } })); }} />;
+        : { ...node, data: { ...node.data, config: { ...node.data.config, qualityStatus: verdict.ok ? 'passed' : 'failed', qualityValidationVersion: 2,
+          formatQualityStatus: verdict.ok ? 'passed' : 'failed', qualityFormatCheckedAssetId: assetId } } })); }} />;
   }
   const view = render(<Fixture />);
   await waitFor(() => expect(saved).toHaveBeenCalledTimes(2));
@@ -112,4 +113,86 @@ it.each([
 ])('requires a new format check for a stale asset binding or validation version: %o', stale => {
   expect(needsLayerPixelValidation({ resultAssetId: 'current-result', qualityStatus: 'pending',
     formatQualityStatus: 'passed', ...stale })).toBe(true);
+});
+
+it.each([
+  { qualityValidationVersion: 2 },
+  { formatQualityStatus: 'passed', qualityFormatCheckedAssetId: 'old-result', qualityValidationVersion: 2 },
+  { formatQualityStatus: 'passed', qualityFormatCheckedAssetId: 'current-result', qualityValidationVersion: 1 },
+  { formatQualityStatus: 'passed', qualityFormatCheckedAssetId: 'current-result' },
+])('rechecks legacy passed results with missing or stale format proof: %o', proof => {
+  expect(needsLayerPixelValidation({ resultAssetId: 'current-result', qualityStatus: 'passed', status: 'completed',
+    confirmationDigest: 'e'.repeat(64), ...proof })).toBe(true);
+});
+
+it.each(['queued', 'submitting', 'running'])('does not recheck a retained legacy result during an active %s task', status => {
+  expect(needsLayerPixelValidation({ resultAssetId: 'old-result', qualityStatus: 'passed', qualityValidationVersion: 2, status })).toBe(false);
+});
+
+it.each(['passed', 'pending', 'failed'])('keeps an explicit current format failure stable for quality status %s', qualityStatus => {
+  expect(needsLayerPixelValidation({ resultAssetId: 'current-result', qualityStatus, formatQualityStatus: 'failed',
+    qualityFormatCheckedAssetId: 'current-result', qualityValidationVersion: 2, qualityReason: 'alpha_opaque' })).toBe(false);
+});
+
+it.each([
+  { qualityStatus: 'failed', qualityReason: 'alpha_opaque', qualityValidationVersion: 1 },
+  { qualityStatus: 'failed', qualityReason: 'dimensions', qualityValidationVersion: 2 },
+])('does not automatically retry a stable pixel failure: %o', failed => {
+  expect(needsLayerPixelValidation({ resultAssetId: 'current-result', ...failed })).toBe(false);
+});
+
+it('keeps the existing recovery for old dimension-only failures', () => {
+  expect(needsLayerPixelValidation({ resultAssetId: 'current-result', qualityStatus: 'failed',
+    qualityReason: 'dimensions', qualityValidationVersion: 1 })).toBe(true);
+});
+
+it('rechecks the saved 728 legacy pattern serially once and records only current format proof', async () => {
+  let active = 0, maximum = 0;
+  const decoded: string[] = [];
+  class TestImage {
+    naturalWidth = 2; naturalHeight = 2; crossOrigin = ''; src = '';
+    async decode() {
+      decoded.push(this.src); active++; maximum = Math.max(maximum, active);
+      await new Promise(resolve => setTimeout(resolve, 5)); active--;
+    }
+  }
+  vi.stubGlobal('Image', TestImage);
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn(),
+    getImageData: () => ({ data: new Uint8ClampedArray([30, 60, 90, 255, 30, 60, 90, 64, 0, 0, 0, 0, 0, 0, 0, 0]) }),
+  } as never);
+  const nodes = ['lid', 'hands'].map(layerId => {
+    const node = createCanvasModuleNode(`saved-728-${layerId}`, 'image_layer', { x: 50000, y: 50000 });
+    node.data.config = { resultAssetId: `saved-${layerId}`, layerId, layerKind: 'transparent', canvasWidth: 2, canvasHeight: 2,
+      pixelMode: 'source', status: 'completed', qualityStatus: 'passed', qualityValidationVersion: 2,
+      confirmationDigest: 'e'.repeat(64), pixelColorSpace: null };
+    return node;
+  });
+  const assets = nodes.map(node => ({ assetId: String(node.data.config.resultAssetId),
+    displayUrl: `novus-asset://${node.data.config.resultAssetId}`, mediaType: 'image/png' as const, width: 2, height: 2 }));
+  const saved = vi.fn();
+  let latest = nodes;
+  function Fixture() {
+    const [current, setCurrent] = useState(nodes); latest = current;
+    return <ImageLayerValidationQueue projectId="project" nodes={current} assets={assets} onRefreshAssets={async () => {}}
+      onQualityResult={async (nodeId, assetId, verdict) => {
+        saved(nodeId, assetId, verdict);
+        setCurrent(items => items.map(node => node.id !== nodeId ? node : { ...node, data: { ...node.data, config: {
+          ...node.data.config, qualityStatus: verdict.ok ? 'passed' : 'failed', qualityValidationVersion: 2,
+          formatQualityStatus: verdict.ok ? 'passed' : 'failed', qualityFormatCheckedAssetId: assetId,
+        } } }));
+      }} />;
+  }
+  const view = render(<Fixture />);
+  await waitFor(() => expect(saved.mock.calls.map(call => call[0])).toEqual(nodes.map(node => node.id)));
+  view.rerender(<Fixture />);
+  expect(decoded).toEqual(assets.map(asset => asset.displayUrl));
+  expect(maximum).toBe(1);
+  expect(saved.mock.calls.every(call => call[2].ok)).toBe(true);
+  for (const node of latest) {
+    expect(node.data.config).toMatchObject({ qualityStatus: 'passed', formatQualityStatus: 'passed',
+      qualityFormatCheckedAssetId: node.data.config.resultAssetId, qualityValidationVersion: 2 });
+    expect(node.data.config.semanticReviewAccepted).toBeUndefined();
+    expect(node.data.config.semanticReviewDigest).toBeUndefined();
+    expect(needsLayerPixelValidation(node.data.config)).toBe(false);
+  }
 });

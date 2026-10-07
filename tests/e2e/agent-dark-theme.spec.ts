@@ -137,7 +137,7 @@ test('keeps every creative Agent message surface readable in dark theme', async 
       const style = getComputedStyle(target);
       return {
         selector,
-        background: parseColor(style.backgroundColor),
+        background: effectiveBackground(target),
         color: style.color,
       };
     };
@@ -153,8 +153,8 @@ test('keeps every creative Agent message surface readable in dark theme', async 
       ],
       text: [
         readText('.skill-chat-workbench__message--user > p'),
-        readText('.skill-chat-workbench__message--creative-plan > span'),
-        readText('.skill-chat-workbench__message--creative-plan > p'),
+        readText('.skill-chat-workbench__message--creative-plan .agent-message-heading > span'),
+        readText('.skill-chat-workbench__message--creative-plan .agent-message-body > p'),
         readText('.creative-plan__requirements dt'),
         readText('.creative-plan__requirements dd'),
         readText('.creative-plan > div:not(.creative-plan__option) > strong'),

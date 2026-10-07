@@ -233,6 +233,20 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('button', { name: '锁定位置 / Lock position' })).toBeInTheDocument();
   });
 
+  it.each(['image_input', 'upload_image', 'image_generation', 'image_layer'] as const)('retains the managed image preview for %s at low zoom', async moduleType => {
+    const node = createCanvasModuleNode('overview-managed-image', moduleType, { x: 0, y: 0 });
+    node.data.config = moduleType === 'image_generation' ? { resultAssetIds: [projectImage.assetId] }
+      : moduleType === 'image_layer' ? { resultAssetId: projectImage.assetId } : { assetId: projectImage.assetId };
+    useAppStore.setState(state => ({ project: { ...state.project, assets: [projectImage], nodes: [node] }, projectImages: [projectImage] }));
+    render(<ReactFlowProvider><FlowZoom zoom={0.2}>
+      <ModuleNodeCard id={node.id} data={node.data} selected={false} />
+    </FlowZoom></ReactFlowProvider>);
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'overview'));
+    expect(screen.getByRole('img', { name: projectImage.label })).toHaveAttribute('src', projectImage.displayUrl);
+    expect(screen.queryByRole('button', { name: '更换图像 / Replace image' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open image generation editor' })).not.toBeInTheDocument();
+  });
+
   it('uses the lightweight overview earlier on large canvases while preserving selected node controls', async () => {
     const node = createCanvasModuleNode('large-canvas-overview-node', 'image_generation', { x: 0, y: 0 });
     const view = render(<ReactFlowProvider><FlowZoom zoom={0.55} nodeCount={300}>
@@ -2273,7 +2287,8 @@ describe('ModuleNodeCard', () => {
     openImageGenerationEditor();
     expect(screen.getByLabelText('Image generation prompt workspace').closest('.module-node__summary')).toHaveClass('is-reference-empty');
     expect(screen.getByLabelText('Image generation reference slots')).toHaveTextContent('0 / 20');
-    expect(screen.getByLabelText('Image generation reference slot pending')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Image generation reference slot pending')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '添加参考图片 / Add reference image' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Generate image' })).toHaveTextContent('生成');
   });
 

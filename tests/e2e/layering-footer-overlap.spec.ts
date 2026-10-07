@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { readPsd } from 'ag-psd';
 import { test, expect } from './helpers/e2e-test';
 import { e2eState, openEmptyApp, queueProjectImageImport } from './helpers/app';
-import { makeReferenceImage } from './helpers/fixtures';
+import { fixturePng } from '../../apps/renderer/src/test/rgba-png-fixture';
 
 for (const theme of ['light', 'dark'] as const) {
   for (const width of [1100, 1600]) {
@@ -24,8 +24,15 @@ for (const theme of ['light', 'dark'] as const) {
       const source = page.locator('[data-module-type="image_input"]');
       const assets: string[] = [];
       for (let index = 0; index < 6; index++) {
-        await queueProjectImageImport(page, makeReferenceImage(`Footer source-space pixels ${index}.png`,
-          [90 + index * 10, 140, 110, index < 2 ? 255 : 200], { width: 40, height: 50 }), { preservePixels: true });
+        const pixels = new Uint8Array(40 * 50 * 4);
+        for (let y = 0; y < 50; y++) for (let x = 0; x < 40; x++) {
+          // Every foreground has transparent padding and the same large visible region.
+          if (index >= 2 && (x < 2 || x >= 38 || y < 2 || y >= 48)) continue;
+          pixels.set([90 + index * 10, 140, 110, index < 2 ? 255 : 200], (y * 40 + x) * 4);
+        }
+        await queueProjectImageImport(page, { name: `Footer source-space pixels ${index}.png`,
+          mimeType: 'image/png', width: 40, height: 50,
+          buffer: Buffer.from(fixturePng(pixels, 40, 50).split(',')[1]!, 'base64') }, { preservePixels: true });
         await source.getByRole('button', { name: index === 0 ? /Import image/u : /Replace image/u }).click();
         assets.push((await e2eState(page)).projectImages.at(-1)!.assetId);
       }

@@ -3,6 +3,7 @@ import { applyLayerSelection, type LayeringBox, type LayeringSelection } from '.
 import { composeLayeredRgba, trimTransparentLayer, type LayeredPsdDocument, type LayeredPsdLayer } from './layered-psd';
 import {repairLayerBackground,extractShadowResidual} from './layer-background-repair';
 import { validateIndependentLayerGroup, type IndependentLayer } from './independent-layer-validation';
+import { encodeDraftPsd } from './encode-draft-psd';
 
 export interface SourcePixelLayer {
   id: string; name: string; kind: 'background' | 'transparent'; visible: boolean; opacity: number;
@@ -383,6 +384,24 @@ function backgroundMismatchError(layer: SourcePixelLayer): Error {
 
 /** An editable handoff for a failed provider matte. It never claims the masks compose correctly. */
 export async function buildDraftSourceLayerDocument(input: Parameters<typeof buildSourceLayerDocument>[0]): Promise<LayeredPsdDocument> {
+  const output: LayeredPsdLayer[] = [];
+  let bytes = 0;
+  for await (const layer of iterateDraftSourceLayers(input)) {
+    bytes += layer.rgba.length;
+    if (bytes > 256 * 1024 * 1024) throw new Error('待修整 PSD 的图层像素总量超过 256 MiB');
+    output.push(layer);
+  }
+  return { width: input.width, height: input.height, layers: output };
+}
+
+export async function encodeDraftSourceLayerPsd(input: Parameters<typeof buildSourceLayerDocument>[0],
+  assertCurrent?: () => void): Promise<Uint8Array> {
+  return encodeDraftPsd(input.width, input.height, iterateDraftSourceLayers(input), assertCurrent);
+}
+
+/** Each yielded buffer is owned by this iterator's consumer. A transferred
+ * layer cannot detach the original pixels or a loader's cached result. */
+export async function* iterateDraftSourceLayers(input: Parameters<typeof buildSourceLayerDocument>[0]): AsyncGenerator<LayeredPsdLayer> {
   const { width, height, source, layers, selection } = input;
   for (const layer of layers) if (layer.representationError) throw new Error(layer.representationError);
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 8192 || height > 8192
@@ -393,17 +412,15 @@ export async function buildDraftSourceLayerDocument(input: Parameters<typeof bui
   const existingIds = new Set(layers.map(layer => layer.id));
   let originalId = 'source-original';
   while (existingIds.has(originalId)) originalId += '-copy';
-  const background = await layers[0]!.load();
-  if (background.length !== source.length) throw new Error('补全背景尺寸与原图不一致');
-  const output: LayeredPsdLayer[] = [
-    { id: originalId, name: '原图对照（返图待修整）', kind: 'background',
-      x: 0, y: 0, width, height, visible: true, opacity: 1, rgba: source.slice() },
-    { id: layers[0]!.id, name: `${layers[0]!.name}（补全背景候选）`, kind: 'alternate-background',
+  yield { id: originalId, name: '原图对照（返图待修整）', kind: 'background',
+    x: 0, y: 0, width, height, visible: true, opacity: 1, rgba: source.slice() };
+  {
+    const background = await layers[0]!.load();
+    if (background.length !== source.length) throw new Error('补全背景尺寸与原图不一致');
+    yield { id: layers[0]!.id, name: `${layers[0]!.name}（补全背景候选）`, kind: 'alternate-background',
       x: 0, y: 0, width, height, visible: false, opacity: 1,
-      rgba: applyLayerSelection(background.slice(), width, height, selection, source) },
-  ];
-  let bytes = source.length + background.length;
-  if (bytes > 256 * 1024 * 1024) throw new Error('待修整 PSD 的图层像素总量超过 256 MiB');
+      rgba: applyLayerSelection(background.slice(), width, height, selection, source) };
+  }
   for (const layer of layers.slice(1)) {
     if (!layer.bounds) throw new Error(`图层“${layer.name}”缺少原图位置`);
     const mask = await layer.load();
@@ -420,9 +437,6 @@ export async function buildDraftSourceLayerDocument(input: Parameters<typeof bui
     rgba = applyLayerSelection(rgba, width, height, selection);
     const trimmed = trimTransparentLayer({ ...layer, id: layer.id, name: `${layer.name}（待修整）`, kind: 'transparent',
       x: 0, y: 0, width, height, visible: false, rgba });
-    bytes += trimmed.rgba.length;
-    if (bytes > 256 * 1024 * 1024) throw new Error('待修整 PSD 的图层像素总量超过 256 MiB');
-    output.push(trimmed);
+    yield trimmed;
   }
-  return { width, height, layers: output };
 }

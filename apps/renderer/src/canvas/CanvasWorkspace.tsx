@@ -40,6 +40,7 @@ import { McpWorkflowPlanPreview } from '../agent/McpWorkflowPlanPreview';
 import { SkillChatWorkbench, type ReverseTimelineEntry, type SkillCanvasActionRequest, type SkillWorkflowDraftRequest } from '../agent/SkillChatWorkbench';
 import { FloatingAgentWindow } from '../agent/FloatingAgentWindow';
 import { ProjectMemoryTimeline } from '../history/ProjectMemoryTimeline';
+import { AgentMemorySummary } from '../history/AgentMemorySummary';
 import { JobStrip } from '../jobs/JobStrip';
 import { filterModelJobsForProject, filterModelJobsForTaskStrip } from '../jobs/project-model-jobs';
 import { SettingsDrawer } from '../settings/SettingsDrawer';
@@ -276,6 +277,40 @@ export function resolveVisibleImageLayeringConnection(connection: Connection, no
   return targetHandle === connection.targetHandle ? connection : { ...connection, targetHandle };
 }
 
+function resolveVisibleCanvasPorts(
+  sourceNode: CanvasModuleNode,
+  visibleSourcePortId: string,
+  targetNode: CanvasModuleNode,
+  visibleTargetPortId: string,
+): { sourceHandle: string; targetHandle: string } {
+  const targetHandle = resolveVisibleImageLayeringTargetPort(sourceNode, visibleSourcePortId, targetNode, visibleTargetPortId);
+  const sourceHandle = resolveVisibleImageGenerationSourcePort(sourceNode, visibleSourcePortId, targetNode, targetHandle);
+  const original = { sourceHandle, targetHandle };
+  if (canConnectCanvasPorts(sourceNode, sourceHandle, targetNode, targetHandle).ok) return original;
+  const sourcePorts = sourceNode.data.moduleType === 'reverse_agent' && visibleSourcePortId === 'analysis'
+    ? ['analysis', 'timeline'] : [sourceHandle];
+  const primaryInput = targetNode.data.moduleType === 'image_generation' || targetNode.data.moduleType === 'reverse_agent'
+    ? 'references' : targetNode.data.moduleType === 'video_generation' ? 'media' : undefined;
+  const targetPorts = primaryInput === visibleTargetPortId
+    ? getCanvasModuleDefinition(targetNode.data.moduleType).ports.filter(port => port.direction === 'input').map(port => port.id)
+    : [targetHandle];
+  const compatible = sourcePorts.flatMap(sourcePort => targetPorts.filter(targetPort => (
+    canConnectCanvasPorts(sourceNode, sourcePort, targetNode, targetPort).ok
+  )).map(targetPort => ({ sourceHandle: sourcePort, targetHandle: targetPort })));
+  return compatible.length === 1 ? compatible[0]! : original;
+}
+
+/** Resolve only compact UI circles; explicit domain/MCP port ids stay typed. */
+export function resolveVisibleCanvasConnection(connection: Connection, nodes: readonly Node[]): Connection {
+  if (!connection.sourceHandle || !connection.targetHandle) return connection;
+  const source = nodes.find(node => node.id === connection.source);
+  const target = nodes.find(node => node.id === connection.target);
+  if (!source || !target || source.type !== 'module' || target.type !== 'module') return connection;
+  const ports = resolveVisibleCanvasPorts(toCanvasModuleNode(source), connection.sourceHandle, toCanvasModuleNode(target), connection.targetHandle);
+  return ports.sourceHandle === connection.sourceHandle && ports.targetHandle === connection.targetHandle
+    ? connection : { ...connection, ...ports };
+}
+
 export function createCanvasConnectionValidator(
   nodes: readonly Node[],
   edges: readonly Edge[],
@@ -310,8 +345,7 @@ export function createCanvasConnectionValidator(
   if (isGhostFlowNode(source) || isGhostFlowNode(target)) return false;
   const sourceNode = toCanvasModuleNode(source);
   const targetNode = toCanvasModuleNode(target);
-  const targetPortId = resolveVisibleImageLayeringTargetPort(sourceNode, visibleSourcePortId, targetNode, visibleTargetPortId);
-  const sourcePortId = resolveVisibleImageGenerationSourcePort(sourceNode, visibleSourcePortId, targetNode, targetPortId);
+  const { targetHandle: targetPortId, sourceHandle: sourcePortId } = resolveVisibleCanvasPorts(sourceNode, visibleSourcePortId, targetNode, visibleTargetPortId);
   if (exactEdges.has(canvasEdgeKey(sourceId, sourcePortId, targetId, targetPortId))) return false;
   if (wouldCreateCanvasCycleFromAdjacency(adjacency, sourceId, targetId)) return false;
 
@@ -798,18 +832,6 @@ export function CanvasWorkspace() {
   const [providerProfiles, setProviderProfiles] = useState<ProviderBridgeProfile[]>([]);
   const [agentProviderProfiles, setAgentProviderProfiles] = useState<ProviderBridgeProfile[]>([]);
   const [codexCliProfiles, setCodexCliProfiles] = useState<CodexCliProfile[]>([]);
-  useEffect(() => {
-    const onCanvasImage = (event: Event) => {
-      const assetId = (event as CustomEvent<{ assetId?: unknown }>).detail?.assetId;
-      if (typeof assetId !== 'string' || assetId.length === 0) return;
-      const rightmost = project.nodes.reduce((max, node) => Math.max(max, node.position.x), 0);
-      void addProjectImageInput(assetId, { x: rightmost + 360, y: 120 });
-    };
-    window.addEventListener('novus:generated-image-to-canvas', onCanvasImage);
-    return () => {
-      window.removeEventListener('novus:generated-image-to-canvas', onCanvasImage);
-    };
-  }, [addProjectImageInput, project.nodes]);
   const [selectedPlacementObjectId, setSelectedPlacementObjectId] = useState('product-main');
   const [referenceUploadError, setReferenceUploadError] = useState<string | null>(null);
   const canvasStageRef = useRef<HTMLElement | null>(null);
@@ -1109,6 +1131,55 @@ export function CanvasWorkspace() {
   });
   const draftNodes = canvasDraft.nodes;
   const changeDraftNodes = canvasDraft.onNodesChange;
+  const [canvasImageTransferNotice, setCanvasImageTransferNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+  const [pendingCanvasImageFocus, setPendingCanvasImageFocus] = useState<{ nodeId: string; projectId: string; resetKey: number; sessionId: string | null } | null>(null);
+  const failedCanvasImageTransferRef = useRef<{
+    assetId: string; nodeId: string; projectId: string; resetKey: number; sessionId: string | null; failedRevision: number;
+  } | null>(null);
+  const canvasImageTransferSequenceRef = useRef(0);
+  const canvasImageTransferInFlightRef = useRef(false);
+  const canvasImageTransferMountedRef = useRef(true);
+  const canvasImageFocusFrameRef = useRef<number | null>(null);
+  useEffect(() => {
+    canvasImageTransferMountedRef.current = true;
+    return () => {
+      canvasImageTransferMountedRef.current = false;
+      canvasImageTransferSequenceRef.current += 1;
+      if (canvasImageFocusFrameRef.current !== null) window.cancelAnimationFrame(canvasImageFocusFrameRef.current);
+      canvasImageFocusFrameRef.current = null;
+    };
+  }, []);
+  useEffect(() => {
+    canvasImageTransferSequenceRef.current += 1;
+    canvasImageTransferInFlightRef.current = false;
+    failedCanvasImageTransferRef.current = null;
+    if (canvasImageFocusFrameRef.current !== null) window.cancelAnimationFrame(canvasImageFocusFrameRef.current);
+    canvasImageFocusFrameRef.current = null;
+    setCanvasImageTransferNotice(null);
+    setPendingCanvasImageFocus(null);
+  }, [project.id, canvasDraftResetKey, activeProjectSessionId]);
+  useEffect(() => {
+    if (pendingCanvasImageFocus === null) return;
+    const { nodeId, projectId, resetKey, sessionId } = pendingCanvasImageFocus;
+    if (project.id !== projectId || canvasDraftResetKey !== resetKey || getActiveProjectSessionId() !== sessionId) {
+      setPendingCanvasImageFocus(null);
+      return;
+    }
+    const node = draftNodes.find(candidate => candidate.id === nodeId);
+    if (!node) return;
+    changeDraftNodes(draftNodes.map(candidate => ({ type: 'select' as const, id: candidate.id, selected: candidate.id === nodeId })));
+    canvasImageFocusFrameRef.current = window.requestAnimationFrame(() => {
+      canvasImageFocusFrameRef.current = null;
+      const state = useAppStore.getState();
+      if (!canvasImageTransferMountedRef.current || state.project.id !== projectId || state.canvasDraftResetKey !== resetKey
+        || getActiveProjectSessionId() !== sessionId) return;
+      const size = getModulePlacementSize('image_input');
+      flowInstanceRef.current?.setCenter(node.position.x + (node.measured?.width ?? size.width) / 2, node.position.y + (node.measured?.height ?? size.height) / 2, {
+        zoom: flowInstanceRef.current.getViewport().zoom, duration: 240,
+      });
+    });
+    setPendingCanvasImageFocus(null);
+  }, [activeProjectSessionId, canvasDraftResetKey, changeDraftNodes, draftNodes, pendingCanvasImageFocus, project.id]);
   const [pendingAgentWorkflowFocus, setPendingAgentWorkflowFocus] = useState<readonly string[] | null>(null);
   useEffect(() => {
     if (pendingAgentWorkflowFocus === null
@@ -1385,6 +1456,90 @@ export function CanvasWorkspace() {
         } : {}),
       })), moduleType);
   }, [getModulePlacementBounds, project.nodes]);
+
+  useEffect(() => {
+    const onCanvasImage = (event: Event) => {
+      const assetId = (event as CustomEvent<{ assetId?: unknown }>).detail?.assetId;
+      if (typeof assetId !== 'string' || assetId.length === 0 || canvasImageTransferInFlightRef.current) return;
+      const sequence = ++canvasImageTransferSequenceRef.current;
+      const before = useAppStore.getState();
+      const projectId = before.project.id, resetKey = before.canvasDraftResetKey;
+      const sessionId = getActiveProjectSessionId();
+      const isCurrent = () => canvasImageTransferMountedRef.current && sequence === canvasImageTransferSequenceRef.current
+        && useAppStore.getState().project.id === projectId && useAppStore.getState().canvasDraftResetKey === resetKey
+        && getActiveProjectSessionId() === sessionId;
+      const owned = (before.project.assets ?? []).some(asset => asset.assetId === assetId && asset.mediaType.startsWith('image/'));
+      if (!owned) {
+        setCanvasImageTransferNotice({ kind: 'error', message: '图片已不可用或不属于当前项目，请重新选择。' });
+        return;
+      }
+      const failed = failedCanvasImageTransferRef.current;
+      const hasFailedNode = (state: ReturnType<typeof useAppStore.getState>) => failed !== null
+        && state.project.nodes.some(node => node.id === failed.nodeId && node.type === 'module'
+          && node.data.moduleType === 'image_input' && node.data.config.assetId === failed.assetId);
+      const retained = failed !== null && failed.assetId === assetId && failed.projectId === projectId
+        && failed.resetKey === resetKey && failed.sessionId === sessionId && hasFailedNode(before) ? failed : null;
+      if (failed !== null && (failed.projectId !== projectId || failed.resetKey !== resetKey
+        || failed.sessionId !== sessionId || !hasFailedNode(before))) failedCanvasImageTransferRef.current = null;
+      const position = retained === null ? getSafeViewportCenter('image_input') : null;
+      if (retained === null && !position) {
+        setCanvasImageTransferNotice({ kind: 'error', message: '当前视口没有足够空间添加图片，请缩小画布后重试。' });
+        return;
+      }
+      const previousIds = new Set(before.project.nodes.map(node => node.id));
+      canvasImageTransferInFlightRef.current = true;
+      setCanvasImageTransferNotice({ kind: 'success', message: '正在添加图片…' });
+      void (async () => {
+        try {
+          if (retained !== null) {
+            const acknowledged = (state: ReturnType<typeof useAppStore.getState>) => hasFailedNode(state)
+              && state.desktopRevision > retained.failedRevision && !state.canRetryProjectCommit
+              && state.projectCommitConflictCode === null && !state.recoveryRequired && state.saveErrorCode === null
+              && (state.saveStatus === 'saved' || (state.projectLifecycle === 'untitled' && state.saveStatus === 'pending'));
+            if (!acknowledged(before) && before.desktopRevision === retained.failedRevision && before.canRetryProjectCommit
+              && before.projectCommitConflictCode === null && !before.recoveryRequired && before.saveStatus !== 'read_only') {
+              await retryFailedProjectCommit();
+            }
+            if (!isCurrent()) return;
+            if (!acknowledged(useAppStore.getState())) {
+              setCanvasImageTransferNotice({ kind: 'error', message: '图片尚未保存到画布，请处理项目保存提示后重试。' });
+              return;
+            }
+            failedCanvasImageTransferRef.current = null;
+            setPendingCanvasImageFocus({ nodeId: retained.nodeId, projectId, resetKey, sessionId });
+            setCanvasImageTransferNotice({ kind: 'success', message: '图片已添加到画布' });
+            return;
+          }
+          const saved = await addProjectImageInput(assetId, position!);
+          if (!isCurrent()) return;
+          const after = useAppStore.getState();
+          const addedNodes = after.project.nodes.filter(node => !previousIds.has(node.id)
+            && node.type === 'module' && node.data.moduleType === 'image_input' && node.data.config.assetId === assetId
+            && node.position.x === position!.x && node.position.y === position!.y);
+          const added = addedNodes.length === 1 ? addedNodes[0] : undefined;
+          if (!saved) {
+            if (added !== undefined) failedCanvasImageTransferRef.current = {
+              assetId, nodeId: added.id, projectId, resetKey, sessionId, failedRevision: after.desktopRevision,
+            };
+            setCanvasImageTransferNotice({ kind: 'error', message: '图片尚未保存到画布，请处理项目保存提示后重试。' });
+            return;
+          }
+          if (!added) {
+            setCanvasImageTransferNotice({ kind: 'error', message: '图片节点未找到，请重试。' });
+            return;
+          }
+          setPendingCanvasImageFocus({ nodeId: added.id, projectId, resetKey, sessionId });
+          setCanvasImageTransferNotice({ kind: 'success', message: '图片已添加到画布' });
+        } catch {
+          if (isCurrent()) setCanvasImageTransferNotice({ kind: 'error', message: '图片未添加到画布，请重试。' });
+        } finally {
+          if (isCurrent()) canvasImageTransferInFlightRef.current = false;
+        }
+      })();
+    };
+    window.addEventListener('novus:generated-image-to-canvas', onCanvasImage);
+    return () => window.removeEventListener('novus:generated-image-to-canvas', onCanvasImage);
+  }, [addProjectImageInput, getSafeViewportCenter, retryFailedProjectCommit]);
 
   const addModuleWithDurableReload = useCallback(async (
     moduleType: CanvasModuleType,
@@ -1843,6 +1998,8 @@ export function CanvasWorkspace() {
   useEffect(() => {
     const handleCanvasKeyboardShortcut = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
+      // A modal owns its keyboard before canvas capture can close its parent.
+      if (event.target instanceof Element && event.target.closest('[role="dialog"][aria-modal="true"]')) return;
       const standardUndo = (event.ctrlKey || event.metaKey) && !event.altKey;
       const alternateUndo = event.altKey && !event.ctrlKey && !event.metaKey;
       if ((standardUndo || alternateUndo) && !event.shiftKey && event.key.toLowerCase() === 'z') {
@@ -2341,7 +2498,7 @@ export function CanvasWorkspace() {
             markInteraction();
             void canvasDraft.onNodeDragStop(event, node);
           }}
-          onConnect={(connection) => { void connectModulePorts(resolveVisibleImageLayeringConnection(resolveVisibleImageGenerationConnection(connection, flowNodes), flowNodes)); }}
+          onConnect={(connection) => { void connectModulePorts(resolveVisibleCanvasConnection(connection, flowNodes)); }}
           onConnectStart={handleConnectStart}
           onConnectEnd={handleConnectEnd}
           // On very large graphs React Flow probes many candidate handles on
@@ -2407,6 +2564,12 @@ export function CanvasWorkspace() {
         {projectImageError?.startsWith('CLIPBOARD_') && (
           <section className="canvas-media-feedback" role="alert" aria-label="画布媒体导入提示">
             <span>{mediaImportErrorMessage(projectImageError)}</span>
+          </section>
+        )}
+        {canvasImageTransferNotice !== null && (
+          <section className="canvas-media-feedback" role={canvasImageTransferNotice.kind === 'success' ? 'status' : 'alert'} aria-label="图片发送提示">
+            <span>{canvasImageTransferNotice.message}</span>
+            <button type="button" onClick={() => setCanvasImageTransferNotice(null)} aria-label="关闭图片发送提示">关闭</button>
           </section>
         )}
         {modulePlacementNotice !== null && (
@@ -2537,6 +2700,17 @@ export function CanvasWorkspace() {
               codexProfiles={codexCliProfiles}
               knowledgeBases={knowledgeBases}
               projectMemoryIds={agentProjectMemoryIds}
+              projectMemorySummary={project.projectMemory.length > 0 ? <AgentMemorySummary entries={project.projectMemory} /> : undefined}
+              projectMemoryPanel={project.projectMemory.length > 0 ? <ProjectMemoryTimeline
+                entries={project.projectMemory}
+                promotionCandidates={project.skillPromotionCandidates}
+                availableSnapshotIds={availableSnapshotIds}
+                knowledgeBases={knowledgeBases}
+                onRestore={restoreProjectSnapshot}
+                onPromote={promoteProjectMemory}
+                onPrepareSkillCandidateReview={prepareSkillCandidateReview}
+                onReviewSkillCandidate={reviewSkillCandidate}
+              /> : undefined}
               reverseTimeline={reverseTimeline}
               referenceImages={agentReferenceImages}
               referenceVideos={agentReferenceVideos}
@@ -2556,21 +2730,6 @@ export function CanvasWorkspace() {
             <section className="agent-thread__task" aria-label="Agent 任务状态">
               <PlanPreview plan={agentPlan} onConfirm={confirmAgentPlan} onCancel={cancelAgentPlan} onRetryJobs={() => { void retryAgentPlanJobs(); }} />
             </section>
-          )}
-          {project.projectMemory.length > 0 && (
-            <details className="agent-thread__memory">
-              <summary>项目记忆</summary>
-              <ProjectMemoryTimeline
-                entries={project.projectMemory}
-                promotionCandidates={project.skillPromotionCandidates}
-                availableSnapshotIds={availableSnapshotIds}
-                knowledgeBases={knowledgeBases}
-                onRestore={restoreProjectSnapshot}
-                onPromote={promoteProjectMemory}
-                onPrepareSkillCandidateReview={prepareSkillCandidateReview}
-                onReviewSkillCandidate={reviewSkillCandidate}
-              />
-            </details>
           )}
         </div>
       </FloatingAgentWindow>

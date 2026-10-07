@@ -1,14 +1,30 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { installManualAcceptanceBridge } from './manual-acceptance-bridge';
 import { useAppStore } from '../app/app-store';
 
 describe('manual acceptance bridge', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   afterAll(() => {
     delete window.novusDesktop;
     delete window.__NOVUS_MANUAL_ACCEPTANCE__;
   });
 
   it('keeps manually selected image and video bytes as real browser previews', async () => {
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAYAAACddGYaAAAAIklEQVR4nGNQDW5USJl2wkE1uPE/g2pwI+P/evsG1eBGBgB6mglE+XrOoAAAAABJRU5ErkJggg==';
+    const imageUrl = `data:image/png;base64,${png}`;
+    const decode = vi.fn(async function (this: { src: string }) {
+      expect(this.src).toBe(imageUrl);
+    });
+    // jsdom lacks image decoding; the browser gate covers the actual decoder.
+    vi.stubGlobal('Image', class {
+      naturalWidth = 3;
+      naturalHeight = 2;
+      src = '';
+      decode = decode;
+    });
     window.__NOVUS_MANUAL_ACCEPTANCE__ = true;
     installManualAcceptanceBridge();
     await window.__NOVUS_E2E__!.resetEmpty();
@@ -19,8 +35,16 @@ describe('manual acceptance bridge', () => {
 
     expect(imageNode).toBeDefined();
     expect(videoNode).toBeDefined();
-    await useAppStore.getState().importImageForModule(imageNode!.id, new File(['real-image'], 'real-image.png', { type: 'image/png' }));
-    await useAppStore.getState().importVideoForModule(videoNode!.id, new File(['real-video'], 'real-video.mp4', { type: 'video/mp4' }));
+    const imageBytes = Uint8Array.from(atob(png), (character) => character.charCodeAt(0));
+    expect(await useAppStore.getState().importImageForModule(imageNode!.id, new File([imageBytes], 'real-image.png', { type: 'image/png' }))).toBe(true);
+    expect(decode).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().projectImages[0]).toMatchObject({
+      displayUrl: imageUrl,
+      byteSize: imageBytes.length,
+      width: 3,
+      height: 2,
+    });
+    expect(await useAppStore.getState().importVideoForModule(videoNode!.id, new File(['real-video'], 'real-video.mp4', { type: 'video/mp4' }))).toBe(true);
 
     expect(useAppStore.getState().projectImages[0]?.displayUrl).toMatch(/^data:image\/png;base64,/u);
     expect(useAppStore.getState().projectVideos[0]?.displayUrl)

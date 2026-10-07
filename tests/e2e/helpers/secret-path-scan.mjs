@@ -153,7 +153,8 @@ const allowedFindings = [
     "file": "apps/renderer/src/agent/skill-chat-session-store.test.ts",
     "name": "private absolute path",
     "evidence": [
-      "C:\\\\private\\\\image.png"
+      "C:\\\\private\\\\image.png",
+      "C:\\\\private\\\\source.png"
     ]
   },
   {
@@ -174,8 +175,16 @@ const allowedFindings = [
     "file": "apps/renderer/src/app/mcp-layering-operations.test.ts",
     "name": "private absolute path",
     "evidence": [
-      "C:\\\\private\\\\layers.psd"
+      "C:\\\\private\\\\layers.psd",
+      "C:\\\\private\\\\token.json",
+      "C:\\\\private\\\\token.json Bearer private-token-value"
     ]
+  },
+  {
+    // Exact mdast-util-gfm-autolink-literal character class in this bundle.
+    file: 'apps/renderer/dist/assets/index-Ct-Bkuye.js',
+    name: 'private absolute path',
+    evidence: [String.raw`\\-.\\w]`],
   },
   {
     file: "tests/e2e/helpers/secret-path-scan.mjs",

@@ -441,7 +441,9 @@ function planWorkflow(
     try {
       resolvedRoute = await source.resolvePaidJobRoute?.(node);
     } catch (cause) {
-      return error('MODEL_ROUTE_UNAVAILABLE', stableMessage(cause));
+      const code = cause instanceof Error && 'code' in cause && cause.code === 'REFERENCE_MENTION_INVALID'
+        ? 'REFERENCE_MENTION_INVALID' : 'MODEL_ROUTE_UNAVAILABLE';
+      return error(code, stableMessage(cause));
     }
     const currentProject = source.getProject();
     if (currentProject.id !== expectedProjectId

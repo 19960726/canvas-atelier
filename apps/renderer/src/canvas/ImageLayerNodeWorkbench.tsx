@@ -64,8 +64,7 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
   }, [asset, onRefreshAsset, resultAssetId]);
 
   useEffect(() => {
-    const oldResolutionFailure = qualityStatus === 'failed' && config.qualityReason === 'dimensions' && config.qualityValidationVersion !== 2;
-    if (!validatePixels || !asset || resultAssetId !== asset.assetId || (qualityStatus !== 'pending' && !oldResolutionFailure) || validatingAsset.current === asset.assetId) return;
+    if (!validatePixels || !asset || resultAssetId !== asset.assetId || !needsLayerPixelValidation(config) || validatingAsset.current === asset.assetId) return;
     validatingAsset.current = asset.assetId;
     let cancelled = false;
     setValidationSaveFailed(false);
@@ -80,7 +79,8 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
       cancelled = true;
       if (validatingAsset.current === asset.assetId) validatingAsset.current = null;
     };
-  }, [validatePixels, asset, sourceAsset, config.canvasHeight, config.canvasWidth, config.pixelMode, config.layerSelection, config.qualityReason, config.qualityValidationVersion, layerKind, qualityStatus, resultAssetId, retryValidation]);
+  }, [validatePixels, asset, sourceAsset, config.canvasHeight, config.canvasWidth, config.pixelMode, config.layerSelection, config.qualityReason,
+    config.qualityValidationVersion, config.formatQualityStatus, config.qualityFormatCheckedAssetId, config.status, layerKind, qualityStatus, resultAssetId, retryValidation]);
 
   const extractionError = (!sourceDocumentInput || backgroundPreview.error) && config.pixelMode === 'source' && extractSourceColors
     && extractionFailure?.key === extractionKey ? extractionFailure.error : null;
@@ -165,11 +165,12 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
 }
 
 export function needsLayerPixelValidation(config: Readonly<Record<string, unknown>>): boolean {
-  // Semantic review may remain pending after the current returned bytes have
-  // passed format checks. That candidate must release the serial pixel queue.
-  if (typeof config.resultAssetId === 'string' && config.formatQualityStatus === 'passed'
+  // Current format results release the serial queue, including explicit failures.
+  // Semantic review remains separate from this asset-bound pixel check.
+  if (typeof config.resultAssetId === 'string' && (config.formatQualityStatus === 'passed' || config.formatQualityStatus === 'failed')
     && config.qualityFormatCheckedAssetId === config.resultAssetId && config.qualityValidationVersion === 2) return false;
   return typeof config.resultAssetId === 'string' && (config.qualityStatus === 'pending' || config.qualityStatus === undefined
+    || (config.qualityStatus === 'passed' && !['queued', 'submitting', 'running'].includes(String(config.status)))
     || (config.qualityStatus === 'failed' && config.qualityReason === 'dimensions' && config.qualityValidationVersion !== 2));
 }
 

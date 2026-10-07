@@ -908,8 +908,13 @@ function createResultMaterialization(
       for (const sibling of project?.nodes ?? []) {
         if (sibling.type !== 'module' || sibling.id === layerNode.id || sibling.data.moduleType !== 'image_layer'
           || sibling.data.config.groupId !== job.layeringGroupId) continue;
+        const siblingConfig = invalidateLayeringProof(sibling.data.config);
+        // Review invalidation must not stop an already bound sibling task.
+        if (['queued', 'submitting', 'running'].includes(String(sibling.data.config.status))) {
+          siblingConfig.status = sibling.data.config.status;
+        }
         operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: {
-          ...sibling, data: { ...sibling.data, config: invalidateLayeringProof(sibling.data.config) },
+          ...sibling, data: { ...sibling.data, config: siblingConfig },
         } } });
       }
     }

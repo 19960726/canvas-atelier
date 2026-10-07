@@ -24,10 +24,13 @@ import { MODULE_DRAG_MIME } from './ModuleLibrary';
 import { CONNECTED_MEDIA_DRAG_MIME, encodeConnectedMediaDragPayload } from './connected-media-drag';
 import * as mcpSelection from '../app/mcp-canvas-selection';
 import * as canvasProviderProfiles from '../app/provider-profiles';
+import { resolveVisibleCanvasConnection } from './CanvasWorkspace';
+import { canConnectCanvasPorts } from '@agent-canvas/domain';
 import { SourceLayerRefinement } from './SourceLayerRefinement';
 
 const appStyles = readFileSync('apps/renderer/src/styles/app.css', 'utf8');
 const canvasHybridStyles = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
+const addProjectImageInput = useAppStore.getState().addProjectImageInput;
 
 beforeEach(() => {
   delete window.novusDesktop;
@@ -40,6 +43,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  useAppStore.setState({ addProjectImageInput });
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   Reflect.deleteProperty(URL, 'createObjectURL');
@@ -47,6 +51,297 @@ afterEach(() => {
 });
 
 describe('CanvasWorkspace', () => {
+  it('keeps a generated image sent to canvas within the current viewport', async () => {
+    resetAppStoreForTests({ project: 'empty' });
+    const distant = createCanvasModuleNode('transfer-distant', 'image_input', { x: 8000, y: 4000 });
+    const asset = { assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png' as const, height: 100, label: 'Generated image', mediaType: 'image/png' as const, origin: 'generated' as const, sha256: 'a'.repeat(64), width: 100 };
+    useAppStore.setState({ project: { ...useAppStore.getState().project, assets: [asset], nodes: [distant], edges: [] } });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800, x: 0, y: 0, toJSON: () => ({}) } as DOMRect);
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(2));
+    const added = useAppStore.getState().project.nodes.find(node => node.id !== distant.id)!;
+    expect(added.position.x + 292).toBeLessThanOrEqual(1000);
+    expect(added.position.y + 326).toBeLessThanOrEqual(800);
+    await waitFor(() => expect(document.querySelector(`.react-flow__node[data-id="${added.id}"]`)).toHaveClass('selected'));
+    expect(screen.getByRole('status', { name: '图片发送提示' })).toHaveTextContent('已添加到画布');
+    expect(useAppStore.getState().project.nodes.find(node => node.id === distant.id)).toEqual(distant);
+  });
+
+  it('reports an unavailable image sent to canvas without adding a node', async () => {
+    resetAppStoreForTests({ project: 'empty' });
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: 'bbbbbbbbbbbbbbbb' } }));
+    expect(await screen.findByRole('alert', { name: '图片发送提示' })).toHaveTextContent('不属于当前项目');
+    expect(useAppStore.getState().project.nodes).toHaveLength(0);
+  });
+
+  it('reports an unacknowledged image save without claiming the optimistic node is absent', async () => {
+    const asset = prepareCanvasImageTransfer();
+    const addImage = vi.fn(async (assetId: string, position: { x: number; y: number }) => {
+      const node = createCanvasModuleNode('optimistic-transfer', 'image_input', position);
+      node.data.config.assetId = assetId;
+      useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [node] } });
+      return false;
+    });
+    useAppStore.setState({ addProjectImageInput: addImage });
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(await screen.findByRole('alert', { name: '图片发送提示' })).toHaveTextContent('图片尚未保存到画布');
+    expect(useAppStore.getState().project.nodes).toHaveLength(1);
+    expect(document.querySelector('.react-flow__node.selected')).toBeNull();
+  });
+
+  it('reports a thrown image transfer and permits an explicit retry', async () => {
+    const asset = prepareCanvasImageTransfer();
+    const originalAdd = useAppStore.getState().addProjectImageInput;
+    const addImage = vi.fn().mockRejectedValueOnce(new Error('Save unavailable')).mockImplementation(originalAdd);
+    useAppStore.setState({ addProjectImageInput: addImage });
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(await screen.findByRole('alert', { name: '图片发送提示' })).toHaveTextContent('请重试');
+    expect(useAppStore.getState().project.nodes).toHaveLength(0);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '图片发送提示' })).toHaveTextContent('已添加到画布'));
+    expect(addImage).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().project.nodes).toHaveLength(1);
+  });
+
+  it('retries the exact retained image transaction when sending again before its save acknowledgement', async () => {
+    const asset = prepareCanvasImageTransfer();
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => commit.mock.calls.length === 1
+      ? { ok: false, code: 'DISK_FULL', project: request.previousProject, revision: request.baseRevision }
+      : { ok: true, project: request.nextProject, revision: request.baseRevision + 1 });
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(await screen.findByRole('alert', { name: '图片发送提示' })).toHaveTextContent('图片尚未保存到画布');
+    const retained = useAppStore.getState().project.nodes[0]!;
+    expect(useAppStore.getState().canRetryProjectCommit).toBe(true);
+
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '图片发送提示' })).toHaveTextContent('已添加到画布'));
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(commit.mock.calls[1]![0].transaction).toEqual(commit.mock.calls[0]![0].transaction);
+    expect(useAppStore.getState().project.nodes).toEqual([retained]);
+    await waitFor(() => expect(document.querySelector(`.react-flow__node[data-id="${retained.id}"]`)).toHaveClass('selected'));
+  });
+
+  it('focuses the saved retained image after an external save retry without duplicating its send', async () => {
+    const asset = prepareCanvasImageTransfer();
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => commit.mock.calls.length === 1
+      ? { ok: false, code: 'DISK_FULL', project: request.previousProject, revision: request.baseRevision }
+      : { ok: true, project: request.nextProject, revision: request.baseRevision + 1 });
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(await screen.findByRole('alert', { name: '图片发送提示' })).toHaveTextContent('图片尚未保存到画布');
+    const retained = useAppStore.getState().project.nodes[0]!;
+    await act(async () => expect(await useAppStore.getState().retryFailedProjectCommit()).toBe(true));
+
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '图片发送提示' })).toHaveTextContent('已添加到画布'));
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().project.nodes).toEqual([retained]);
+    await waitFor(() => expect(document.querySelector(`.react-flow__node[data-id="${retained.id}"]`)).toHaveClass('selected'));
+
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(2));
+    expect(commit).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps a retained image unselected while its explicit retry still awaits a save acknowledgement', async () => {
+    const asset = prepareCanvasImageTransfer();
+    let acknowledge!: (result: ProjectCommitResult) => void;
+    const commit = vi.fn((request: ProjectCommitRequest): Promise<ProjectCommitResult> => commit.mock.calls.length === 1
+      ? Promise.resolve({ ok: false, code: 'DISK_FULL', project: request.previousProject, revision: request.baseRevision })
+      : new Promise(resolve => { acknowledge = resolve; }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(await screen.findByRole('alert', { name: '图片发送提示' })).toHaveTextContent('图片尚未保存到画布');
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('status', { name: '图片发送提示' })).toHaveTextContent('正在添加');
+    expect(document.querySelector('.react-flow__node.selected')).toBeNull();
+    const request = commit.mock.calls[1]![0];
+    await act(async () => acknowledge({ ok: true, project: request.nextProject, revision: request.baseRevision + 1 }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '图片发送提示' })).toHaveTextContent('已添加到画布'));
+    expect(useAppStore.getState().project.nodes).toHaveLength(1);
+  });
+
+  it('preserves the retained image transaction across another failed retry', async () => {
+    const asset = prepareCanvasImageTransfer();
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => commit.mock.calls.length < 3
+      ? { ok: false, code: 'DISK_FULL', project: request.previousProject, revision: request.baseRevision }
+      : { ok: true, project: request.nextProject, revision: request.baseRevision + 1 });
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(await screen.findByRole('alert', { name: '图片发送提示' })).toHaveTextContent('图片尚未保存到画布');
+    const retained = useAppStore.getState().project.nodes[0]!;
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('alert', { name: '图片发送提示' })).toHaveTextContent('图片尚未保存到画布');
+    expect(useAppStore.getState().project.nodes).toEqual([retained]);
+    expect(document.querySelector('.react-flow__node.selected')).toBeNull();
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '图片发送提示' })).toHaveTextContent('已添加到画布'));
+    expect(commit).toHaveBeenCalledTimes(3);
+    for (const [request] of commit.mock.calls) expect(request.transaction).toEqual(commit.mock.calls[0]![0].transaction);
+    expect(useAppStore.getState().project.nodes).toEqual([retained]);
+  });
+
+  it.each(['project', 'reset', 'session'] as const)('clears the retained image binding after the %s changes', async change => {
+    const asset = prepareCanvasImageTransfer();
+    let sessionId = 'transfer-session-a';
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => commit.mock.calls.length === 1
+      ? { ok: false, code: 'DISK_FULL', project: request.previousProject, revision: request.baseRevision }
+      : { ok: true, project: request.nextProject, revision: request.baseRevision + 1 });
+    replaceProjectPersistenceClientForTests({ ...createImmediateBrowserClient({ commit }), getSessionId: () => sessionId });
+    useAppStore.setState({ persistenceMode: 'desktop' });
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(await screen.findByRole('alert', { name: '图片发送提示' })).toHaveTextContent('图片尚未保存到画布');
+    await act(async () => expect(await useAppStore.getState().retryFailedProjectCommit()).toBe(true));
+    act(() => {
+      if (change === 'project') useAppStore.setState({ project: { ...useAppStore.getState().project, id: 'replacement-transfer-project' } });
+      else if (change === 'reset') useAppStore.setState({ canvasDraftResetKey: useAppStore.getState().canvasDraftResetKey + 1 });
+      else {
+        sessionId = 'transfer-session-b';
+        useAppStore.setState({ project: { ...useAppStore.getState().project } });
+      }
+    });
+    expect(screen.queryByLabelText('图片发送提示')).toBeNull();
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '图片发送提示' })).toHaveTextContent('已添加到画布'));
+    expect(commit).toHaveBeenCalledTimes(3);
+    expect(useAppStore.getState().project.nodes).toHaveLength(2);
+  });
+
+  it.each(['removed', 'replaced'] as const)('does not focus a retained image whose original node was %s', async change => {
+    const asset = prepareCanvasImageTransfer();
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => commit.mock.calls.length === 1
+      ? { ok: false, code: 'DISK_FULL', project: request.previousProject, revision: request.baseRevision }
+      : { ok: true, project: request.nextProject, revision: request.baseRevision + 1 });
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(await screen.findByRole('alert', { name: '图片发送提示' })).toHaveTextContent('图片尚未保存到画布');
+    const retained = useAppStore.getState().project.nodes[0] as CanvasModuleNode;
+    await act(async () => expect(await useAppStore.getState().retryFailedProjectCommit()).toBe(true));
+    act(() => useAppStore.setState({ project: { ...useAppStore.getState().project,
+      assets: [asset, { ...asset, assetId: 'bbbbbbbbbbbbbbbb', sha256: 'b'.repeat(64) }], nodes: change === 'removed' ? []
+      : [{ ...retained, data: { ...retained.data, config: { ...retained.data.config, assetId: 'bbbbbbbbbbbbbbbb' } } }] } }));
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '图片发送提示' })).toHaveTextContent('已添加到画布'));
+    expect(commit).toHaveBeenCalledTimes(3);
+    const added = useAppStore.getState().project.nodes.find(node => node.id !== retained.id)!;
+    await waitFor(() => expect(document.querySelector(`.react-flow__node[data-id="${added.id}"]`)).toHaveClass('selected'));
+    expect(document.querySelector(`.react-flow__node.selected[data-id="${retained.id}"]`)).toBeNull();
+  });
+
+  it('keeps a retained image unacknowledged while an external save retry is still pending', async () => {
+    const asset = prepareCanvasImageTransfer();
+    let acknowledge!: (result: ProjectCommitResult) => void;
+    const commit = vi.fn((request: ProjectCommitRequest): Promise<ProjectCommitResult> => commit.mock.calls.length === 1
+      ? Promise.resolve({ ok: false, code: 'DISK_FULL', project: request.previousProject, revision: request.baseRevision })
+      : new Promise(resolve => { acknowledge = resolve; }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(await screen.findByRole('alert', { name: '图片发送提示' })).toHaveTextContent('图片尚未保存到画布');
+    let retry!: Promise<boolean>;
+    act(() => { retry = useAppStore.getState().retryFailedProjectCommit(); });
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(screen.getByRole('alert', { name: '图片发送提示' })).toHaveTextContent('图片尚未保存到画布');
+    expect(document.querySelector('.react-flow__node.selected')).toBeNull();
+    const request = commit.mock.calls[1]![0];
+    await act(async () => {
+      acknowledge({ ok: true, project: request.nextProject, revision: request.baseRevision + 1 });
+      expect(await retry).toBe(true);
+    });
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '图片发送提示' })).toHaveTextContent('已添加到画布'));
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().project.nodes).toHaveLength(1);
+  });
+
+  it('discards a late retained image retry acknowledgement after its persistence session changes', async () => {
+    const asset = prepareCanvasImageTransfer();
+    let sessionId = 'transfer-session-a';
+    let acknowledge!: (result: ProjectCommitResult) => void;
+    const commit = vi.fn((request: ProjectCommitRequest): Promise<ProjectCommitResult> => commit.mock.calls.length === 1
+      ? Promise.resolve({ ok: false, code: 'DISK_FULL', project: request.previousProject, revision: request.baseRevision })
+      : new Promise(resolve => { acknowledge = resolve; }));
+    replaceProjectPersistenceClientForTests({ ...createImmediateBrowserClient({ commit }), getSessionId: () => sessionId });
+    useAppStore.setState({ persistenceMode: 'desktop' });
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(await screen.findByRole('alert', { name: '图片发送提示' })).toHaveTextContent('图片尚未保存到画布');
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    act(() => {
+      sessionId = 'transfer-session-b';
+      useAppStore.setState({ project: { ...useAppStore.getState().project } });
+    });
+    const request = commit.mock.calls[1]![0];
+    await act(async () => acknowledge({ ok: true, project: request.nextProject, revision: request.baseRevision + 1 }));
+    expect(screen.queryByLabelText('图片发送提示')).toBeNull();
+    expect(document.querySelector('.react-flow__node.selected')).toBeNull();
+  });
+
+  it('ignores a second image transfer while the first save is awaiting acknowledgement', async () => {
+    const asset = prepareCanvasImageTransfer();
+    let finish!: (saved: boolean) => void;
+    const addImage = vi.fn(() => new Promise<boolean>(resolve => { finish = resolve; }));
+    useAppStore.setState({ addProjectImageInput: addImage });
+    render(<CanvasWorkspace />);
+    for (let index = 0; index < 2; index++) fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(addImage).toHaveBeenCalledTimes(1);
+    await act(async () => finish(false));
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(addImage).toHaveBeenCalledTimes(2);
+    await act(async () => finish(false));
+  });
+
+  it('discards late image transfer feedback when the same project is durably reset', async () => {
+    const asset = prepareCanvasImageTransfer();
+    let finish!: (saved: boolean) => void;
+    useAppStore.setState({ addProjectImageInput: () => new Promise<boolean>(resolve => { finish = resolve; }) });
+    render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    expect(screen.getByRole('status', { name: '图片发送提示' })).toHaveTextContent('正在添加');
+    act(() => useAppStore.setState({ canvasDraftResetKey: useAppStore.getState().canvasDraftResetKey + 1 }));
+    await act(async () => finish(false));
+    expect(screen.queryByLabelText('图片发送提示')).toBeNull();
+  });
+
+  it('cancels a pending transferred-image viewport focus when the canvas unmounts', async () => {
+    const asset = prepareCanvasImageTransfer();
+    const frames = new Map<number, FrameRequestCallback>();
+    let frameId = 0;
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { frames.set(++frameId, callback); return frameId; });
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(id => { frames.delete(id); });
+    const { unmount } = render(<CanvasWorkspace />);
+    fireEvent(window, new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '图片发送提示' })).toHaveTextContent('已添加到画布'));
+    const focusFrame = [...frames].find(([, callback]) => callback.toString().includes('setCenter'));
+    expect(focusFrame).toBeDefined();
+    unmount();
+    expect(cancelFrame).toHaveBeenCalledWith(focusFrame![0]);
+    expect(frames.has(focusFrame![0])).toBe(false);
+  });
+
+  function prepareCanvasImageTransfer() {
+    resetAppStoreForTests({ project: 'empty' });
+    const asset = { assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png' as const, height: 100, label: 'Generated image', mediaType: 'image/png' as const, origin: 'generated' as const, sha256: 'a'.repeat(64), width: 100 };
+    useAppStore.setState({ project: { ...useAppStore.getState().project, assets: [asset] } });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800, x: 0, y: 0, toJSON: () => ({}) } as DOMRect);
+    return asset;
+  }
+
   it('does not rebuild model catalogs when a durable node position changes', async () => {
     const buildRoutes = vi.spyOn(canvasProviderProfiles, 'buildCanvasProviderRouteSets');
     const { store, nodes } = await renderLargeGraph();
@@ -290,6 +585,41 @@ describe('CanvasWorkspace', () => {
       'video_input',
     ]));
     expect(getCompatibleQuickInsertSourceModuleTypes(reverse, 'references')).not.toContain('video_result');
+  });
+
+  it.each([
+    ['image_generation', 'references'],
+    ['video_generation', 'media'],
+    ['reverse_agent', 'references'],
+  ] as const)('connects a text prompt through the visible %s input socket', (moduleType, targetHandle) => {
+    const source = createCanvasModuleNode('visible-prompt-source', 'text_prompt', { x: 0, y: 0 });
+    const target = createCanvasModuleNode('visible-prompt-target', moduleType, { x: 320, y: 0 });
+    const nodes = [source, target].map(node => ({ id: node.id, type: node.type, position: node.position, data: node.data }));
+    const visible = { source: source.id, sourceHandle: 'prompt', target: target.id, targetHandle };
+    const expectedInput = moduleType === 'reverse_agent' ? 'task' : 'prompt';
+    expect(resolveVisibleCanvasConnection(visible, nodes)).toEqual({ ...visible, targetHandle: expectedInput });
+    expect(canConnectCanvasPorts(source, 'prompt', target, targetHandle).ok).toBe(false);
+    expect(isValidCanvasConnection(visible, nodes, [])).toBe(true);
+    expect(isValidCanvasConnection(visible, nodes, [{ id: 'existing-prompt', ...visible, targetHandle: expectedInput }])).toBe(false);
+  });
+
+  it('connects the hidden reverse timeline through its visible analysis socket', () => {
+    const source = createCanvasModuleNode('visible-reverse-source', 'reverse_agent', { x: 0, y: 0 });
+    const target = createCanvasModuleNode('visible-timeline-target', 'storyboard_sheet', { x: 320, y: 0 });
+    const nodes = [source, target].map(node => ({ id: node.id, type: node.type, position: node.position, data: node.data }));
+    const visible = { source: source.id, sourceHandle: 'analysis', target: target.id, targetHandle: 'timeline' };
+    expect(resolveVisibleCanvasConnection(visible, nodes)).toEqual({ ...visible, sourceHandle: 'timeline' });
+    expect(canConnectCanvasPorts(source, 'analysis', target, 'timeline').ok).toBe(false);
+    expect(isValidCanvasConnection(visible, nodes, [])).toBe(true);
+  });
+
+  it('preserves an incompatible explicit hidden port instead of guessing another input', () => {
+    const source = createCanvasModuleNode('explicit-source', 'text_prompt', { x: 0, y: 0 });
+    const target = createCanvasModuleNode('explicit-target', 'image_generation', { x: 320, y: 0 });
+    const nodes = [source, target].map(node => ({ id: node.id, type: node.type, position: node.position, data: node.data }));
+    const explicit = { source: source.id, sourceHandle: 'prompt', target: target.id, targetHandle: 'mask' };
+    expect(resolveVisibleCanvasConnection(explicit, nodes)).toEqual(explicit);
+    expect(isValidCanvasConnection(explicit, nodes, [])).toBe(false);
   });
 
   it('connects a Quick Insert module upstream when it was opened from a target input port', () => {
@@ -1377,7 +1707,8 @@ describe('CanvasWorkspace', () => {
     }));
 
     expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: 'prompt', target: 'generator', targetHandle: 'prompt' }, nodes, [])).toBe(true);
-    expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: 'prompt', target: 'generator', targetHandle: 'references' }, nodes, [])).toBe(false);
+    expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: 'prompt', target: 'generator', targetHandle: 'references' }, nodes, [])).toBe(true);
+    expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: 'prompt', target: 'generator', targetHandle: 'mask' }, nodes, [])).toBe(false);
     expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: 'prompt', target: 'ghost-generator', targetHandle: 'prompt' }, nodes, [])).toBe(false);
     expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: null, target: 'generator', targetHandle: 'prompt' }, nodes, [])).toBe(false);
   });
@@ -2318,6 +2649,43 @@ describe('CanvasWorkspace', () => {
     await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
   });
 
+  it.each([
+    { key: 'Escape' },
+    { key: 'Delete' },
+    { key: 'Backspace' },
+    { key: 'z', ctrlKey: true },
+    { key: 'z', altKey: true },
+  ])('lets the real update modal own $key without changing canvas or closing settings', async keyboard => {
+    resetAppStoreForTests({ project: 'empty' });
+    await useAppStore.getState().addModuleNode('text_prompt', { x: 80, y: 120 });
+    const originalNodes = useAppStore.getState().project.nodes;
+    const originalUndo = useAppStore.getState().undoStack;
+    expect(originalUndo).toHaveLength(1);
+    let publish: ((state: import('@agent-canvas/desktop-core').UpdateState) => void) | undefined;
+    const restart = vi.fn(async () => ({ accepted: true }));
+    const download = vi.fn(async () => ({ state: { status: 'downloading' as const } }));
+    window.novusDesktop = { updates: {
+      getState: vi.fn(async () => ({ status: 'idle' as const })),
+      subscribeState: (listener: NonNullable<typeof publish>) => { publish = listener; return vi.fn(); },
+      check: vi.fn(), retry: vi.fn(), defer: vi.fn(), download, restart,
+    } } as unknown as typeof window.novusDesktop;
+    render(<CanvasWorkspace />);
+    fireEvent.click(document.querySelector<HTMLElement>('.react-flow__node')!);
+    fireEvent.click(screen.getByTestId('settings-toggle'));
+    await waitFor(() => expect(publish).toBeTypeOf('function'));
+    act(() => { publish?.({ status: 'available', version: '1.6.186', notes: '本地更新说明' }); });
+    const dialog = await screen.findByRole('dialog', { name: '应用更新' });
+    const close = within(dialog).getByRole('button', { name: '关闭更新弹窗' });
+    fireEvent.keyDown(close.querySelector('svg')!, keyboard);
+    expect(screen.getByTestId('settings-drawer')).toBeVisible();
+    expect(useAppStore.getState().project.nodes).toEqual(originalNodes);
+    expect(useAppStore.getState().undoStack).toEqual(originalUndo);
+    expect(restart).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
+    if (keyboard.key === 'Escape') expect(screen.queryByRole('dialog', { name: '应用更新' })).not.toBeInTheDocument();
+    else expect(dialog).toBeVisible();
+  });
+
   it('restores a deleted canvas node with Ctrl+Z while the settings drawer is open', async () => {
     const selectedNode = createCanvasModuleNode('undo-behind-settings', 'image_generation', { x: 80, y: 120 });
     resetAppStoreForTests({ project: 'empty' });
@@ -3182,7 +3550,7 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByText('项目记忆', { selector: 'summary' }));
+    fireEvent.click(screen.getByRole('button', { name: '项目记忆' }));
     fireEvent.click(screen.getByRole('button', { name: /^恢复 Desktop Snapshot Memory$/ }));
 
     await waitFor(() => expect(restore).toHaveBeenCalledWith('desktop-after'));
@@ -4251,7 +4619,7 @@ describe('CanvasWorkspace', () => {
     });
     render(<CanvasWorkspace />);
     openAgent();
-    fireEvent.click(screen.getByText('项目记忆', { selector: 'summary' }));
+    fireEvent.click(screen.getByRole('button', { name: '项目记忆' }));
     expect(screen.getByLabelText('项目记忆时间线')).toBeVisible();
   });
 

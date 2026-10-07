@@ -13,6 +13,7 @@ import { ProviderOperationTimeoutError, withProviderOperationTimeout } from './p
 import { readProviderModelDefaults, writeProviderModelDefaults, type ProviderModelDefaultRoutes } from './provider-model-defaults';
 import { filterProviderCatalogProfiles, listActiveProviderProfiles, selectFirstProfileForCapability } from '../app/provider-profiles';
 import { readMcpPermissions, subscribeMcpPermissions, updateMcpPermissions } from './mcp-permissions';
+import { SettingsUpdateDialog } from './SettingsUpdateDialog';
 
 type ProviderBridgeProvider = ProviderBridgeProfile['provider'];
 
@@ -228,6 +229,7 @@ export function SettingsDrawer({
   }) | undefined;
   const [updateState, setUpdateState] = useState<UpdateState>({ status: 'idle' });
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  const updateDialogReturnFocusRef = useRef<HTMLElement | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>('api');
   const settingsBodyRef = useRef<HTMLDivElement>(null);
   const codexWorkflowContract = createCodexWorkflowContract();
@@ -854,6 +856,7 @@ export function SettingsDrawer({
 
   const checkForUpdates = async () => {
     if (!bridge?.updates || updateState.status === 'checking' || updateState.status === 'downloading') return;
+    setUpdateDialogOpen(true);
     setUpdateState({ status: 'checking' });
     try {
       setUpdateState((await bridge.updates.check()).state);
@@ -1375,7 +1378,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
               <p>检查版本、安全修复和模型适配更新，不会影响当前画布内容。</p>
               <div className="settings-tool-card__status"><span>当前版本</span><strong>{updateState.currentVersion ? `v${updateState.currentVersion}` : '读取中'}</strong></div>
               <div className="settings-tool-card__status"><span>更新状态</span><strong>{updateState.status === 'idle' ? '等待检查' : updateState.status === 'checking' ? '正在检查' : updateState.status === 'downloading' ? '正在下载' : updateState.status === 'ready_to_restart' ? '准备安装' : updateState.status === 'error' ? '检查失败' : '发现新版本'}</strong></div>
-              <button className="settings-section__secondary settings-update-action settings-tool-action" type="button" aria-label="Check for updates" disabled={!bridge?.updates || updateState.status === 'checking' || updateState.status === 'downloading'} onClick={() => { void checkForUpdates(); }}><span className="settings-action-content"><RefreshCw size={14} className={updateState.status === 'checking' ? 'is-spinning' : undefined} />{updateState.status === 'checking' ? '检查中…' : '检查更新'}</span></button>
+              <button className="settings-section__secondary settings-update-action settings-tool-action" type="button" aria-label="Check for updates" disabled={!bridge?.updates || updateState.status === 'checking' || updateState.status === 'downloading'} onClick={(event) => { updateDialogReturnFocusRef.current = event.currentTarget; void checkForUpdates(); }}><span className="settings-action-content"><RefreshCw size={14} className={updateState.status === 'checking' ? 'is-spinning' : undefined} />{updateState.status === 'checking' ? '检查中…' : '检查更新'}</span></button>
               {updateState.status === 'idle' && updateState.message === 'No updates are available.' && <p role="status">当前已是最新版本</p>}
             </article>
         </section>
@@ -1396,47 +1399,14 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
         </>}
       </div>
       </aside>
-      {updateDialogOpen && <div className="settings-hidden-key-backdrop" role="presentation" onMouseDown={() => setUpdateDialogOpen(false)}>
-        <section
-          className="settings-hidden-key-dialog"
-          role="dialog"
-          aria-modal="true"
-          aria-label="应用更新"
-          onMouseDown={(event) => event.stopPropagation()}
-        >
-          <header className="settings-update-dialog__hero">
-            <span className="settings-update-dialog__icon" aria-hidden="true"><RefreshCw size={20} /></span>
-            <div>
-              <small>桌面版本更新</small>
-              <strong>应用更新</strong>
-              {updateState.status === 'checking' && <p>正在检查更新…</p>}
-              {updateState.status === 'available' && <p>发现新版本 {updateState.version ?? ''}</p>}
-              {updateState.status === 'downloading' && <p>正在下载 {updateState.version ?? '新版本'}</p>}
-              {updateState.status === 'ready_to_restart' && <p>版本 {updateState.version ?? ''} 已准备好</p>}
-              {updateState.status === 'error' && <p>更新暂时不可用</p>}
-            </div>
-            {updateState.version && <b className="settings-update-dialog__version">v{updateState.version}</b>}
-            <button type="button" className="icon-button" aria-label="关闭更新弹窗" onClick={() => setUpdateDialogOpen(false)}><X size={16} /></button>
-          </header>
-          <section className="settings-update-dialog__notes" role="region" aria-label="更新说明">
-            <header><strong>更新内容</strong><span>本次更新</span></header>
-            <p>{updateState.notes || '暂无详细更新说明。'}</p>
-          </section>
-          {updateState.status === 'downloading' && <div className="settings-update-progress">
-            <progress aria-label="更新下载进度" max={1} value={updateState.progress ?? 0} />
-            <span>下载进度 {Math.round((updateState.progress ?? 0) * 100)}%</span>
-          </div>}
-          {updateState.status === 'error' && <p role="alert">更新检查失败，请检查网络后重试。</p>}
-          <div className="settings-update-dialog__actions">
-            {updateState.status === 'available' && <button type="button" className="settings-section__primary" aria-label="下载更新" onClick={() => { void downloadUpdate(); }}>下载更新</button>}
-            {updateState.status === 'ready_to_restart' && <button type="button" className="settings-section__primary" aria-label="重启并安装" onClick={() => { void restartForUpdate(); }}>重启并安装</button>}
-            {updateState.status === 'error' && <button type="button" className="settings-section__primary" aria-label="重新检查更新" onClick={() => { void retryUpdate(); }}>重新检查</button>}
-            <button type="button" className="settings-section__secondary" onClick={() => setUpdateDialogOpen(false)}>
-              {updateState.status === 'ready_to_restart' ? '稍后安装' : '稍后'}
-            </button>
-          </div>
-        </section>
-      </div>}
+      {updateDialogOpen && <SettingsUpdateDialog
+        state={updateState}
+        returnFocusRef={updateDialogReturnFocusRef}
+        onClose={() => setUpdateDialogOpen(false)}
+        onDownload={() => { void downloadUpdate(); }}
+        onRetry={() => { void retryUpdate(); }}
+        onRestart={() => { void restartForUpdate(); }}
+      />}
       {relayMeLoginOpen && <div className="settings-hidden-key-backdrop" role="presentation" onMouseDown={() => { if (!relayMeLoginBusy) closeRelayMeLogin(); }}>
       <form
         className="settings-hidden-key-dialog"

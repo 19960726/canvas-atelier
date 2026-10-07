@@ -4,7 +4,7 @@ import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './helpers/e2e-test';
 import { openEmptyApp } from './helpers/app';
 
-const output = path.join(process.cwd(), 'work', 'repair-185', 'settings-ui-r8');
+const output = path.join(process.cwd(), 'work', process.env.CANVAS_SETTINGS_SKELETON_AUDIT_DIR ?? 'repair-185/settings-ui-r8');
 const defaults = ['生图默认模型', '视频默认模型', '对话默认模型', '反推默认模型', '视觉默认模型', '视频理解默认模型'];
 const panes = [['API 与模型', 'api'], ['存储与备份', 'storage'], ['MCP 联动', 'mcp'], ['同步', 'sync']] as const;
 

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { expect, test } from './helpers/e2e-test';
 import { e2eState, openEmptyApp, queueProjectImageImport } from './helpers/app';
 
-const evidenceDir = path.join(process.cwd(), 'work', 'qa-layering-user-image-20260924', 'final-r6');
+const evidenceDir = path.join(process.cwd(), 'work', process.env.CANVAS_LAYERING_USER_AUDIT_DIR ?? 'qa-layering-user-image-20260924/final-r6');
 const sourcePath = process.env.CANVAS_USER_POSTER_FIXTURE ?? path.join(process.cwd(), 'work', 'qa-layering-user-image-20260924', 'source-image.png');
 const layerPlan = [
   { layerId: 'warm-background', kind: 'background', name: '暖灰色渐变背景', description: '补全海报的暖灰色背景，不含产品、文字或图形。', included: true },

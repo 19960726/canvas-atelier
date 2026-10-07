@@ -30,7 +30,7 @@ export function tokenFor(kind: MediaMentionKind, index: number): string {
 
 export function parseCanonicalMentions(value: string): CanonicalMentionSegment[] {
   const segments: CanonicalMentionSegment[] = [];
-  const pattern = /@(图片|视频)(\d{1,2})/gu;
+  const pattern = /@(图片|视频)([1-9]\d?)(?![0-9])/gu;
   let cursor = 0;
   for (const match of value.matchAll(pattern)) {
     const start = match.index ?? 0;
@@ -50,13 +50,15 @@ export function buildConnectedMentionCatalog(
   orderedMedia: readonly OrderedMediaMention[],
   projectImages: readonly ProjectMediaSummary[],
   projectVideos: readonly ProjectMediaSummary[],
+  keepUnloadedBindings = false,
 ): ConnectedMentionItem[] {
   let imageIndex = 0;
   let videoIndex = 0;
   const catalog: ConnectedMentionItem[] = [];
   for (const media of orderedMedia) {
     const summaries = media.kind === 'image' ? projectImages : projectVideos;
-    const summary = summaries.find((item) => item.assetId === media.assetId);
+    const summary = summaries.find((item) => item.assetId === media.assetId)
+      ?? (keepUnloadedBindings ? { assetId: media.assetId, label: media.assetId } : undefined);
     if (summary === undefined) continue;
     const index = media.kind === 'image' ? imageIndex++ : videoIndex++;
     catalog.push({
@@ -77,7 +79,7 @@ export function reconcileConnectedMentions(
 ): string {
   const nextByAsset = new Map(next.map((item) => [`${item.kind}:${item.assetId}`, item]));
   const previousByToken = new Map(previous.map((item) => [item.token, item]));
-  const pattern = /@(图片|视频)(\d{1,2})/gu;
+  const pattern = /@(图片|视频)([1-9]\d?)(?![0-9])/gu;
   const pieces: string[] = [];
   let cursor = 0;
   let dropLeadingHorizontal = false;
@@ -92,7 +94,9 @@ export function reconcileConnectedMentions(
     pieces.push(between);
     const prior = previousByToken.get(token);
     const replacement = prior === undefined ? undefined : nextByAsset.get(`${prior.kind}:${prior.assetId}`)?.token;
-    if (replacement !== undefined) {
+    if (prior === undefined) {
+      pieces.push(token);
+    } else if (replacement !== undefined) {
       pieces.push(replacement);
     } else {
       const before = value[start - 1];

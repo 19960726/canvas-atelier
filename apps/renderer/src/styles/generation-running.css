@@ -75,48 +75,6 @@ html body .workspace--canvas-layout .module-node.module-node.module-node[data-ge
     line-height: 16px !important;
   }
 
-  & .module-node__unified-media-slots[data-thumbnail-sizing='natural'] .connected-agent-media-slots__row {
-    /* The padded tray has less content width than the preview frame. */
-    container-type: inline-size !important;
-    --media-slot-limit: calc((100cqw - (var(--media-columns) - 1) * 6px) / var(--media-columns));
-    display: grid !important;
-    /* Fractional max-content tracks can round their total to one pixel wider
-       than the tray at 12 references. Fill the tray instead so the last slot
-       remains visible without creating a horizontal overflow gutter. */
-    grid-template-columns: repeat(var(--media-columns), minmax(0, 1fr)) !important;
-    grid-auto-rows: 54px !important;
-    align-items: center !important;
-    justify-content: start !important;
-    width: 100% !important;
-    max-width: 100% !important;
-    gap: 6px !important;
-    padding: 0 !important;
-    border: 0 !important;
-    box-shadow: none !important;
-    overflow-x: auto !important;
-    overflow-y: hidden !important;
-  }
-
-  & .module-node__unified-media-slots[data-thumbnail-sizing='natural'] .connected-agent-media-slots__item {
-    flex: none !important;
-    width: min(var(--media-slot-width, 54px), var(--media-slot-limit)) !important;
-    min-width: 0 !important;
-    max-width: 162px !important;
-    height: min(var(--media-slot-height, 54px), calc(var(--media-slot-limit) / var(--media-slot-aspect, 1))) !important;
-    min-height: 0 !important;
-    max-height: 54px !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    border: 0 !important;
-    aspect-ratio: var(--media-slot-aspect, 1) !important;
-  }
-
-  & .module-node__unified-media-slots[data-thumbnail-sizing='natural'] .connected-agent-media-slots__item > :is(img, video) {
-    width: 100% !important;
-    height: 100% !important;
-    object-fit: contain !important;
-  }
-
   & .module-node__running-panel {
     position: relative !important;
     z-index: 1 !important;
@@ -222,6 +180,79 @@ html body .workspace--canvas-layout .module-node.module-node.module-node[data-ge
   }
 }
 
+/* Fixed frames keep badges and tools stable; complete media is contain-sized
+   inside them and longer reference lists scroll without shrinking. */
+html body .workspace--canvas-layout .module-node.module-node.module-node .connected-agent-media-slots[data-thumbnail-sizing='uniform'] .connected-agent-media-slots__row {
+  display: flex !important;
+  flex-flow: row nowrap !important;
+  align-items: center !important;
+  justify-content: start !important;
+  width: 100% !important;
+  max-width: 294px !important;
+  min-height: 54px !important;
+  gap: 6px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+}
+
+/* Reverse trays must grow with the uniform thumbnails. The legacy 44px
+   container otherwise lets a 54px item protrude below both visible borders. */
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-module-type='reverse_agent'] .connected-agent-media-slots[data-thumbnail-sizing='uniform'] {
+  height: auto !important;
+  min-height: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-module-type='reverse_agent'] .connected-agent-media-slots[data-thumbnail-sizing='uniform'] .connected-agent-media-slots__row {
+  max-width: 330px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true']:is([data-module-type='image_generation'], [data-module-type='video_generation']):has(.module-node__summary--generation[data-editor-expanded='true']) .connected-agent-media-slots[data-thumbnail-sizing='uniform'] .connected-agent-media-slots__row {
+  display: flex !important;
+  flex-flow: row nowrap !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 57px !important;
+  min-height: 57px !important;
+  gap: 6px !important;
+  padding: 0 !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: thin !important;
+  scrollbar-gutter: auto !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node.module-node .connected-agent-media-slots[data-thumbnail-sizing='uniform'] .connected-agent-media-slots__row > :is(.connected-agent-media-slots__item, .module-node__agent-media-add),
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true']:is([data-module-type='image_generation'], [data-module-type='video_generation']):has(.module-node__summary--generation[data-editor-expanded='true']) .connected-agent-media-slots[data-thumbnail-sizing='uniform'] .connected-agent-media-slots__row > :is(.connected-agent-media-slots__item, .module-node__agent-media-add) {
+  flex: 0 0 54px !important;
+  width: 54px !important;
+  min-width: 54px !important;
+  max-width: 54px !important;
+  height: 54px !important;
+  min-height: 54px !important;
+  max-height: 54px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  aspect-ratio: 1 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node.module-node .connected-agent-media-slots[data-thumbnail-sizing='uniform'] .connected-agent-media-slots__item > :is(img, video) {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+}
+
+/* The older canvas interaction layer hides this rail globally. Uniform media
+   trays are the discoverable scrolling surface, so keep their overflow rail
+   visible after the final cascade for reverse and generation nodes alike. */
+html body .workspace--canvas-layout .module-node.module-node.module-node .connected-agent-media-slots[data-thumbnail-sizing='uniform'] .connected-agent-media-slots__row::-webkit-scrollbar {
+  display: block !important;
+  height: 6px !important;
+}
+
 /* Separate the secondary GPT settings from the main parameter buttons without
    increasing the editor height or moving its primary action. */
 html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true'][data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) {
@@ -269,7 +300,8 @@ html body .workspace--canvas-layout .module-node.module-node.module-node[data-ge
   }
 }
 
-html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true'][data-preview-sizing='media'][data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) {
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true'][data-module-type='image_generation'][data-preview-sizing='media']:has(.module-node__summary--generation[data-editor-expanded='true']),
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true'][data-module-type='image_generation']:not([data-preview-sizing='media']):has(.module-node__summary--generation[data-editor-expanded='true'][data-preview-frame='empty']) {
   --image-editor-reference-top: calc(58px + var(--generation-preview-height));
   --image-editor-prompt-top: calc(150px + var(--generation-preview-height) + var(--image-slot-extra));
   --image-editor-control-top: calc(286px + var(--generation-preview-height) + var(--image-slot-extra));
@@ -280,6 +312,52 @@ html body .workspace--canvas-layout .module-node.module-node.module-node[data-ge
   & .module-node__unified-media-slots {
     top: var(--image-editor-reference-top) !important;
   }
+}
+
+/* An empty frame has no image ratio to preserve. Keep its controls in view. */
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true'][data-module-type='image_generation']:not([data-preview-sizing='media']):has(.module-node__summary--generation[data-editor-expanded='true'][data-preview-frame='empty']) {
+  --generation-preview-height: 240px;
+  & > .module-node__ports .module-node__ports-column {
+    top: calc(58px + var(--generation-preview-height) / 2) !important;
+  }
+  & .module-node__generation-editor-preview--empty {
+    height: var(--generation-preview-height) !important;
+    min-height: var(--generation-preview-height) !important;
+    max-height: var(--generation-preview-height) !important;
+    aspect-ratio: auto !important;
+    border-radius: 8px !important;
+  }
+  & .module-node__generation-empty-stage {
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    aspect-ratio: auto !important;
+  }
+  & .module-node__generation-empty-stage[data-generation-state='idle'] > span {
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+}
+
+html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true'][data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__agent-media-add {
+  display: grid !important;
+  place-items: center !important;
+  flex: 0 0 54px !important;
+  width: 54px !important;
+  min-width: 54px !important;
+  max-width: 54px !important;
+  height: 54px !important;
+  min-height: 54px !important;
+  max-height: 54px !important;
+  border: 1px dashed var(--gate-border-strong) !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--gate-muted) !important;
 }
 
 html body .workspace--canvas-layout .module-node.module-node.module-node[data-generation-ui='true'][data-preview-sizing='media'][data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) {

@@ -8740,6 +8740,47 @@ describe('stable module graph commits', () => {
     });
   });
 
+  it.each([true, false])('waits for a commit queued during the close stable point (commit succeeds: %s)', async (succeeds) => {
+    const initialAck = deferred<ProjectCommitResult>();
+    const finalAck = deferred<ProjectCommitResult>();
+    const stableAck = deferred<Awaited<ReturnType<ProjectPersistenceClient['stablePoint']>>>();
+    const commit = vi.fn().mockReturnValueOnce(initialAck.promise).mockReturnValueOnce(finalAck.promise);
+    const stablePoint = vi.fn(() => stableAck.promise);
+    const close = vi.fn(async () => {});
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, stablePoint, close }));
+    useAppStore.setState({ project: moduleGraphProject(), projectLifecycle: 'durable', persistenceMode: 'desktop',
+      desktopRevision: 0, saveStatus: 'saved' });
+    const first = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+    let outcome: boolean | undefined;
+    const closing = useAppStore.getState().preparePersistenceForClose().then(result => { outcome = result; return result; });
+    const firstRequest = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    initialAck.resolve({ ok: true, project: firstRequest.nextProject, revision: 1 });
+    await first;
+    await waitForStore(() => stablePoint.mock.calls.length === 1);
+    // Pixel validation and job reconciliation use this same stable operation queue.
+    const later = useAppStore.getState().commitNodePosition('generator', { x: 420, y: 50 });
+    stableAck.resolve({ availableSnapshotIds: [], lifecycle: 'durable', project: firstRequest.nextProject, revision: 1 });
+    await waitForStore(() => commit.mock.calls.length === 2);
+    await delay(5);
+    const beforeFinalAck = outcome;
+    const finalRequest = commit.mock.calls[1]![0] as ProjectCommitRequest;
+    finalAck.resolve(succeeds
+      ? { ok: true, project: finalRequest.nextProject, revision: 2 }
+      : { ok: false, code: 'DURABLE_WRITE_FAILED', project: firstRequest.nextProject, revision: 1 });
+    await later;
+    const result = await closing;
+    expect(beforeFinalAck).toBeUndefined();
+    expect(result).toBe(succeeds);
+    expect(close).not.toHaveBeenCalled();
+    expect(stablePoint).toHaveBeenCalledOnce();
+    if (succeeds) {
+      expect(useAppStore.getState()).toMatchObject({ desktopRevision: 2, saveStatus: 'saved', saveErrorCode: null });
+      expect(useAppStore.getState().project.nodes.find(node => node.id === 'generator')?.position).toEqual({ x: 420, y: 50 });
+    } else {
+      expect(useAppStore.getState()).toMatchObject({ saveStatus: 'error', canRetryProjectCommit: true, saveErrorCode: 'DURABLE_WRITE_FAILED' });
+    }
+  });
+
   it('serializes rapid stable graph operations against the latest acknowledged revision and continues after failure', async () => {
     const firstAck = deferred<CommitAck>();
     const commit = vi.fn()
@@ -11266,7 +11307,9 @@ describe('GPT layering analysis app-store boundary', () => {
 
     expect(plan.sourceAssetId).toBe(assetId);
     expect(chatSkill).toHaveBeenCalledOnce();
-    expect(chatSkill).toHaveBeenCalledWith(expect.objectContaining({ visualAnalysis: true, referenceAssetIds: [assetId] }));
+    expect(chatSkill).toHaveBeenCalledWith(
+      expect.objectContaining({ visualAnalysis: true, referenceAssetIds: [assetId] }), expect.any(Function),
+    );
     expect(submitImageJob).not.toHaveBeenCalled();
   });
 

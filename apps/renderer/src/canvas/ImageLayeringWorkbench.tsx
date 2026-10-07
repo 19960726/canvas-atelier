@@ -5,13 +5,14 @@ import { encodeLayeredPsd, trimTransparentLayer, type LayeredPsdDocument } from 
 import { parseLayeredImageConfig, type LayeredImageRecord } from '../app/layered-image-config';
 import { applyLayerSelection, compatibleLayerDimensions, layerSelectionClip, readLayeringSelection } from '../app/layering-selection';
 import { LayerScopePreview } from './LayerScopePreview';
-import { orderedLayerPlan, prepareDraftSourceLayerDocument, prepareSourceLayerDocument, useSourceLayerPreview, type SourceLayerInput } from './source-layer-preview';
+import { orderedLayerPlan, prepareDraftSourceLayerPsd, prepareSourceLayerDocument, useSourceLayerPreview, type SourceLayerInput } from './source-layer-preview';
 import { SourceLayerAlignment } from './SourceLayerAlignment';
 import { SourceLayerRefinement } from './SourceLayerRefinement';
 import type { MattingRegion } from '@agent-canvas/desktop-core/preload-api';
 import { boxSchema } from '../app/layering-selection';
 import type { LayeringBox } from '../app/layering-selection';
 import { decodeImageWithTimeout } from '../app/decode-image-timeout';
+import { decodeLayerPixels } from '../app/managed-layer-pixels';
 import {isShadowOnlyLayer} from '../app/shadow-layer-role';
 import { buildLayeringReviewDigest } from '../app/layering-proof';
 import { LayeringLocalReview, type LocalLayeringReview } from './LayeringLocalReview';
@@ -248,9 +249,11 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     };
     return encodeLayeredPsd(decoded);
   };
-  const buildDraftPsdBytes = async (): Promise<Uint8Array> => {
+  const buildDraftPsdBytes = async (snapshotIdentity: string): Promise<Uint8Array> => {
     if (!draftAvailable || !sourceInput) throw new Error('尚无可导出的待修整返图');
-    return encodeLayeredPsd(await prepareDraftSourceLayerDocument(sourceInput));
+    return prepareDraftSourceLayerPsd(sourceInput, () => {
+      if (!mounted.current || latestExportIdentity.current !== snapshotIdentity) throw new Error('图层已变更，请检查当前结果后重新导出');
+    });
   };
   const exportPsd = async (draft = false) => {
     if ((draft ? !draftAvailable : !layered) || exporting) return;
@@ -258,7 +261,7 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     setExporting(true);
     const snapshotIdentity = exportIdentity;
     try {
-      const bytes = draft ? await buildDraftPsdBytes() : await buildPsdBytes();
+      const bytes = draft ? await buildDraftPsdBytes(snapshotIdentity) : await buildPsdBytes();
       if (!mounted.current || latestExportIdentity.current !== snapshotIdentity) throw new Error('图层已变更，请检查当前结果后重新导出');
       const owned = new Uint8Array(bytes.byteLength);
       owned.set(bytes);
@@ -282,7 +285,7 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
     try {
       const open = window.novusDesktop?.projectImages?.openLayeredPsdInPhotoshop;
       if (!open) throw new Error('当前环境不支持在 Photoshop 中打开 PSD');
-      const bytes = draft ? await buildDraftPsdBytes() : await buildPsdBytes();
+      const bytes = draft ? await buildDraftPsdBytes(snapshotIdentity) : await buildPsdBytes();
       if (!mounted.current || latestExportIdentity.current !== snapshotIdentity) throw new Error('图层已变更，请检查当前结果后重新导出');
       const result = await open(bytes);
       if (!result.ok && result.code !== 'cancelled') {
@@ -450,6 +453,9 @@ function hasFormatProof(config: Readonly<Record<string, unknown>>): boolean {
 
 async function decodeManagedLayer(asset: ManagedImage, record: Pick<LayeredImageRecord, 'name' | 'width' | 'height'>): Promise<Uint8Array> {
   if (!asset.mediaType.startsWith('image/')) throw new Error(`图层 ${record.name} 不是图片`);
+  // Managed PNGs are stored as straight RGBA. Read their bytes directly so
+  // low-alpha and alpha-zero RGB survive the PSD round trip unchanged.
+  if (asset.mediaType === 'image/png') return decodeLayerPixels(asset.displayUrl, record.width, record.height);
   const image = new Image();
   image.crossOrigin = 'anonymous';
   image.src = asset.displayUrl;

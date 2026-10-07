@@ -22,6 +22,38 @@ const confirmedTaskFixture = () => ({
 });
 
 describe('confirmed creative task context storage', () => {
+  it('retains the exact request source snapshot after pruning and independently of a later confirmed task', () => {
+    const originalRequest = '@图片8 恰好六个烧麦，禁止红色\n继续，只把碗改成白色';
+    const request = { modelDisplayName: 'Vision', modelRoute: 'vision', knowledgeBaseCount: 0, projectMemoryCount: 0, references: [{ assetId: 'product-eight', label: '产品', mention: '@图片8' }], status: 'completed' as const, originalRequest };
+    const conversation = { ...createAgentConversation(1_000), taskContext: { ...confirmedTaskFixture(), originalRequest: '蓝色汽车海报' }, messages: [
+      ...Array.from({ length: 50 }, (_, index) => ({ id: `pruned-${index}`, role: 'user' as const, content: `讨论${index}` })),
+      { id: 'follow-up-source', role: 'user' as const, content: '继续，只把碗改成白色', request },
+    ] };
+    writeAgentConversationCollection('request-source', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    const restored = readAgentConversationCollection('request-source').conversations[0]!;
+    expect(restored.messages).toHaveLength(48);
+    expect(restored.messages[restored.messages.length - 1]!.request).toMatchObject({ originalRequest, references: request.references });
+    expect(restored.taskContext?.originalRequest).toBe('蓝色汽车海报');
+  });
+
+  it.each([
+    ['source redaction', '保留六个烧麦 https://example.com/source C:\\private\\source.png', '保留六个烧麦 [链接已省略] [本地路径已省略]'],
+    ['complete length limit', '图'.repeat(16_000), '图'.repeat(16_000)],
+  ])('preserves the complete request source with %s', (_scenario, originalRequest, expected) => {
+    const conversation = { ...createAgentConversation(1_000), messages: [{ id: 'source', role: 'user' as const, content: '继续', request: { modelDisplayName: 'Vision', modelRoute: 'vision', knowledgeBaseCount: 0, projectMemoryCount: 0, references: [], status: 'completed' as const, originalRequest } }] };
+    writeAgentConversationCollection('source-bounds', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    expect(readAgentConversationCollection('source-bounds').conversations[0]!.messages[0]!.request).toMatchObject({ originalRequest: expected });
+  });
+
+  it('rejects an overlong request source without truncating it or erasing other messages', () => {
+    const conversation = { ...createAgentConversation(1_000), messages: [
+      { id: 'safe', role: 'user' as const, content: '已有对话' },
+      { id: 'overlong-source', role: 'user' as const, content: '继续', request: { modelDisplayName: 'Vision', modelRoute: 'vision', knowledgeBaseCount: 0, projectMemoryCount: 0, references: [], status: 'completed' as const, originalRequest: '图'.repeat(16_001) } },
+    ] };
+    writeAgentConversationCollection('source-too-long', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    expect(readAgentConversationCollection('source-too-long').conversations[0]!.messages).toEqual([{ id: 'safe', role: 'user', content: '已有对话', mode: 'codex' }]);
+  });
+
   it('restores the complete confirmed task after the original request is pruned from 48-message history', () => {
     const taskContext = confirmedTaskFixture();
     const conversation = { ...createAgentConversation(1_000), id: 'long-confirmed-task', taskContext,

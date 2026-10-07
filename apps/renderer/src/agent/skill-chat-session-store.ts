@@ -21,6 +21,7 @@ export interface StoredAgentRequestSummary {
   readonly visualAnalysis?: boolean;
   readonly reverseAnalysisDepth?: ReverseAnalysisDepth;
   readonly generationKind?: 'image' | 'video';
+  readonly originalRequest?: string;
 }
 
 export interface StoredAgentMessage {
@@ -295,6 +296,7 @@ function parseRequest(value: unknown): StoredAgentRequestSummary | null {
   if (!isRecord(value) || !Array.isArray(value.references)) return null;
   const modelDisplayName = readSafeText(value.modelDisplayName, 160);
   const modelRoute = readSafeText(value.modelRoute, 160);
+  const originalRequest = value.originalRequest === undefined ? undefined : readSafeMessageContent(value.originalRequest, MAX_TEXT_LENGTH);
   const references = value.references.map((entry) => {
     if (!isRecord(entry)) return null;
     const assetId = readSafeText(entry.assetId, 160);
@@ -302,7 +304,7 @@ function parseRequest(value: unknown): StoredAgentRequestSummary | null {
     const mention = readSafeReferenceMention(entry.mention);
     return assetId && label ? { assetId, label, ...(mention === undefined ? {} : { mention }) } : null;
   });
-  if (!modelDisplayName || !modelRoute || references.some((reference) => reference === null)
+  if (!modelDisplayName || !modelRoute || (value.originalRequest !== undefined && !originalRequest) || references.some((reference) => reference === null)
     || !isBoundedInteger(value.knowledgeBaseCount, 16) || !isBoundedInteger(value.projectMemoryCount, 32)
     || (value.status !== 'sending' && value.status !== 'completed' && value.status !== 'error')
     || (value.visualAnalysis !== undefined && typeof value.visualAnalysis !== 'boolean')
@@ -318,6 +320,7 @@ function parseRequest(value: unknown): StoredAgentRequestSummary | null {
     ...(value.reverseAnalysisDepth === 'fast' || value.reverseAnalysisDepth === 'standard' || value.reverseAnalysisDepth === 'deep'
       ? { reverseAnalysisDepth: value.reverseAnalysisDepth } : {}),
     ...(value.generationKind === undefined ? {} : { generationKind: value.generationKind }),
+    ...(originalRequest === undefined ? {} : { originalRequest }),
   };
 }
 

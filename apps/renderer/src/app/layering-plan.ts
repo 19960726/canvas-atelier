@@ -77,6 +77,9 @@ const planSchema = z.object({
         context.addIssue({ code: 'custom', path: ['layers', index, 'elementIds'], message: 'Every layer in an element inventory must list its owned elements.' });
         continue;
       }
+      if (layer.included && layer.elementIds.length === 0) {
+        context.addIssue({ code: 'custom', path: ['layers', index, 'elementIds'], message: 'Each included layer must own at least one inventory element.' });
+      }
       const layerOwned = new Set<string>();
       for (const [elementIndex, elementId] of layer.elementIds.entries()) {
         if (layerOwned.has(elementId)) context.addIssue({ code: 'custom', path: ['layers', index, 'elementIds', elementIndex], message: 'A layer cannot list an element twice.' });

@@ -58,8 +58,12 @@ test('manual acceptance keeps model, storage, and Agent controls interactive', a
   const fileChooserPromise = page.waitForEvent('filechooser');
   await page.locator('.skill-chat-workbench__composer-footer > button').first().click();
   const fileChooser = await fileChooserPromise;
-  await fileChooser.setFiles({ name: 'agent-reference.png', mimeType: 'image/png', buffer: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]) });
+  const agentReference = makeReferenceImage('agent-reference.png', [108, 82, 214, 255], { width: 32, height: 24 });
+  await fileChooser.setFiles({ name: agentReference.name, mimeType: agentReference.mimeType, buffer: agentReference.buffer });
   await expect(composer.locator('[data-media-mention="image"]')).toBeVisible();
+  await expect.poll(() => composer.locator('[data-media-mention="image"] img')
+    .evaluate((image: HTMLImageElement) => ({ complete: image.complete, width: image.naturalWidth, height: image.naturalHeight })))
+    .toEqual({ complete: true, width: 32, height: 24 });
   const send = page.locator('.skill-chat-workbench__composer button[type="submit"]');
   await composer.fill('Test Agent message');
   await expect(send).toBeEnabled();

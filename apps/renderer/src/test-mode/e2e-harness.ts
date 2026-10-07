@@ -1211,13 +1211,17 @@ function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClien
     },
     async importProjectImage(target, file) {
       if (file !== undefined && file.type.startsWith('image/')) {
+        const displayUrl = await readManualAcceptanceFileUrl(file);
+        const image = new Image();
+        image.src = displayUrl;
+        await image.decode();
         runtime.pendingImageImports.unshift({
           byteSize: file.size,
-          height: 1,
+          height: image.naturalHeight,
           label: sanitizeE2EMediaLabel(file.name, 'Imported image'),
           mediaType: 'image/png',
-          width: 1,
-          displayUrl: await readManualAcceptanceFileUrl(file),
+          width: image.naturalWidth,
+          displayUrl,
         });
       }
       return importE2EProjectImage(runtime, target);

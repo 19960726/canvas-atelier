@@ -8,12 +8,17 @@ async function main(): Promise<void> {
   const runtimeFilePath = resolveMcpRuntimeFilePath(process.env);
   const runtimeClient = createMcpRuntimeClient({ runtimeFilePath });
   const server = createCanvasAtelierMcpServer(runtimeClient);
+  let shutdownPromise: Promise<void> | undefined;
 
-  async function shutdown(): Promise<void> {
-    await server.close().catch(() => undefined);
-    await runtimeClient.close();
+  function shutdown(): Promise<void> {
+    shutdownPromise ??= Promise.all([
+      server.close().catch(() => undefined),
+      runtimeClient.close(),
+    ]).then(() => undefined);
+    return shutdownPromise;
   }
 
+  process.stdin.once('end', () => { void shutdown(); });
   process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
   process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
 

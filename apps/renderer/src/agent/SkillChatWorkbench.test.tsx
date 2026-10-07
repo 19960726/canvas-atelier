@@ -89,6 +89,182 @@ function renderWorkbench(overrides: Partial<React.ComponentProps<typeof SkillCha
 }
 
 describe('creative follow-up references', () => {
+  it('refuses to send a complete request source that exceeds the storage limit', async () => {
+    const conversation = { ...createAgentConversation(100), mode: 'original' as const, modelRoute: 'chat/creative', messages: [{ id: 'long-unconfirmed-source', role: 'user' as const, mode: 'original' as const, content: '制作城市海报', request: { modelDisplayName: 'Creative chat', modelRoute: 'chat/creative', knowledgeBaseCount: 0, projectMemoryCount: 0, references: [], status: 'completed' as const, originalRequest: '图'.repeat(16_000) } }] };
+    writeAgentConversationCollection('project-a', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    const chat = vi.fn();
+    renderWorkbench({ chat });
+    const modification = '继续，只把车身改成红色';
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: modification } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(chat).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('完整需求超出');
+    expect((screen.getByTestId('agent-composer-input') as HTMLTextAreaElement).value).toBe(modification);
+    expect(readAgentConversationCollection('project-a').conversations[0]!.messages).toHaveLength(1);
+  });
+
+  it('follows an unconfirmed unrelated request without inheriting the previous confirmed task', async () => {
+    const image = { assetId: 'a'.repeat(16), label: '早餐原图', displayUrl: 'novus-asset://breakfast' };
+    const breakfastRequest = '@图片1 制作早餐海报，桌上恰好六个烧麦，禁止红色';
+    const carRequest = '为蓝色汽车制作城市海报';
+    const carFollowUp = '继续，只把车身改成红色';
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: JSON.stringify({ summary: '可执行画面方案', options: [{ id: 'a', title: '当前方案', kind: 'image', reason: '完整摄影构图', prompt: '主体置于桌面前景，柔和侧光表现陶瓷与金属细节，完整轮廓，中性厨房背景，真实摄影。' }] }), modelRoute: 'chat/creative', sources: [] }));
+    const executeCanvasAction = vi.fn(async (_action: SkillCanvasActionRequest) => true);
+    renderWorkbench({ profiles: [{ ...profiles[0]!, capabilities: ['chat', 'vision'] }, { ...profiles[1]!, capabilities: ['image_generation', 'image_edit'] }], referenceImages: [image], chat, executeCanvasAction });
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: '@' } });
+    fireEvent.click(projectMention(image.label));
+    fireEvent.change(composer, { target: { value: breakfastRequest } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：当前方案' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledOnce());
+    await waitFor(() => expect(readAgentConversationCollection('project-a').conversations[0]!.taskContext?.originalRequest).toBe(breakfastRequest));
+    fireEvent.change(composer, { target: { value: carRequest } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: '选择方案：当前方案' })).toHaveLength(2));
+    fireEvent.change(composer, { target: { value: carFollowUp } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: '选择方案：当前方案' })).toHaveLength(3));
+    fireEvent.click(screen.getAllByRole('button', { name: '选择方案：当前方案' })[2]!);
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledTimes(2));
+    const confirmed = readAgentConversationCollection('project-a').conversations[0]!.taskContext;
+    expect(confirmed?.originalRequest).toContain(carRequest);
+    expect(confirmed?.originalRequest).toContain(carFollowUp);
+    expect(confirmed?.originalRequest).not.toContain('六个烧麦');
+    expect(confirmed?.references).toEqual([]);
+    expect(chat.mock.calls[2]![0].referenceAssetIds ?? []).toEqual([]);
+    const sent = chat.mock.calls[2]![0].messages;
+    expect(sent[sent.length - 1]!.content).not.toContain('已确认任务上下文');
+  });
+
+  it.each([
+    ['continues the confirmed task', '继续，只把碗改成白色，其他保持', true],
+    ['starts an unrelated task', '为蓝色汽车制作城市海报', false],
+  ])('%s without losing or leaking the confirmed request', async (_scenario, nextRequest, continues) => {
+    const images = Array.from({ length: 8 }, (_, index) => ({ assetId: String(index + 1).repeat(16), label: `项目图片${index + 1}`, displayUrl: `novus-asset://image-${index + 1}` }));
+    const originalRequest = '@图片8 制作早餐海报，桌上恰好六个烧麦，禁止红色';
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: JSON.stringify({
+      summary: '可执行画面方案', options: [{ id: 'a', title: '当前方案', kind: 'image', reason: '完整摄影构图', prompt: '主体置于桌面前景，柔和侧光表现陶瓷与金属细节，完整轮廓，中性厨房背景，真实摄影。' }],
+    }), modelRoute: 'chat/creative', sources: [] }));
+    const executeCanvasAction = vi.fn(async (_action: SkillCanvasActionRequest) => true);
+    renderWorkbench({ profiles: [{ ...profiles[0]!, capabilities: ['chat', 'vision'] }, { ...profiles[1]!, capabilities: ['image_generation', 'image_edit'] }], referenceImages: images, chat, executeCanvasAction });
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: '@' } });
+    fireEvent.click(projectMention(images[7]!.label));
+    fireEvent.change(composer, { target: { value: originalRequest } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：当前方案' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(readAgentConversationCollection('project-a').conversations[0]!.taskContext?.originalRequest).toBe(originalRequest));
+
+    fireEvent.change(composer, { target: { value: nextRequest } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: '选择方案：当前方案' })).toHaveLength(2));
+    expect(chat.mock.calls[1]![0].referenceMentions ?? []).toEqual(continues ? [{ assetId: images[7]!.assetId, label: images[7]!.label, mention: '@图片8' }] : []);
+    fireEvent.click(screen.getAllByRole('button', { name: '选择方案：当前方案' })[1]!);
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledTimes(2));
+    const confirmed = readAgentConversationCollection('project-a').conversations[0]!.taskContext;
+    expect(confirmed?.originalRequest).toContain(nextRequest);
+    if (continues) {
+      expect(confirmed?.originalRequest).toContain(originalRequest);
+      expect(confirmed?.references).toEqual([{ assetId: images[7]!.assetId, label: images[7]!.label, mention: '@图片8' }]);
+      fireEvent.change(composer, { target: { value: '继续，只把窗光改柔和' } });
+      fireEvent.click(screen.getByRole('button', { name: '发送' }));
+      await waitFor(() => expect(screen.getAllByRole('button', { name: '选择方案：当前方案' })).toHaveLength(3));
+      fireEvent.click(screen.getAllByRole('button', { name: '选择方案：当前方案' })[2]!);
+      fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+      await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledTimes(3));
+      const repeated = readAgentConversationCollection('project-a').conversations[0]!.taskContext;
+      for (const request of [originalRequest, nextRequest, '只把窗光改柔和']) expect(repeated?.originalRequest).toContain(request);
+      expect(repeated?.references).toEqual(confirmed?.references);
+    } else {
+      expect(confirmed?.originalRequest).toBe(nextRequest);
+      expect(confirmed?.references).toEqual([]);
+      const sentMessages = chat.mock.calls[1]![0].messages;
+      expect(sentMessages[sentMessages.length - 1]!.content).not.toContain('已确认任务上下文');
+    }
+  });
+
+  it('refuses to select a runnable historical plan after its source image is removed', async () => {
+    const image = { assetId: 'a'.repeat(16), label: '产品原图', displayUrl: 'novus-asset://product' };
+    const conversation = { ...createAgentConversation(100), mode: 'original' as const, modelRoute: 'chat/creative', messages: [
+      { id: 'original', role: 'user' as const, mode: 'original' as const, content: '@图片8 精修原位产品', request: { modelDisplayName: 'Creative chat', modelRoute: 'chat/creative', knowledgeBaseCount: 0, projectMemoryCount: 0, references: [{ assetId: image.assetId, label: image.label, mention: '@图片8' }], status: 'completed' as const, generationKind: 'image' as const } },
+      { id: 'plan', role: 'assistant' as const, mode: 'original' as const, content: JSON.stringify({ summary: '产品精修', options: [{ id: 'edit', title: '原位精修', kind: 'image', reason: '保留产品比例', prompt: '保持原位产品完整轮廓与比例，柔和侧光保留金属细节，中性厨房背景，真实摄影。' }] }) },
+    ] };
+    writeAgentConversationCollection('project-a', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    const view = renderWorkbench({ referenceImages: [image], profiles: [profiles[0]!, { ...profiles[1]!, capabilities: ['image_generation', 'image_edit'] }] });
+    view.rerender(workbench({ referenceImages: [], profiles: [profiles[0]!, { ...profiles[1]!, capabilities: ['image_generation', 'image_edit'] }] }));
+    fireEvent.click(screen.getByRole('button', { name: '选择方案：原位精修' }));
+    expect(screen.getAllByRole('alert').some(alert => alert.textContent?.includes('原方案参考素材已不可用'))).toBe(true);
+    expect(screen.getByLabelText('已发送素材')).toHaveTextContent('@图片8');
+    expect(screen.queryByRole('button', { name: '确认执行生图' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the original request of an old follow-up plan independent of a later confirmed task', async () => {
+    const plan = JSON.stringify({ summary: '早餐画面调整', requirements: { goal: '早餐图', mustKeep: ['六个烧麦'] }, options: [{ id: 'old', title: '早餐旧方案', kind: 'image', reason: '保留早餐构图', prompt: '早餐餐具置于厨房桌面，保留六个烧麦与真实人物关系，柔和侧光表现陶瓷细节。' }] });
+    const conversation = { ...createAgentConversation(100), mode: 'original' as const, modelRoute: 'chat/creative', messages: [
+      { id: 'original', role: 'user' as const, mode: 'original' as const, content: '制作早餐图，六个烧麦，禁止红色' },
+      { id: 'initial-reply', role: 'assistant' as const, mode: 'original' as const, content: '保留六个烧麦。' },
+      { id: 'follow-up', role: 'user' as const, mode: 'original' as const, content: '继续，只把碗改成白色' },
+      { id: 'old-plan', role: 'assistant' as const, mode: 'original' as const, content: plan },
+      { id: 'later', role: 'user' as const, mode: 'original' as const, content: '制作红色汽车海报' },
+      { id: 'reply', role: 'assistant' as const, mode: 'original' as const, content: '这是另一个任务。' },
+    ], taskContext: { version: 1 as const, generationKind: 'image' as const, originalRequest: '制作红色汽车海报', executionPrompt: '红色汽车、金属反射、城市街道。', references: [], executionReferenceAssetIds: [], confirmedAt: 99 } };
+    writeAgentConversationCollection('project-a', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    const executeCanvasAction = vi.fn(async () => true);
+    renderWorkbench({ executeCanvasAction });
+    fireEvent.click(screen.getByRole('button', { name: '选择方案：早餐旧方案' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledOnce());
+    const context = readAgentConversationCollection('project-a').conversations[0]!.taskContext;
+    expect(context?.originalRequest).toContain('六个烧麦，禁止红色');
+    expect(context?.originalRequest).toContain('只把碗改成白色');
+    expect(context?.originalRequest).not.toContain('红色汽车');
+  });
+
+  it('recovers an earlier empty video plan with its complete request, constraints and reference duties', async () => {
+    const image = { assetId: 'a'.repeat(16), label: '产品原图', displayUrl: 'novus-asset://product' };
+    const plan = { summary: '保留产品的四角度视频', requirements: { goal: '四角度产品视频', mustKeep: ['产品原位置和比例'], mustChange: ['只换机位'], mustAvoid: ['禁止红色'], acceptanceCriteria: ['四个角度且无变形'] }, referenceDuties: [{ mention: '@图片8', role: 'product', inherit: ['金属轮廓'], doNotCopy: ['背景人物'] }] };
+    const conversation = { ...createAgentConversation(100), mode: 'original' as const, modelRoute: 'chat/creative', messages: [
+      { id: 'original', role: 'user' as const, mode: 'original' as const, content: '@图片8 制作四个角度视频，原位置和比例不变', request: { modelDisplayName: 'Creative chat', modelRoute: 'chat/creative', knowledgeBaseCount: 0, projectMemoryCount: 0, references: [{ assetId: image.assetId, label: image.label, mention: '@图片8' }], status: 'completed' as const, generationKind: 'video' as const } },
+      { id: 'empty', role: 'assistant' as const, mode: 'original' as const, content: JSON.stringify(plan) },
+      { id: 'later', role: 'user' as const, mode: 'original' as const, content: '另一个任务：制作红色海报' },
+      { id: 'reply', role: 'assistant' as const, mode: 'original' as const, content: '已记录另一个任务。' },
+    ] };
+    writeAgentConversationCollection('project-a', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
+    const chat = vi.fn();
+    renderWorkbench({ referenceImages: [image], chat });
+    fireEvent.click(screen.getByRole('button', { name: '补全可执行方案' }));
+    const draft = (screen.getByTestId('agent-composer-input') as HTMLTextAreaElement).value;
+    for (const expected of [conversation.messages[0]!.content, '产品原位置和比例', '只换机位', '禁止红色', '四个角度且无变形', '金属轮廓', '背景人物', '@图片8', '视频']) expect(draft).toContain(expected);
+    expect(draft).not.toContain('制作红色海报');
+    expect(screen.getByRole('button', { name: '生成偏好' })).toHaveTextContent('视频工作流');
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it('refuses to recover an empty plan after its original asset disappears', async () => {
+    const image = { assetId: 'a'.repeat(16), label: '产品原图', displayUrl: 'novus-asset://product' };
+    const chat = vi.fn(async () => ({ message: JSON.stringify({ summary: '早餐画面分析', requirements: { goal: '厨房早餐图' } }), modelRoute: 'chat/creative', sources: [] }));
+    const view = renderWorkbench({ profiles: [{ ...profiles[0]!, capabilities: ['chat', 'vision'] }, profiles[1]!], referenceImages: [image], chat });
+    fireEvent.change(screen.getByLabelText('Agent 模式'), { target: { value: 'original' } });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
+    fireEvent.click(projectMention(image.label));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 制作厨房早餐图工作流' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await screen.findByRole('button', { name: '补全可执行方案' });
+    view.rerender(workbench({ profiles: [{ ...profiles[0]!, capabilities: ['chat', 'vision'] }, profiles[1]!], referenceImages: [], chat }));
+    fireEvent.click(screen.getByRole('button', { name: '补全可执行方案' }));
+    expect(screen.getAllByRole('alert').some(alert => alert.textContent?.includes('原方案参考素材已不可用'))).toBe(true);
+    expect((screen.getByTestId('agent-composer-input') as HTMLTextAreaElement).value).toBe('');
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['cancel', 'failed-entry'])('keeps the prior confirmed task when a new plan is %s', async (outcome) => {
     const taskContext = { version: 1 as const, generationKind: 'image' as const, originalRequest: '原早餐图保留六个烧麦', executionPrompt: '六个烧麦，产品原位、机位和比例不变。', references: [], executionReferenceAssetIds: [], confirmedAt: 100 };
     const conversation = { ...createAgentConversation(100), mode: 'original' as const, modelRoute: 'chat/creative', taskContext };
@@ -105,7 +281,7 @@ describe('creative follow-up references', () => {
     else expect(executeCanvasAction).not.toHaveBeenCalled();
     expect(readAgentConversationCollection('project-a').conversations[0]!.taskContext).toEqual(taskContext);
   });
-  it('restores confirmed constraints and the original image number after bounded history removes the initiating request', async () => {
+  it('restores and reconfirms constraints and the original image number after bounded history removes the initiating request', async () => {
     const reference = { assetId: 'a'.repeat(16), label: '早餐原图', displayUrl: 'novus-asset://breakfast' };
     const conversation = {
       ...createAgentConversation(100), mode: 'original' as const, modelRoute: 'chat/creative',
@@ -113,8 +289,10 @@ describe('creative follow-up references', () => {
       taskContext: { version: 1 as const, generationKind: 'image' as const, originalRequest: '只修改原位早餐图，桌上恰好六个烧麦，禁止红色', executionPrompt: '保持机位、人物姿态、产品坐标与原图比例，六个烧麦全部可数，不得出现红色。', references: [{ assetId: reference.assetId, label: reference.label, mention: '@图片8' }], executionReferenceAssetIds: [reference.assetId], confirmedAt: 100 },
     };
     writeAgentConversationCollection('project-a', { version: 2, activeConversationId: conversation.id, conversations: [conversation] });
-    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: '已读取本次修改需求', modelRoute: 'chat/creative', sources: [] }));
-    renderWorkbench({ profiles: [{ ...profiles[0]!, capabilities: ['chat', 'vision'] }, { ...profiles[1]!, capabilities: ['image_generation', 'image_edit'] }], referenceImages: [reference], chat });
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: JSON.stringify({ summary: '早餐画面调整', options: [{ id: 'white-bowl', title: '白碗方案', kind: 'image', reason: '仅修改碗颜色', prompt: '早餐产品置于桌面前景，白色陶瓷碗以柔和窗光照亮，保持机位、人物姿态、产品比例和厨房构图。' }] }), modelRoute: 'chat/creative', sources: [] }));
+    const executeCanvasAction = vi.fn(async (_action: SkillCanvasActionRequest) => true);
+    const props = { profiles: [{ ...profiles[0]!, capabilities: ['chat', 'vision'] }, { ...profiles[1]!, capabilities: ['image_generation', 'image_edit'] }] as ProviderBridgeProfile[], referenceImages: [reference], chat, executeCanvasAction };
+    const view = renderWorkbench(props);
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '继续，只把碗改成白色，其他保持' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(chat).toHaveBeenCalledOnce());
@@ -123,6 +301,16 @@ describe('creative follow-up references', () => {
     expect(request.referenceMentions).toEqual([{ assetId: reference.assetId, label: reference.label, mention: '@图片8' }]);
     const latest = request.messages[request.messages.length - 1]!.content;
     for (const text of ['桌上恰好六个烧麦', '产品坐标与原图比例', '不得出现红色', '只把碗改成白色']) expect(latest).toContain(text);
+    await screen.findByRole('button', { name: '选择方案：白碗方案' });
+    view.unmount();
+    renderWorkbench(props);
+    fireEvent.click(screen.getByRole('button', { name: '选择方案：白碗方案' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledOnce());
+    const confirmed = readAgentConversationCollection('project-a').conversations[0]!.taskContext;
+    expect(confirmed?.originalRequest).toContain(conversation.taskContext.originalRequest);
+    expect(confirmed?.originalRequest).toContain('只把碗改成白色');
+    expect(confirmed?.references).toEqual(conversation.taskContext.references);
   });
   it('connects only the chosen product and lighting references after confirmation and carries every hard constraint', async () => {
     const images = [
@@ -740,7 +928,7 @@ describe('SkillChatWorkbench', () => {
 
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '第一次请求' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
-    await screen.findByText('可以查看 https://example.com/result');
+    await waitFor(() => expect(within(screen.getByLabelText('对话消息')).getByRole('link', { name: 'https://example.com/result' })).toHaveAttribute('href', 'https://example.com/result'));
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '第二次请求' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
@@ -939,7 +1127,7 @@ describe('SkillChatWorkbench', () => {
       canvasActionResults: [{ nodeId: resultNodeId, status: 'completed', assetIds: [] }],
     });
 
-    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ top: expect.any(Number), behavior: 'smooth' })));
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ top: expect.any(Number), behavior: 'auto' })));
   });
 
   it.each(['failed', 'cancelled'] as const)('reports a successful retry of the same node after %s without duplicating stale terminal messages', async (terminalStatus) => {
@@ -1547,22 +1735,23 @@ describe('SkillChatWorkbench', () => {
     expect(screen.getByTestId('agent-new-chat')).toHaveTextContent('新对话');
   });
 
-  it('creates a separate task and restores the previous conversation from the task selector', async () => {
+  it('creates a separate task and restores the previous conversation from the title menu', async () => {
     renderWorkbench();
 
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '分析第一张产品参考图的构图与光线' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(screen.getByText('Use a clean studio-lighting hierarchy.')).toBeVisible());
 
-    const taskSelector = screen.getByRole('combobox', { name: 'Codex 任务' });
-    const firstTaskId = (taskSelector as HTMLSelectElement).value;
-    expect(within(taskSelector).getByRole('option', { name: '分析第一张产品参考图的构图与光线' })).toBeInTheDocument();
+    const taskTrigger = screen.getByRole('button', { name: '历史对话' });
+    const firstTaskId = taskTrigger.getAttribute('data-active-conversation');
+    expect(taskTrigger).toHaveTextContent('分析第一张产品参考图的构图与光线');
 
     fireEvent.click(screen.getByTestId('agent-new-chat'));
     expect(screen.queryByText('Use a clean studio-lighting hierarchy.')).not.toBeInTheDocument();
-    expect((taskSelector as HTMLSelectElement).value).not.toBe(firstTaskId);
+    expect(taskTrigger.getAttribute('data-active-conversation')).not.toBe(firstTaskId);
 
-    fireEvent.change(taskSelector, { target: { value: firstTaskId } });
+    fireEvent.click(taskTrigger);
+    fireEvent.click(within(screen.getByRole('dialog', { name: '历史对话' })).getByRole('button', { name: /分析第一张产品参考图的构图与光线/u }));
     expect(within(screen.getByLabelText('对话消息')).getByText('分析第一张产品参考图的构图与光线')).toBeVisible();
     expect(screen.getByText('Use a clean studio-lighting hierarchy.')).toBeVisible();
   });
@@ -1579,7 +1768,7 @@ describe('SkillChatWorkbench', () => {
 
     expect(within(screen.getByLabelText('对话消息')).getByText('保留这个任务')).toBeVisible();
     expect(screen.getByLabelText('Agent 模式')).toHaveValue('original');
-    expect((screen.getByRole('combobox', { name: 'Codex 任务' }) as HTMLSelectElement).value).toMatch(/^conversation-/u);
+    expect(screen.getByRole('button', { name: '历史对话' }).getAttribute('data-active-conversation')).toMatch(/^conversation-/u);
   });
 
   it('restores each conversation generated-result card with its durable canvas node label', async () => {
@@ -1619,10 +1808,12 @@ describe('SkillChatWorkbench', () => {
     first.unmount();
 
     renderWorkbench(props);
-    const selector = screen.getByRole('combobox', { name: 'Codex 任务' });
-    fireEvent.change(selector, { target: { value: otherConversation.id } });
+    const trigger = screen.getByRole('button', { name: '历史对话' });
+    fireEvent.click(trigger);
+    fireEvent.click(within(screen.getByRole('dialog', { name: '历史对话' })).getByRole('button', { name: /其他任务/u }));
     expect(screen.queryByLabelText('生成执行进度')).not.toBeInTheDocument();
-    fireEvent.change(selector, { target: { value: resultConversation.id } });
+    fireEvent.click(trigger);
+    fireEvent.click(within(screen.getByRole('dialog', { name: '历史对话' })).getByRole('button', { name: /产品主图方案/u }));
     expect(await screen.findByLabelText('生成执行进度')).toHaveAttribute('data-node-label', '方案 3 · 红色破壁机主图');
     expect(screen.getByRole('button', { name: '查看生成结果：生成结果 1' })).toBeVisible();
   });

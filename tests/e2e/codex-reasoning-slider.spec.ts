@@ -23,7 +23,7 @@ for (const [theme, width] of [['light', 1440], ['dark', 1440], ['light', 800]] a
     await openEmptyApp(page);
     await openAgentPanel(page);
     const headerStatus = await page.locator('.skill-chat-workbench__header p').boundingBox();
-    const taskSelect = (await page.getByRole('combobox', { name: 'Codex 任务' }).boundingBox())!;
+    const taskSelect = (await page.getByRole('button', { name: '历史对话', exact: true }).boundingBox())!;
     if (headerStatus !== null) {
       expect(headerStatus.y + headerStatus.height, 'status must not overlap the task picker').toBeLessThanOrEqual(taskSelect.y);
     }

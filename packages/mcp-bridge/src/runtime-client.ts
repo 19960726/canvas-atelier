@@ -24,6 +24,7 @@ export interface McpRuntimeClient {
 
 export function createMcpRuntimeClient(options: McpRuntimeClientOptions): McpRuntimeClient {
   let closed = false;
+  const activeRequests = new Set<() => void>();
   return {
     async call(input) {
       const parsedRequest = CanvasMcpRequestSchema.safeParse(input);
@@ -33,11 +34,16 @@ export function createMcpRuntimeClient(options: McpRuntimeClientOptions): McpRun
       try {
         descriptor = await readRuntimeDescriptor(options.runtimeFilePath);
       } catch {
+        if (closed) return error('MCP_CLIENT_CLOSED', 'The Canvas Atelier MCP client is closed.');
         return error('MCP_WAITING_FOR_CANVAS', 'Open Canvas Atelier and keep a canvas window active.');
       }
+      if (closed) return error('MCP_CLIENT_CLOSED', 'The Canvas Atelier MCP client is closed.');
       try {
-        return await sendPipeRequest(descriptor.pipeName, descriptor.authToken, parsedRequest.data, options.timeoutMs ?? 15_000);
+        return await sendPipeRequest(descriptor.pipeName, descriptor.authToken, parsedRequest.data, options.timeoutMs ?? 15_000, activeRequests);
       } catch (cause) {
+        if (cause instanceof Error && cause.message === 'MCP_CLIENT_CLOSED') {
+          return error('MCP_CLIENT_CLOSED', 'The Canvas Atelier MCP client is closed.');
+        }
         return error(
           cause instanceof Error && cause.message === 'MCP_RUNTIME_TIMEOUT' ? 'MCP_RUNTIME_TIMEOUT' : 'MCP_RUNTIME_UNAVAILABLE',
           cause instanceof Error && cause.message === 'MCP_RUNTIME_TIMEOUT'
@@ -46,7 +52,10 @@ export function createMcpRuntimeClient(options: McpRuntimeClientOptions): McpRun
         );
       }
     },
-    async close() { closed = true; },
+    async close() {
+      closed = true;
+      for (const cancel of activeRequests) cancel();
+    },
   };
 }
 
@@ -55,6 +64,7 @@ async function sendPipeRequest(
   authToken: string,
   request: CanvasMcpRequest,
   timeoutMs: number,
+  activeRequests: Set<() => void>,
 ): Promise<CanvasMcpResponse> {
   return new Promise((resolve, reject) => {
     const requestId = randomUUID();
@@ -65,10 +75,13 @@ async function sendPipeRequest(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      activeRequests.delete(cancel);
       socket.destroy();
       callback();
     };
+    const cancel = () => finish(() => reject(new Error('MCP_CLIENT_CLOSED')));
     const timer = setTimeout(() => finish(() => reject(new Error('MCP_RUNTIME_TIMEOUT'))), timeoutMs);
+    activeRequests.add(cancel);
     socket.setEncoding('utf8');
     socket.on('connect', () => {
       socket.write(`${JSON.stringify({ protocol: PIPE_PROTOCOL, requestId, authToken, request })}\n`);

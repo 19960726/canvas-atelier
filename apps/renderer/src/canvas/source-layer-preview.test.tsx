@@ -1,13 +1,14 @@
 import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { useSourceLayerPreview, sourceLayerInputFromNodes, type SourceLayerInput } from './source-layer-preview';
+import { prepareSourceLayerDocument, useSourceLayerPreview, sourceLayerInputFromNodes, type SourceLayerInput } from './source-layer-preview';
+import { SourceForegroundPreview } from './SourceForegroundPreview';
 import { createCanvasModuleNode } from '@agent-canvas/domain';
 import { decodeLayerPixels } from '../app/managed-layer-pixels';
 vi.mock('../app/managed-layer-pixels', () => ({
   decodeLayerPixels: vi.fn(async () => new Uint8Array(4 * 4 * 4).fill(255)),
   layerPixelsUrl: () => 'data:image/png;base64,preview',
 }));
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
 it('uses saved layer order in individual layer previews just as the workbench and PSD do',()=>{
   const ids=['bg','lower','upper'];
   const nodes=ids.map((id,index)=>{const node=createCanvasModuleNode(id,'image_layer',{x:0,y:0});node.data.config={layerId:id,resultAssetId:id,qualityStatus:'passed',order:index===0?0:3-index};return node;});
@@ -79,4 +80,42 @@ it('shares a source document between visible layer nodes instead of decoding eve
   render(<><Consumer /><Consumer /></>);
   await waitFor(() => expect(screen.getAllByText('ready')).toHaveLength(2));
   expect(decodeLayerPixels).toHaveBeenCalledTimes(3);
+});
+
+function rejectComputationWorker() {
+  const started = vi.fn();
+  const terminated = vi.fn();
+  vi.stubGlobal('Worker', class {
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: (() => void) | null = null;
+    onmessageerror: (() => void) | null = null;
+    terminate = terminated;
+    constructor(url: URL) { expect(url.pathname).toContain('source-layer-compute-worker'); }
+    postMessage(request: unknown, transfers: Transferable[]) {
+      started(structuredClone(request, { transfer: transfers }));
+      queueMicrotask(() => this.onmessage?.({ data: { type: 'error', error: 'worker computation sentinel' } } as MessageEvent));
+    }
+  });
+  return { started, terminated };
+}
+
+it('runs source group computation outside the renderer and surfaces worker failure without retrying locally', async () => {
+  const worker = rejectComputationWorker();
+  const input: SourceLayerInput = { sourceUrl: 'source', width: 4, height: 4, selection: { mode: 'whole' }, layers: [
+    { record: { layerId: 'bg', kind: 'background', name: 'bg', assetId: 'bg', x: 0, y: 0, width: 4, height: 4, visible: true, opacity: 1 }, url: 'bg', bounds: null },
+    { record: { layerId: 'fg', kind: 'transparent', name: 'fg', assetId: 'fg', x: 0, y: 0, width: 4, height: 4, visible: true, opacity: 1 }, url: 'fg', bounds: { x: .25, y: .25, width: .5, height: .5 } },
+  ] };
+  await expect(prepareSourceLayerDocument(input)).rejects.toThrow('worker computation sentinel');
+  expect(worker.started).toHaveBeenCalledOnce();
+  expect(worker.terminated).toHaveBeenCalledOnce();
+  expect(decodeLayerPixels).toHaveBeenCalledTimes(1);
+});
+
+it('runs individual source foreground extraction outside the renderer too', async () => {
+  const worker = rejectComputationWorker();
+  render(<SourceForegroundPreview sourceUrl="source" maskUrl="mask" width={4} height={4}
+    bounds={{ x: .25, y: .25, width: .5, height: .5 }} selection={{ mode: 'whole' }} label="foreground" />);
+  expect((await screen.findByRole('alert')).textContent).toContain('worker computation sentinel');
+  expect(worker.started).toHaveBeenCalledOnce();
+  expect(worker.terminated).toHaveBeenCalledOnce();
 });

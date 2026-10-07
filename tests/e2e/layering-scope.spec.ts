@@ -4,7 +4,7 @@ import { test, expect } from './helpers/e2e-test';
 import { e2eState, openEmptyApp, queueProjectImageImport } from './helpers/app';
 import { makeReferenceImage } from './helpers/fixtures';
 
-const output = path.join(process.cwd(), 'work', 'formal-evidence-1.6.174', 'scope');
+const output = path.join(process.cwd(), 'work', process.env.CANVAS_LAYERING_SCOPE_AUDIT_DIR ?? 'formal-evidence-1.6.174/scope');
 for (const theme of ['light', 'dark'] as const) {
   test(`selects, moves and resizes a portrait scope in ${theme}, then persists it without live calls`, async ({ page }) => {
     await mkdir(output, { recursive: true });

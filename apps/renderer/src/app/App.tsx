@@ -3,7 +3,7 @@ import { applyProjectTransaction, normalizeImageOutputFormat, normalizeImageBack
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import { CanvasWorkspace } from '../canvas/CanvasWorkspace';
 import { preloadGenerationHistoryFirstPage } from '../history/history-first-page-cache';
-import { resolveMcpNodeExecutionInputs, useAppStore } from './app-store';
+import { assertVideoKeyframeRoute, captureLayeringOperationOwner, resolveConnectedVideoGenerationMedia, resolveMcpNodeExecutionInputs, useAppStore } from './app-store';
 import { getActiveProjectSessionId } from './desktop-persistence';
 import { getMcpCanvasSelection, resetMcpCanvasSelection } from './mcp-canvas-selection';
 import {
@@ -278,45 +278,71 @@ function mcpManagedSource(nodeId: string) {
 
 const mcpLayeringCallbacks: McpLayeringCallbacks = {
   validateSource: nodeId => { mcpManagedSource(nodeId); },
-  async analyze(nodeId, options) {
+  async analyze(nodeId, options, isCurrentOperation) {
     const original = mcpManagedSource(nodeId), bridge = window.novusDesktop?.provider;
     if (!bridge) throw new Error('Provider image-analysis bridge is unavailable.');
+    const isCurrentOwner = captureLayeringOperationOwner(() => useAppStore.getState(), original.asset.assetId);
+    const assertCurrent = () => {
+      const current = mcpManagedSource(nodeId), permissions = readMcpPermissions();
+      if (isCurrentOperation?.() === false || !isCurrentOwner() || !permissions.readCanvas || !permissions.executeAiGeneration
+        || current.snapshot !== original.snapshot || current.revision !== original.revision
+        || current.asset.assetId !== original.asset.assetId) throw new Error('Source or authorization changed during analysis.');
+      return current;
+    };
+    assertCurrent();
     const profiles = await listRunnableProviderProfiles(bridge);
     const profile = profiles.find(candidate => candidate.provider === options.provider && candidate.modelRoute === options.modelRoute && candidate.capabilities.includes('vision'));
-    const current = mcpManagedSource(nodeId);
-    if (!profile || !readMcpPermissions().executeAiGeneration || current.snapshot !== original.snapshot || current.revision !== original.revision || current.asset.assetId !== original.asset.assetId) throw new Error('Source or route changed before analysis.');
-    return analyzeImageLayering({ sourceAssetId: current.asset.assetId, width: current.asset.width!, height: current.asset.height!, profile,
+    const current = assertCurrent();
+    if (!profile) throw new Error('Source or route changed before analysis.');
+    const plan = await analyzeImageLayering({ sourceAssetId: current.asset.assetId, width: current.asset.width!, height: current.asset.height!, profile,
       ...(options.mode ? { mode: options.mode } : {}), ...(options.targetLayerCount ? { targetLayerCount: options.targetLayerCount } : {}),
       ...(options.selection ? { selection: readLayeringSelection(options.selection) } : {}),
-    }, useAppStore.getState().chatSkill);
+    }, request => useAppStore.getState().chatSkill(request, assertCurrent));
+    assertCurrent();
+    return plan;
   },
   async start(nodeId, plan, options) {
     const original = mcpManagedSource(nodeId), bridge = window.novusDesktop?.provider;
     if (!bridge || original.asset.assetId !== plan.sourceAssetId) throw new Error('The analyzed source is no longer available.');
+    const isCurrentOwner = captureLayeringOperationOwner(() => useAppStore.getState(), original.asset.assetId);
+    const ownerAuthorized = () => {
+      const permissions = readMcpPermissions();
+      return isCurrentOwner() && permissions.readCanvas && permissions.editCanvas && permissions.executeAiGeneration;
+    };
+    const assertOriginal = () => {
+      const current = mcpManagedSource(nodeId);
+      if (!ownerAuthorized() || current.snapshot !== original.snapshot || current.revision !== original.revision
+        || current.asset.assetId !== plan.sourceAssetId) throw new Error('Canvas or authorization changed before layer creation.');
+      return current;
+    };
+    assertOriginal();
     const profiles = await listRunnableProviderProfiles(bridge);
+    assertOriginal();
     const profile = profiles.find(candidate => candidate.provider === options.provider && candidate.modelRoute === options.modelRoute);
     if (!profile || !eligibleForLayeringRoute(profile, PRODUCTION_LAYERING_ROUTE_EVIDENCE)) throw new Error('The selected route does not support transparent layering.');
     const confirmation = await confirmLayeringPlan(plan, options.provider, options.modelRoute, options.resolution, new Date().toISOString());
-    const current = mcpManagedSource(nodeId);
-    if (current.snapshot !== original.snapshot || current.revision !== original.revision || current.asset.assetId !== plan.sourceAssetId) throw new Error('Canvas changed before layer creation.');
+    const current = assertOriginal();
     const groupId = `mcp-${crypto.randomUUID()}`;
     const beforeCreateGuard = () => {
-      const state = useAppStore.getState(), permissions = readMcpPermissions();
-      return permissions.readCanvas && permissions.editCanvas && permissions.executeAiGeneration && state.desktopRevision === original.revision && JSON.stringify(state.project) === original.snapshot;
+      const state = useAppStore.getState();
+      return ownerAuthorized() && state.desktopRevision === original.revision && JSON.stringify(state.project) === original.snapshot;
     };
     const expectedCreated = applyProjectTransaction(current.state.project, buildLayeringGraphTransaction(current.state.project, plan, confirmation, groupId, original.sourceNodeId));
     if (!await useAppStore.getState().createConfirmedLayeringGroup({ plan, confirmation, groupId, sourceNodeId: original.sourceNodeId, executionGuard: beforeCreateGuard })) throw new Error('Layer group could not be saved.');
     const created = useAppStore.getState(), createdSnapshot = JSON.stringify(created.project), createdRevision = created.desktopRevision;
-    if (createdRevision !== original.revision + 1 || createdSnapshot !== JSON.stringify(expectedCreated)) throw new Error('Canvas changed during layer group creation.');
+    if (!ownerAuthorized() || createdRevision !== original.revision + 1 || createdSnapshot !== JSON.stringify(expectedCreated)) throw new Error('Canvas changed during layer group creation.');
     // Only the exact durable binding written by startConfirmedLayering may advance this authorization.
     const executionGuard = (binding?: { readonly project: typeof created.project; readonly revision: number }) => {
       const state = useAppStore.getState();
-      const permissions = readMcpPermissions();
-      if (!permissions.readCanvas || !permissions.editCanvas || !permissions.executeAiGeneration || state.project.id !== original.state.project.id || !state.projectImages.some(asset => asset.assetId === plan.sourceAssetId)) return false;
+      if (!ownerAuthorized() || state.project.id !== original.state.project.id || !state.projectImages.some(asset => asset.assetId === plan.sourceAssetId)) return false;
       return binding ? binding.revision === createdRevision + 1 && state.desktopRevision === binding.revision && JSON.stringify(state.project) === JSON.stringify(binding.project)
         : state.desktopRevision === createdRevision && JSON.stringify(state.project) === createdSnapshot;
     };
-    if (!await useAppStore.getState().startConfirmedLayering({ plan, confirmation, groupId, executionGuard })) throw new Error('The confirmed layering batch could not be started.');
+    const dispatchGuard = () => {
+      const permissions = readMcpPermissions();
+      return permissions.readCanvas && permissions.editCanvas && permissions.executeAiGeneration;
+    };
+    if (!await useAppStore.getState().startConfirmedLayering({ plan, confirmation, groupId, executionGuard, dispatchGuard })) throw new Error('The confirmed layering batch could not be started.');
     const jobs = useAppStore.getState().modelJobs.filter(job => job.layeringGroupId === groupId);
     if (jobs.length !== confirmation.layerIds.length) throw new Error('Layer jobs are not fully tracked.');
     return { groupNodeId: `image-layering-${groupId}`, jobIds: jobs.map(job => job.id) };
@@ -342,6 +368,9 @@ export async function resolveMcpPaidJobRoute(node: CanvasModuleNode): Promise<Mc
       modelRoute,
       modelDisplayName,
     }, node.data.moduleType);
+    if (profile !== undefined && node.data.moduleType === 'video_generation') {
+      assertVideoKeyframeRoute(profile, resolveConnectedVideoGenerationMedia(useAppStore.getState().project, node.id));
+    }
     return profile === undefined ? undefined : { provider: profile.provider, modelRoute: profile.modelRoute };
   }
   if (node.data.moduleType !== 'reverse_agent') return undefined;

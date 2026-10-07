@@ -15,6 +15,87 @@ afterEach(() => {
 });
 
 describe('useCanvasDraft', () => {
+  it('publishes passive small-canvas measurements in one animation frame and keeps newer interactions', () => {
+    let publish: FrameRequestCallback | undefined;
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { publish = callback; return 1; });
+    const initialNodes = [draftNode('module-1', 0, 0)];
+    const renders = vi.fn();
+    const { result } = renderHook(() => {
+      renders();
+      return useCanvasDraft({ nodes: initialNodes, onCommitPositions: async () => true });
+    });
+    renders.mockClear();
+    act(() => result.current.onNodesChange([{ id: 'module-1', type: 'dimensions', dimensions: { width: 292, height: 326 } }]));
+    act(() => result.current.onNodesChange([{ id: 'module-1', type: 'dimensions', dimensions: { width: 292, height: 612 } }]));
+    expect(renders).not.toHaveBeenCalled();
+    expect(requestFrame).toHaveBeenCalledTimes(1);
+    expect(result.current.nodes[0]?.measured).toEqual({ width: 292, height: 612 });
+    act(() => publish?.(0));
+    expect(renders).toHaveBeenCalledTimes(1);
+    expect(result.current.nodes[0]?.measured).toEqual({ width: 292, height: 612 });
+    act(() => result.current.onNodesChange([{ id: 'module-1', type: 'dimensions', dimensions: { width: 292, height: 700 } }]));
+    act(() => result.current.onNodesChange([{ id: 'module-1', type: 'position', position: { x: 40, y: 60 }, dragging: true }]));
+    act(() => publish?.(0));
+    expect(result.current.nodes[0]).toMatchObject({ position: { x: 40, y: 60 }, measured: { width: 292, height: 700 } });
+  });
+
+  it('discards queued passive renders when the project changes or the hook unmounts', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { callbacks.push(callback); return callbacks.length; });
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame');
+    const initialNodes = [draftNode('module-1', 0, 0)];
+    const { result, rerender, unmount } = renderHook(({ resetKey }) => useCanvasDraft({
+      nodes: initialNodes, resetKey, onCommitPositions: async () => true,
+    }), { initialProps: { resetKey: 'project-a' } });
+    act(() => result.current.onNodesChange([{ id: 'module-1', type: 'dimensions', dimensions: { width: 292, height: 612 } }]));
+    rerender({ resetKey: 'project-b' });
+    expect(cancel).toHaveBeenCalledWith(1);
+    act(() => callbacks[0]?.(0));
+    expect(result.current.nodes[0]?.measured).toBeUndefined();
+    act(() => result.current.onNodesChange([{ id: 'module-1', type: 'dimensions', dimensions: { width: 292, height: 326 } }]));
+    unmount();
+    expect(cancel).toHaveBeenCalledWith(2);
+  });
+
+  it('retains queued passive measurements through unrelated parent renders without an immediate publication', () => {
+    let publish: FrameRequestCallback | undefined;
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { publish = callback; return 1; });
+    const initialNodes = [draftNode('module-1', 0, 0)];
+    const renders = vi.fn();
+    const { result, rerender } = renderHook(() => {
+      const draft = useCanvasDraft({ nodes: initialNodes, onCommitPositions: async () => true });
+      renders(draft.nodes[0]?.measured);
+      return draft;
+    });
+    renders.mockClear();
+    act(() => result.current.onNodesChange([{ id: 'module-1', type: 'dimensions', dimensions: { width: 426, height: 760 } }]));
+    expect(renders).not.toHaveBeenCalled();
+    rerender();
+    expect(renders).toHaveBeenLastCalledWith({ width: 426, height: 760 });
+    expect(result.current.nodes[0]?.measured).toEqual({ width: 426, height: 760 });
+    act(() => publish?.(0));
+    expect(result.current.nodes[0]?.measured).toEqual({ width: 426, height: 760 });
+  });
+
+  it('keeps measurements received after a batched selection when the controlled host commits', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { callbacks.push(callback); return callbacks.length; });
+    const initialNodes = [draftNode('module-1', 0, 0)];
+    const renderedNodes: Array<{ selected?: boolean; measured?: Node['measured'] }> = [];
+    const { result } = renderHook(() => {
+      const draft = useCanvasDraft({ nodes: initialNodes, onCommitPositions: async () => true });
+      renderedNodes.push({ selected: draft.nodes[0]?.selected, measured: draft.nodes[0]?.measured });
+      return draft;
+    });
+    act(() => {
+      result.current.onNodesChange([{ id: 'module-1', type: 'select', selected: true }]);
+      result.current.onNodesChange([{ id: 'module-1', type: 'dimensions', dimensions: { width: 292, height: 281 } }]);
+    });
+    expect(renderedNodes[renderedNodes.length - 1]).toEqual({ selected: true, measured: { width: 292, height: 281 } });
+    act(() => callbacks[0]?.(0));
+    expect(renderedNodes[renderedNodes.length - 1]).toEqual({ selected: true, measured: { width: 292, height: 281 } });
+  });
+
   it('keeps passive large-canvas measurements without rerendering the controlled graph and preserves them for the next interaction', () => {
     const initialNodes = [draftNode('module-1', 0, 0)];
     const renders = vi.fn();

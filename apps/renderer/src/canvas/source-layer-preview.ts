@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { buildDraftSourceLayerDocument, buildSourceLayerDocument } from '../app/source-layer-document';
+import { buildDraftSourceLayerDocument, encodeDraftSourceLayerPsd } from '../app/source-layer-document';
+import { computeSourceDocumentOffThread } from '../app/source-layer-compute';
 import { decodeLayerPixels, layerPixelsUrl } from '../app/managed-layer-pixels';
 import { boxSchema, readLayeringSelection } from '../app/layering-selection';
 import type { LayeredImageConfig } from '../app/layered-image-config';
@@ -65,7 +66,7 @@ export function sourceLayerInputFromNodes(config: Readonly<Record<string, unknow
 }
 
 export async function prepareSourceLayerDocument(input: SourceLayerInput, validation: 'strict' | 'audit' = 'audit') {
-  return buildSourceLayerDocument({ width: input.width, height: input.height,
+  return computeSourceDocumentOffThread({ width: input.width, height: input.height,
     source: await decodeLayerPixels(input.sourceUrl, input.width, input.height), selection: readLayeringSelection(input.selection),
     backgroundMode: input.backgroundMode,
     groupConfirmationDigest: input.groupConfirmationDigest,
@@ -78,8 +79,8 @@ export async function prepareSourceLayerDocument(input: SourceLayerInput, valida
   });
 }
 
-export async function prepareDraftSourceLayerDocument(input: SourceLayerInput) {
-  return buildDraftSourceLayerDocument({ width: input.width, height: input.height,
+async function draftSourceInput(input: SourceLayerInput) {
+  return { width: input.width, height: input.height,
     source: await decodeLayerPixels(input.sourceUrl, input.width, input.height), selection: readLayeringSelection(input.selection),
     groupConfirmationDigest: input.groupConfirmationDigest,
     needsReconfirm: input.needsReconfirm,
@@ -89,7 +90,18 @@ export async function prepareDraftSourceLayerDocument(input: SourceLayerInput) {
       ...(record.kind === 'transparent' ? { bounds: boxSchema.parse(bounds) } : {}),
       load: () => decodeLayerPixels(url, input.width, input.height),
     })),
-  });
+  };
+}
+
+export async function prepareDraftSourceLayerDocument(input: SourceLayerInput) {
+  return buildDraftSourceLayerDocument(await draftSourceInput(input));
+}
+
+export async function prepareDraftSourceLayerPsd(input: SourceLayerInput, assertCurrent?: () => void) {
+  assertCurrent?.();
+  const prepared = await draftSourceInput(input);
+  assertCurrent?.();
+  return encodeDraftSourceLayerPsd(prepared, assertCurrent);
 }
 
 // Serial processing bounds the peak memory when several groups mount together.

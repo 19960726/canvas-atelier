@@ -17,9 +17,10 @@ for (const theme of ['light', 'dark']) {
     await openAgentPanel(page);
     const panel = page.getByTestId('agent-panel');
     await expect(panel.locator('.skill-chat-workbench__message')).toHaveCount(12);
-    expect(await panel.getByLabel('Codex 任务').evaluate((select) => {
+    expect(await panel.getByRole('button', { name: '历史对话', exact: true }).evaluate((select) => {
       const box = select.getBoundingClientRect();
-      return select === document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return select === top || select.contains(top);
     }), 'task selector must also stay above floating canvas tools').toBe(true);
     await panel.getByRole('button', { name: /展开上下文/u }).click();
     const geometry = await panel.evaluate((panel) => {

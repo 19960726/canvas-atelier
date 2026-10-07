@@ -79,8 +79,10 @@ for (const theme of ['light', 'dark'] as const) {
     expect(historyBox).not.toBeNull();
     expect(panelBox).not.toBeNull();
     expect(historyBox!.width).toBeLessThanOrEqual(340);
-    expect(historyBox!.x).toBeGreaterThan(panelBox!.x + panelBox!.width - 360);
-    await expect(historyDialog.locator('.agent-history-popover__item-icon')).toBeVisible();
+    expect(historyBox!.x).toBeGreaterThanOrEqual(panelBox!.x + 8);
+    expect(historyBox!.x).toBeLessThanOrEqual(panelBox!.x + 24);
+    await expect(historyDialog.getByRole('button', { name: '新建对话', exact: true })).toBeVisible();
+    await expect(historyDialog.locator('.agent-history-popover__list > button[aria-current="true"]')).toBeVisible();
     const activeBackground = await history.evaluate((element) => getComputedStyle(element).backgroundColor);
     expect(activeBackground, 'The open history control should have a soft active surface instead of a floating bright outline.').not.toBe('rgba(0, 0, 0, 0)');
     await panel.screenshot({ path: testInfo.outputPath(`agent-history-${theme}.png`) });

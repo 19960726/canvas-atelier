@@ -10,7 +10,7 @@ export type LayeringAnalysisOptions = NonNullable<RunRequest['analysis']>;
 export type LayeringStartOptions = NonNullable<RunRequest['layering']>;
 export interface McpLayeringCallbacks {
   validateSource?(nodeId: string): void;
-  analyze(nodeId: string, options: LayeringAnalysisOptions): Promise<LayeringPlan>;
+  analyze(nodeId: string, options: LayeringAnalysisOptions, isCurrentOperation?: () => boolean): Promise<LayeringPlan>;
   start(nodeId: string, plan: LayeringPlan, options: LayeringStartOptions): Promise<{ readonly groupNodeId: string; readonly jobIds: readonly string[] }>;
   exportPsd(nodeId: string, openPhotoshop: boolean): Promise<{ readonly ok: boolean; readonly code?: string; readonly saved?: boolean; readonly opened?: boolean }>;
 }
@@ -22,6 +22,43 @@ const id = (prefix: string) => `${prefix}-${Date.now()}-${++sequence}`;
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const ok = (result: unknown): CanvasMcpResponse => ({ ok: true, result: redactMcpValue(result) });
 const fail = (code: string, message: string, details?: unknown): CanvasMcpResponse => ({ ok: false, error: { code, message, ...(details === undefined ? {} : { details: redactMcpValue(details) }) } });
+const genericPsdFailure = 'Formal PSD export failed; inspect the canvas quality/position checks and desktop availability.';
+const psdFailureMessages = new Map<string, string>([
+  ['PSD_EXPORT_GROUP_REQUIRED', '请选择当前项目的分层组后导出 PSD。'],
+  ['PSD_EXPORT_UNSUPPORTED_GENERATED_GROUP', '当前分层组不支持正式 PSD 导出，请使用原图像素分层。'],
+  ['PSD_EXPORT_RECONFIRM_REQUIRED', '当前分层缺少有效确认，请在画布中逐层检查并重新确认后导出 PSD。'],
+  ['PSD_EXPORT_REVIEW_CHANGED', '图层内容或顺序已变更，请重新逐层核验并确认后导出 PSD。'],
+  ['PSD_EXPORT_QUALITY_OR_POSITION_NOT_READY', '图层质量或原图位置尚未就绪，请先检查每个图层。'],
+  ['PSD_EXPORT_CANVAS_CHANGED', '导出期间画布已变更，请读取当前分层状态后重新导出。'],
+  ['PSD_PHOTOSHOP_BRIDGE_UNAVAILABLE', '当前无法连接 Photoshop，请检查桌面应用与 Photoshop 状态。'],
+  ['PSD_SAVE_BRIDGE_UNAVAILABLE', '当前桌面保存功能不可用，请在 Canvas Atelier 安装版中导出 PSD。'],
+  ['PSD_EXPORT_BACKGROUND_REVIEW_REQUIRED', '背景层尚未完成当前素材的核验，请先检查背景层。'],
+  ['PSD_EXPORT_INDEPENDENT_FOREGROUND_REQUIRED', '完整背景补全需要已核验的独立 RGBA 前景，请先本地精修并检查图层。'],
+  ['PSD_EXPORT_BACKGROUND_OPACITY_INVALID', '正式 PSD 的背景图层必须完全不透明，请将背景透明度恢复为 100%。'],
+  ['invalid_psd', 'PSD 数据未通过格式检查，请重新检查图层后导出。'],
+  ['photoshop_not_installed', '未找到 Photoshop，请检查安装状态后再打开 PSD。'],
+  ['discovery_failed', '无法确定 Photoshop 安装位置，请检查 Photoshop 状态后重试。'],
+  ['cancelled', '已取消 PSD 导出。'],
+  ['dialog_failed', 'PSD 保存对话框无法打开，请检查桌面应用状态后重试。'],
+  ['save_failed', 'PSD 保存失败，请检查目标位置和写入权限后重试。'],
+  ['open_failed', 'Photoshop 打开失败，请检查 Photoshop 状态后重试。'],
+]);
+// Match only application-owned fixed messages; layer names, paths and provider errors stay private.
+const sourcePsdFailureCodes = new Map<string, string>([
+  ['完整补全背景需要当前整图分层的确认摘要，请重新检查图层', 'PSD_EXPORT_RECONFIRM_REQUIRED'],
+  ['分层方案已变更，请重新确认后再合成 PSD', 'PSD_EXPORT_RECONFIRM_REQUIRED'],
+  ['分层确认摘要格式无效，必须是 64 位小写十六进制 digest', 'PSD_EXPORT_RECONFIRM_REQUIRED'],
+  ['完整补全背景尚未完成当前背景素材的本地核验，请重新检查背景层', 'PSD_EXPORT_BACKGROUND_REVIEW_REQUIRED'],
+  ['完整补全背景需要已核验的独立 RGBA 前景；原图透明蒙版请先本地精修并重新导入检查', 'PSD_EXPORT_INDEPENDENT_FOREGROUND_REQUIRED'],
+  ['完整补全背景的图层审核或确认摘要已过期，请重新逐层检查', 'PSD_EXPORT_REVIEW_CHANGED'],
+  ['原图分层正式合成需要不透明背景，背景图层透明度必须为 100%', 'PSD_EXPORT_BACKGROUND_OPACITY_INVALID'],
+]);
+function readSafePsdFailure(message: string | undefined): { code: string; error: string } | undefined {
+  if (message === undefined) return undefined;
+  const code = sourcePsdFailureCodes.get(message) ?? message;
+  const error = psdFailureMessages.get(code);
+  return error === undefined ? undefined : { code, error };
+}
 
 /** Plans are held by this canvas runtime, never accepted as caller-issued result/quality claims. */
 export function createMcpLayeringOperations(source: { getProject(): CanvasProject; getRevision(): number; layering?: McpLayeringCallbacks }, confirmations: McpConfirmationStore) {
@@ -112,7 +149,7 @@ export function createMcpLayeringOperations(source: { getProject(): CanvasProjec
       try {
         if (!current(expected) || job.status !== 'running') throw new Error('Canvas changed before dispatch');
         if (operation === 'analyze_layering') {
-          const result = await source.layering!.analyze(request.nodeId, request.analysis!);
+          const result = await source.layering!.analyze(request.nodeId, request.analysis!, () => current(expected) && job.status === 'running');
           if (job.status !== 'running') return;
           if (!current(expected)) throw new Error('Canvas changed during analysis');
           job.plan = clone(normalizeLayeringPlan(result));
@@ -122,15 +159,24 @@ export function createMcpLayeringOperations(source: { getProject(): CanvasProjec
           if (!(job.result as { jobIds: string[] }).jobIds.length) throw new Error('No image jobs started');
         } else {
           const result = await source.layering!.exportPsd(request.nodeId, request.openPhotoshop === true);
-          job.result = { saved: result.saved === true || result.ok, opened: result.opened === true, ...(result.code ? { code: result.code } : {}) };
-          if (!result.ok) { job.status = result.code === 'cancelled' ? 'cancelled' : 'failed'; return; }
+          const failure = readSafePsdFailure(result.code);
+          const saved = result.saved === true || result.ok;
+          job.result = { saved, opened: result.opened === true, ...(failure ? { code: failure.code } : {}) };
+          if (!result.ok) {
+            job.status = failure?.code === 'cancelled' ? 'cancelled' : 'failed';
+            if (job.status === 'failed') job.error = failure?.code === 'open_failed' && saved
+              ? 'PSD 已保存，但 Photoshop 打开失败；请在 Photoshop 中打开已保存的文件。'
+              : failure?.error ?? genericPsdFailure;
+            return;
+          }
         }
         if (job.status === 'running') job.status = 'completed';
       } catch (cause) {
         if (job.status === 'running') {
           job.status = 'failed'; job.plan = undefined;
-          if (cause instanceof Error && /^PSD_[A-Z_]+$/u.test(cause.message)) job.result = { code: cause.message, saved: false, opened: false };
-          job.error = operation === 'export_layered_psd' ? 'Formal PSD export failed; inspect the canvas quality/position checks and desktop availability.' : 'Layering operation failed or the project/source changed. Inspect the canvas and analyze again.';
+          const failure = operation === 'export_layered_psd' && cause instanceof Error ? readSafePsdFailure(cause.message) : undefined;
+          if (failure) job.result = { code: failure.code, saved: false, opened: false };
+          job.error = operation === 'export_layered_psd' ? failure?.error ?? genericPsdFailure : 'Layering operation failed or the project/source changed. Inspect the canvas and analyze again.';
         }
       }
     })();

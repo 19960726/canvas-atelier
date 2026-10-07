@@ -23,14 +23,14 @@ test('keeps the Agent header aligned and lets a referenced long-form composer gr
   await openAgentPanel(page);
 
   const panel = page.getByTestId('agent-panel');
-  await expect(panel.getByRole('combobox', { name: 'Codex 任务' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: '历史对话', exact: true })).toBeVisible();
   await expect(panel.getByRole('button', { name: '新建任务' })).toBeVisible();
   await expect(panel.getByRole('button', { name: '关闭 Novus Agent' })).toBeVisible();
 
   const initialMetrics = await panel.evaluate((element) => {
     const footer = element.querySelector('.skill-chat-workbench__composer-footer');
     const composer = element.querySelector('.skill-chat-workbench__composer');
-    const taskSelect = element.querySelector<HTMLElement>('.skill-chat-workbench__header-actions select');
+    const taskSelect = element.querySelector<HTMLElement>('[data-agent-history-trigger]');
     const newTask = element.querySelector<HTMLElement>('.skill-chat-workbench__new-chat');
     const visible = (control: HTMLElement) => getComputedStyle(control).display !== 'none';
     const controls = footer === null ? [] : [...footer.querySelectorAll<HTMLElement>('button, select')]

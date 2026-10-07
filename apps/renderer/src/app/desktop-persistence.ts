@@ -13,6 +13,7 @@ import type {
 import type { CanvasProject, ProjectTransaction, ReversePromptResult, ReversePromptRun } from '@agent-canvas/domain';
 import type { PreparedLayerTarget } from '@agent-canvas/desktop-core/preload-api';
 import { applyProjectTransaction, createCanvasModuleNode } from '@agent-canvas/domain';
+import { createManagedVideoMetadataReader } from './managed-video-metadata';
 import type { ProjectImageAsset, ProjectVideoAsset } from '@agent-canvas/domain';
 import {
   clearPersistedProjectBundle,
@@ -129,6 +130,8 @@ export interface PreparedLayerImportOptions {
   readonly fromClipboard?: true;
   readonly preparedLayer?: true;
   readonly layerTarget?: PreparedLayerTarget;
+  /** Renderer-only ownership check; never included in the native DTO. */
+  readonly beforeImport?: () => void;
 }
 
 export interface ProjectImageImportResult {
@@ -159,7 +162,7 @@ export interface ProjectPersistenceClient {
     readonly run: ReversePromptRun;
     readonly media: readonly ManagedReversePromptMediaIdentity[];
   }, beforeProviderDispatch?: () => void): Promise<ReversePromptResult>;
-  chatSkill?(input: SkillChatRequest): Promise<ChatSkillBridgeResult>;
+  chatSkill?(input: SkillChatRequest, beforeProviderDispatch?: () => void): Promise<ChatSkillBridgeResult>;
   cancelChatSkill?(requestId: string): Promise<boolean>;
   close(nextProject?: CanvasProject): Promise<void>;
   commit(request: ProjectCommitRequest): Promise<ProjectCommitResult>;
@@ -411,6 +414,7 @@ export function createBrowserPersistenceClient(storage = getStorage()): ProjectP
 }
 
 export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): ProjectPersistenceClient {
+  const videoMetadata = createManagedVideoMetadataReader();
   let sessionId: string | null = null;
   let projectId: string | null = null;
   let mode: 'write' | 'read_only' = 'write';
@@ -421,6 +425,12 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
   let recoveryCandidateIds = new Map<string, string>();
   let clientGeneration = 0;
   let startupRestoreAttempted = false;
+  async function finishVideoImport(asset: ProjectVideoAssetSummary, project: CanvasProject, importedRevision: number): Promise<ProjectVideoImportResult | null> {
+    const generation = clientGeneration, ownerSession = sessionId, ownerProject = projectId;
+    const enriched = await videoMetadata.enrich(asset);
+    if (generation !== clientGeneration || ownerSession !== sessionId || ownerProject !== projectId || project.id !== ownerProject) return null;
+    return { asset: enriched, project, revision: importedRevision };
+  }
   type WritableSessionResolution = {
     readonly sessionId: string;
     /** The project that was already materialized by createProject, if any. */
@@ -487,7 +497,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         throw createDisplaySafeProviderError(error);
       }
     },
-    async chatSkill(input) {
+    async chatSkill(input, beforeProviderDispatch) {
       if (input.agentMode === 'codex' && input.provider !== 'codex') {
         throw createImportError('INVALID_REQUEST');
       }
@@ -499,6 +509,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
           const writableSessionId = await ensureWritableSession();
           if (writableSessionId === null) throw createImportError('INVALID_REQUEST');
           if (cancelledCodexRequestIds.has(localRequestId)) throw createCodexCancellationError();
+          beforeProviderDispatch?.();
           return await bridge.codexCli.chat({
             provider: 'codex',
             modelRoute: input.modelRoute,
@@ -526,6 +537,9 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       if (writableSessionId === null) throw createImportError('INVALID_REQUEST');
       const provider = bridge.provider as typeof bridge.provider & Partial<SkillChatProviderBridge>;
       if (provider.chat === undefined) throw createImportError('INVALID_REQUEST');
+      // Recheck renderer ownership/authorization after the last session await.
+      // This callback stays local and never enters the native provider payload.
+      beforeProviderDispatch?.();
       try {
         const { requestId: _localRequestId, ...providerInput } = input;
         return await provider.chat({
@@ -665,6 +679,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       const isCurrentImport = () => importGeneration === clientGeneration && importSessionId === sessionId && importProjectId === projectId;
       const preparedBytes = preparedLayer ? new Uint8Array(await file!.arrayBuffer()) : undefined;
       if (preparedLayer && (!isCurrentImport() || (options?.layerTarget && options.layerTarget.projectId !== projectId))) return null;
+      options?.beforeImport?.();
       let result = preparedLayer
         ? await bridge.projectImages.importPreparedLayer!({sessionId:writableSessionId,bytes:preparedBytes!,
             ...(options?.layerTarget ? { layerTarget: options.layerTarget } : {})})
@@ -717,7 +732,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       currentProject = validateRecoveredProject(result.project, currentProject);
       revision = result.currentRevision;
       if (result.asset.mediaType === 'video/mp4') {
-        return { asset: result.asset, project: currentProject, revision };
+        return finishVideoImport(result.asset, currentProject, revision);
       }
       return { asset: result.asset, project: currentProject, revision };
     },
@@ -765,7 +780,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       if (result.asset.mediaType !== 'video/mp4') return null;
       currentProject = validateRecoveredProject(result.project, currentProject);
       revision = result.currentRevision;
-      return { asset: result.asset, project: currentProject, revision };
+      return finishVideoImport(result.asset, currentProject, revision);
     },
     async importAgentReferenceVideo() {
       const writableSessionId = await ensureWritableSession();
@@ -777,7 +792,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       if (result === null) return null;
       currentProject = validateRecoveredProject(result.project, currentProject);
       revision = result.currentRevision;
-      return { asset: result.asset, project: currentProject, revision };
+      return finishVideoImport(result.asset, currentProject, revision);
     },
     async pasteClipboardImage(input) {
       const writableSessionId = await ensureWritableSession();
@@ -839,13 +854,18 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       if (result === null) return null;
       currentProject = validateRecoveredProject(result.project, currentProject);
       revision = result.currentRevision;
-      return { asset: result.asset, project: currentProject, revision };
+      return finishVideoImport(result.asset, currentProject, revision);
     },
     async listProjectImages() {
       return sessionId === null ? [] : bridge.projectImages.list({ sessionId });
     },
     async listProjectVideos() {
-      return sessionId === null ? [] : bridge.projectVideos.list({ sessionId });
+      if (sessionId === null) return [];
+      const generation = clientGeneration, ownerSession = sessionId;
+      const assets = await bridge.projectVideos.list({ sessionId });
+      if (generation !== clientGeneration || ownerSession !== sessionId) return [];
+      const enriched = await videoMetadata.enrichList(assets);
+      return generation === clientGeneration && ownerSession === sessionId ? enriched : [];
     },
     async restore(snapshotId) {
       if (sessionId !== null && mode === 'write') {

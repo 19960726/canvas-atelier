@@ -350,6 +350,9 @@ export function canConnectCanvasPorts(
     && !(source.dataType === 'image_asset' && target.dataType === 'image_list')
     && !(source.dataType === 'video_asset' && target.dataType === 'video_ranges')
     && !(target.dataType === 'media_asset' && (source.dataType === 'image_asset' || source.dataType === 'video_asset'))
+    && !(sourceNode.data.moduleType === 'canvas_library' && sourcePortId === 'images'
+      && source.dataType === 'image_list' && targetNode.data.moduleType === 'video_generation'
+      && targetPortId === 'media' && target.dataType === 'media_asset')
   ) {
     return { ok: false, code: 'TYPE_MISMATCH', message: `${source.dataType} cannot connect to ${target.dataType}` };
   }

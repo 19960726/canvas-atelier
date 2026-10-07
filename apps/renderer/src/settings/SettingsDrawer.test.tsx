@@ -92,7 +92,8 @@ describe('SettingsDrawer', () => {
     const advanced = screen.getByText('高级故障排查').closest('details');
     expect(advanced).not.toHaveAttribute('open');
     fireEvent.click(updateAction);
-    expect(await screen.findByText('当前已是最新版本')).toBeVisible();
+    const dialog = await screen.findByRole('dialog', { name: '应用更新' });
+    expect(within(dialog).getByRole('status')).toHaveTextContent('当前已是最新版本');
     expect(advanced).not.toHaveAttribute('open');
   });
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { applyLayerSelection, boxSchema, readLayeringSelection } from '../app/layering-selection';
-import { extractOriginalLayer } from '../app/source-layer-pixels';
+import { boxSchema, readLayeringSelection } from '../app/layering-selection';
+import { computeSourceForegroundOffThread } from '../app/source-layer-compute';
 import { decodeLayerPixels, layerPixelsUrl } from '../app/managed-layer-pixels';
 import { enqueueLayerPreview } from './source-layer-preview';
 
@@ -27,15 +27,15 @@ export function SourceForegroundPreview({ sourceUrl, maskUrl, width, height, bou
         // and extracting a matte here would replace its RGB with source RGB.
         const mask = await decodeLayerPixels(maskUrl, width, height);
         if (cancelled) return;
-        rgba = applyLayerSelection(mask, width, height, readLayeringSelection(selection));
+        rgba = await computeSourceForegroundOffThread({ mask, width, height, bounds: box, selection: readLayeringSelection(selection) });
       } else {
         const source = await decodeLayerPixels(sourceUrl, width, height);
         if (cancelled) return;
         const mask = await decodeLayerPixels(maskUrl, width, height);
         if (cancelled) return;
-        rgba = applyLayerSelection(extractOriginalLayer(source, mask, width, height, box, maskSpace), width, height, readLayeringSelection(selection));
+        rgba = await computeSourceForegroundOffThread({ source, mask, width, height, bounds: box, maskSpace, selection: readLayeringSelection(selection) });
       }
-      if (!rgba.some((value, index) => index % 4 === 3 && value > 0)) throw new Error('所选范围内没有可见像素，请校正原图位置');
+      if (cancelled) return;
       const url = await layerPixelsUrl(rgba, width, height);
       if (!cancelled) setOutput({ key, url });
     }).catch(error => {

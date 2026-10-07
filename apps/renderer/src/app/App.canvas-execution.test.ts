@@ -109,6 +109,117 @@ beforeEach(() => {
 afterEach(() => { resetAppStoreForTests(); replaceProjectPersistenceClientForTests(createBrowserPersistenceClient()); mcpUiConfirmationStore.clear(); window.novusDesktop = originalDesktop; localStorage.clear(); });
 
 describe('real MCP canvas execution inputs', () => {
+  it.each(['image_generation', 'video_generation', 'reverse_agent'] as const)('rejects missing @ references in %s before confirmation or dispatch', async kind => {
+    const current = project(kind);
+    (current.nodes.find(node => node.id === 'prompt') as CanvasModuleNode).data.config.prompt = '使用 @图片3 与 @视频1';
+    install(current);
+    expect(await adapter().handle({ tool: 'canvas_run_node', expectedRevision: 7, nodeId: 'generator' })).toMatchObject({ ok: false, error: { code: 'REFERENCE_MENTION_INVALID', message: expect.stringContaining('@图片3') } });
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
+    expect(submit).not.toHaveBeenCalled();
+    expect(analyze).not.toHaveBeenCalled();
+  });
+  it.each(['first', 'pair', 'saved pair'] as const)('executes dedicated video %s inputs in frame order after confirmation', async mode => {
+    const current = project('video_generation', false);
+    const generator = current.nodes.find(node => node.id === 'generator') as CanvasModuleNode;
+    if (mode === 'saved pair') {
+      generator.data.config.firstFrameAssetId = assets[0]!.assetId;
+      generator.data.config.lastFrameAssetId = assets[1]!.assetId;
+    } else {
+      current.edges = [
+        ...(mode === 'pair' ? [{ id: 'last', source: 'material-1', sourcePortId: 'image', target: 'generator', targetPortId: 'lastFrame', order: 0 }] : []),
+        { id: 'first', source: 'material-0', sourcePortId: 'image', target: 'generator', targetPortId: 'firstFrame', order: 99 },
+      ];
+      // A saved cache must not override actual graph input.
+      generator.data.config.referenceAssetIds = [assets[1]!.assetId];
+      generator.data.config.firstFrameAssetId = assets[1]!.assetId;
+    }
+    install(current);
+    const mcp = adapter();
+    const input = { tool: 'canvas_run_node' as const, expectedRevision: 7, nodeId: 'generator' };
+    expect(await mcp.handle(input)).toMatchObject({ ok: false, error: { code: 'PAID_CONFIRMATION_REQUIRED' } });
+    expect(submit).not.toHaveBeenCalled();
+    const grant = mcpUiConfirmationStore.confirm(mcpUiConfirmationStore.getSnapshot()[0]!.id);
+    expect(await mcp.handle({ ...input, confirmationToken: grant.token })).toMatchObject({ ok: true });
+    const expected = mode === 'first' ? ['aaaaaaaaaaaaaaaa'] : ['aaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbb'];
+    expect(useAppStore.getState().modelJobs[0]!.referenceAssetIds).toEqual(expected);
+    await vi.waitFor(() => expect(submit).toHaveBeenCalledOnce());
+    expect(submit.mock.calls[0]![0].referenceAssetIds).toEqual(expected);
+    expect(useAppStore.getState().project.edges).toEqual(current.edges);
+  });
+
+  it('executes a connected line drawing as actual reverse media after confirmation', async () => {
+    const current = project('reverse_agent', false);
+    current.edges = [{ id: 'drawing', source: 'material-0', sourcePortId: 'image', target: 'generator', targetPortId: 'line_art', order: 0 }];
+    install(current);
+    expect(await runConfirmed('reverse_agent')).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(analyze).toHaveBeenCalledOnce());
+    expect(analyze.mock.calls[0]![0].media).toEqual([{ kind: 'image', assetId: 'aaaaaaaaaaaaaaaa', sha256: 'a'.repeat(64), byteSize: 42, mediaType: 'image/png' }]);
+    expect(analyze.mock.calls[0]![0].run.orderedMedia).toEqual([expect.objectContaining({ kind: 'image', assetId: 'aaaaaaaaaaaaaaaa', order: 0 })]);
+  });
+
+  it.each(['comfly text', 'comfly components', 'julun'] as const)('rejects dedicated frames on incompatible %s routes before confirmation', async providerMode => {
+    const current = project('video_generation', false);
+    current.edges = [
+      { id: 'first', source: 'material-0', sourcePortId: 'image', target: 'generator', targetPortId: 'firstFrame', order: 1 },
+      { id: 'last', source: 'material-1', sourcePortId: 'image', target: 'generator', targetPortId: 'lastFrame', order: 0 },
+    ];
+    install(current);
+    window.novusDesktop!.provider.listProfiles = async () => [{ ...profiles[1], provider: providerMode === 'julun' ? 'julun' : 'comfly',
+      modelId: providerMode === 'comfly text' ? 'wan2.2-t2v-plus' : 'veo2-fast-components' }] as never;
+    expect(await adapter().handle({ tool: 'canvas_run_node', expectedRevision: 7, nodeId: 'generator' })).toMatchObject({ ok: false });
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+  });
+
+  it.each(['missing node', 'foreign asset', 'wrong source port', 'multiple drawings'] as const)('rejects %s line art before paid confirmation', async fault => {
+    const current = project('reverse_agent', false);
+    current.edges = [{ id: 'drawing', source: 'material-0', sourcePortId: 'image', target: 'generator', targetPortId: 'line_art', order: 0 }];
+    if (fault === 'missing node') current.nodes = current.nodes.filter(node => node.id !== 'material-0');
+    if (fault === 'foreign asset') current.assets = current.assets!.filter(asset => asset.assetId !== assets[0]!.assetId);
+    if (fault === 'wrong source port') current.edges[0]!.sourcePortId = 'video';
+    if (fault === 'multiple drawings') current.edges.push({ ...current.edges[0]!, id: 'second', source: 'material-1' });
+    install(current);
+    expect(await adapter().handle({ tool: 'canvas_run_node', expectedRevision: 7, nodeId: 'generator' })).toMatchObject({ ok: false });
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
+    expect(analyze).not.toHaveBeenCalled();
+  });
+
+  it.each(['firstFrameAssetId', 'lastFrameAssetId'] as const)('does not let a stale %s cache replace connected media', async field => {
+    const current = project('video_generation');
+    (current.nodes.find(node => node.id === 'generator') as CanvasModuleNode).data.config[field] = assets[0]!.assetId;
+    install(current);
+    expect(await runConfirmed('video_generation')).toMatchObject({ ok: true });
+    expect(useAppStore.getState().modelJobs[0]!.referenceAssetIds).toEqual(['bbbbbbbbbbbbbbbb', 'aaaaaaaaaaaaaaaa']);
+  });
+
+  it('invalidates frame confirmation when a frame connection changes without a revision bump', async () => {
+    const current = project('video_generation', false);
+    current.edges = [{ id: 'first', source: 'material-0', sourcePortId: 'image', target: 'generator', targetPortId: 'firstFrame', order: 0 }];
+    install(current); const mcp = adapter();
+    const input = { tool: 'canvas_run_node' as const, expectedRevision: 7, nodeId: 'generator' };
+    await mcp.handle(input);
+    const grant = mcpUiConfirmationStore.confirm(mcpUiConfirmationStore.getSnapshot()[0]!.id);
+    useAppStore.setState({ project: { ...current, edges: [{ ...current.edges[0]!, source: 'material-1' }] } });
+    expect(await mcp.handle({ ...input, confirmationToken: grant.token })).toMatchObject({ ok: false, error: { code: 'PAID_CONFIRMATION_REQUIRED' } });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it.each(['last only', 'duplicate first', 'mixed ports', 'missing source', 'invalid asset', 'multiple results'] as const)
+  ('rejects invalid dedicated frames: %s before confirmation', async fault => {
+    const current = project('video_generation', false);
+    current.edges = [{ id: 'first', source: 'material-0', sourcePortId: 'image', target: 'generator', targetPortId: fault === 'last only' ? 'lastFrame' : 'firstFrame', order: 0 }];
+    if (fault === 'duplicate first') current.edges.push({ ...current.edges[0]!, id: 'extra', source: 'material-1' });
+    if (fault === 'mixed ports') current.edges.push({ ...current.edges[0]!, id: 'extra', source: 'material-1', targetPortId: 'media' });
+    if (fault === 'missing source') current.nodes = current.nodes.filter(node => node.id !== 'material-0');
+    const source = current.nodes.find(node => node.id === 'material-0') as CanvasModuleNode;
+    if (fault === 'invalid asset') source.data.config.assetId = 'c'.repeat(16);
+    if (fault === 'multiple results') { source.data.moduleType = 'image_generation'; source.data.config.resultAssetIds = assets.map(asset => asset.assetId); }
+    install(current);
+    expect(await adapter().handle({ tool: 'canvas_run_node', expectedRevision: 7, nodeId: 'generator' })).toMatchObject({ ok: false });
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   it.each(['absent', 'empty', 'stale'] as const)('runs graph refs from an approved workflow mutation with %s config refs', async cached => {
     const initial = project('image_generation', false);
     const generator = initial.nodes.find(node => node.id === 'generator') as CanvasModuleNode;
@@ -146,8 +257,7 @@ describe('real MCP canvas execution inputs', () => {
 
   it.each([
     ['image_generation', 'mask'], ['image_generation', 'pose'],
-    ['video_generation', 'firstFrame'], ['video_generation', 'lastFrame'], ['video_generation', 'sourceVideo'],
-    ['reverse_agent', 'line_art'],
+    ['video_generation', 'sourceVideo'],
   ] as const)('rejects unimplemented %s %s input before publishing a paid confirmation or dispatching', async (kind, port) => {
     const current = project(kind);
     attachUnsupportedInput(current, port);
@@ -206,8 +316,7 @@ describe('real MCP canvas execution inputs', () => {
 
   it.each([
     ['image_generation', 'mask'], ['image_generation', 'pose'],
-    ['video_generation', 'firstFrame'], ['video_generation', 'lastFrame'], ['video_generation', 'sourceVideo'],
-    ['reverse_agent', 'line_art'],
+    ['video_generation', 'sourceVideo'],
   ] as const)('guards the real %s store executor against ignored %s edges', async (kind, port) => {
     const current = project(kind); attachUnsupportedInput(current, port); install(current);
     const state = useAppStore.getState();
@@ -221,7 +330,7 @@ describe('real MCP canvas execution inputs', () => {
 
   it.each([
     ['image_generation', 'maskAssetId'], ['image_generation', 'poseId'],
-    ['video_generation', 'firstFrameAssetId'], ['video_generation', 'lastFrameAssetId'], ['video_generation', 'sourceVideoAssetId'],
+    ['video_generation', 'sourceVideoAssetId'],
     ['reverse_agent', 'lineArtAssetId'],
   ] as const)('rejects standalone legacy %s %s without silently stripping it', async (kind, field) => {
     const current = project(kind); (current.nodes.find(node => node.id === 'generator') as CanvasModuleNode).data.config[field] = assets[0]!.assetId; install(current);
