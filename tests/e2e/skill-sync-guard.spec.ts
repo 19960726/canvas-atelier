@@ -6,7 +6,7 @@ test('Skill sync stays guarded until explicit Chinese confirmation', async ({ pa
   await seedSkillSyncDivergence(page);
   await openAgentPanel(page);
 
-  await page.locator('.agent-thread__memory > summary').click();
+  await page.getByRole('button', { name: '项目记忆', exact: true }).click();
   await expect(page.getByTestId('skill-candidate-review')).toBeVisible();
   await expect(page.getByTestId('skill-sync-source')).toContainText('Source rule body: lock logo from local project memory.');
   await expect(page.getByTestId('skill-sync-managed')).toContainText('Managed rule body: keep the existing cool background lighting.');

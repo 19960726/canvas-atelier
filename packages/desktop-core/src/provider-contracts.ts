@@ -97,6 +97,17 @@ const opaqueDesktopSessionIdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0
 const imageResolutionSchema = z.enum(['1K', '2K', '4K']);
 const videoResolutionSchema = z.enum(['360p', '480p', '512p', '540p', '720p', '768p', '1080p', '2K', '4K']);
 const imageOutputCountSchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]);
+/**
+ * Internal, typed promises for a confirmed image-layering job. These fields
+ * cross the renderer/native bridge only; provider APIs must not infer trust
+ * from a provider name or from the returned pixels.
+ */
+export const LayeringOutputContractSchema = z.enum([
+  'source-alpha-matte-v1',
+  'source-independent-rgba-v2',
+  'opaque-background-v2',
+]);
+const layeringConfirmationDigestSchema = z.string().regex(/^[a-f0-9]{64}$/u, 'Layering confirmation digest must be a lowercase SHA-256 digest');
 const providerDurationConstraintSchema = z.union([
   z.object({
     mode: z.literal('options'),
@@ -258,15 +269,35 @@ export const SubmitImageJobBridgeRequestSchema = z.object({
   prompt: nonEmptyStringSchema,
   conversationId: nonEmptyStringSchema,
   sessionId: opaqueDesktopSessionIdSchema.optional(),
+  projectId: nonEmptyStringSchema.max(256).optional(),
   referenceAssetIds: z.array(nonEmptyStringSchema),
   aspectRatio: imageAspectRatioSchema.optional(),
   resolution: imageResolutionSchema.optional(),
   quality: z.enum(['auto', 'low', 'medium', 'high']).optional(),
   imageOutputFormat: z.enum(['png', 'jpeg', 'webp']).optional(),
   imageBackground: z.enum(['auto', 'opaque', 'transparent']).optional(),
+  imagePurpose: z.literal('layering').optional(),
+  layeringOutputContract: LayeringOutputContractSchema.optional(),
+  layeringConfirmationDigest: layeringConfirmationDigestSchema.optional(),
   outputCount: imageOutputCountSchema.optional(),
 }).strict().superRefine((value, context) => {
   addProtectedPayloadIssues(value, context, 'Provider bridge payload contains protected payload');
+  const hasContract = value.layeringOutputContract !== undefined;
+  const hasDigest = value.layeringConfirmationDigest !== undefined;
+  if (hasContract !== hasDigest) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [hasContract ? 'layeringConfirmationDigest' : 'layeringOutputContract'],
+      message: 'Layering output contract and confirmation digest must be supplied together',
+    });
+  }
+  if ((hasContract || hasDigest) && value.imagePurpose !== 'layering') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['imagePurpose'],
+      message: 'Layering output contract metadata is only valid for imagePurpose=layering',
+    });
+  }
 });
 
 export const SubmitImageJobBridgeResultSchema = z.object({
@@ -282,6 +313,7 @@ export const SubmitVideoJobBridgeRequestSchema = z.object({
   prompt: nonEmptyStringSchema,
   conversationId: nonEmptyStringSchema,
   sessionId: opaqueDesktopSessionIdSchema.optional(),
+  projectId: nonEmptyStringSchema.max(256).optional(),
   referenceAssetIds: z.array(nonEmptyStringSchema).max(20),
   aspectRatio: imageAspectRatioSchema.optional(),
   resolution: videoResolutionSchema.optional(),
@@ -527,6 +559,7 @@ export const ChatSkillBridgeRequestSchema = z.object({
   referenceAssetIds: z.array(contentAddressedAssetIdSchema).max(20).optional(),
   referenceMentions: z.array(skillChatReferenceMentionSchema).max(20).optional(),
   agentMode: z.enum(['chat', 'original', 'codex']).optional(),
+  purpose: z.enum(['image_layering_analysis', 'reverse_workflow']).optional(),
   reasoningEffort: z.enum(['low', 'medium', 'high']).optional(),
   reverseAnalysisDepth: z.enum(['fast', 'standard', 'deep']).optional(),
   visualAnalysis: z.boolean().optional(),
@@ -739,6 +772,7 @@ const RESPONSE_SCHEMA_BY_CHANNEL = new Map<ProviderBridgeChannel, ZodTypeAny>([
 ]);
 
 export type ProviderBridgeProvider = z.infer<typeof providerSchema>;
+export type LayeringOutputContract = z.infer<typeof LayeringOutputContractSchema>;
 export type ProviderSelectionBridgeRequest = z.infer<typeof ProviderSelectionBridgeRequestSchema>;
 export type ProviderBridgeCapability = z.infer<typeof capabilitySchema>;
 export type ProviderBridgeBlockedReason = 'credentials_locked';

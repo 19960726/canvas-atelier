@@ -43,6 +43,8 @@ export {
   modelJobStatusSchema,
   sanitizeModelJobError,
   transitionModelJob,
+  layeringOutputContractSchema,
+  layeringResultRepresentationSchema,
 } from './model-job';
 export { applyProjectTransaction, projectOperationSchema, projectTransactionSchema } from './project-transaction';
 export { projectImageAssetSchema } from './project-image-asset';
@@ -132,7 +134,7 @@ export type {
   PlacementObject,
   ReferenceRole,
 } from './project-schema';
-export type { ConfirmedModelJobInput, ImageAspectRatio, ImageQuality, ImageOutputFormat, ImageBackground, ImageResolutionTier, ModelJobKind, ModelJobProvider, ModelJobStatus, VideoResolutionTier } from './model-job';
+export type { ConfirmedModelJobInput, ImageAspectRatio, ImageQuality, ImageOutputFormat, ImageBackground, ImageResolutionTier, LayeringOutputContract, LayeringResultRepresentation, ModelJobKind, ModelJobProvider, ModelJobStatus, VideoResolutionTier } from './model-job';
 export { imageAspectRatioSchema } from './model-job';
 
 export type { AgentCanvasPlan, AgentPlanApprovalSelection, AgentCapability, AgentPlanConfirmations, AgentPlanState, AgentPlanValidation, ExecutionReferenceSnapshot } from './agent-plan';

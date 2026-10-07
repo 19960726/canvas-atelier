@@ -61,6 +61,17 @@ function typeIntoComposer(text: string) {
   expect(editor).toHaveValue(text);
 }
 
+function selectConversation(title: string) {
+  fireEvent.click(screen.getByRole('button', { name: '历史对话' }));
+  const dialog = screen.getByRole('dialog', { name: '历史对话' });
+  let target = within(dialog).queryByTitle(title);
+  if (target === null) {
+    fireEvent.click(within(dialog).getByRole('button', { name: /更多对话/u }));
+    target = within(dialog).getByTitle(title);
+  }
+  fireEvent.click(target);
+}
+
 describe('SkillChatWorkbench input performance', () => {
   it('reuses unchanged reference catalogs while typing and updates sent media after a reference refresh', () => {
     const image = {
@@ -100,7 +111,7 @@ describe('SkillChatWorkbench input performance', () => {
       options: [{ id: 'studio', title: '柔光棚拍', reason: '提高材质辨识度', kind: 'image', prompt: '产品居中，柔和侧光，磨砂材质，背景留白，保留产品结构。' }],
     });
     const conversation = {
-      ...createAgentConversation(1), mode: 'original' as const, modelRoute: 'chat/default',
+      ...createAgentConversation(1), title: '产品精修任务', mode: 'original' as const, modelRoute: 'chat/default',
       messages: [
         { id: 'request', role: 'user' as const, content: '请给出产品精修方案' },
         { id: 'reply', role: 'assistant' as const, content: planText },
@@ -119,9 +130,9 @@ describe('SkillChatWorkbench input performance', () => {
     view.rerender(<SkillChatWorkbench {...props} referenceImages={[]} />);
     expect(parse.mock.calls.length).toBe(initialParses);
 
-    fireEvent.change(screen.getByRole('combobox', { name: 'Codex 任务' }), { target: { value: chatConversation.id } });
+    selectConversation(chatConversation.title);
     expect(screen.queryByRole('button', { name: '选择方案：柔光棚拍' })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Codex 任务' }), { target: { value: conversation.id } });
+    selectConversation(conversation.title);
     expect(screen.getByRole('button', { name: '选择方案：柔光棚拍' })).toBeVisible();
     expect(parse.mock.calls.length).toBeGreaterThan(initialParses);
   });
@@ -148,15 +159,13 @@ describe('SkillChatWorkbench input performance', () => {
     const historyReads = () => read.mock.calls.filter(([key]) => key === storageKey).length;
     const mountReads = historyReads();
 
-    fireEvent.change(screen.getByRole('combobox', { name: 'Codex 任务' }), {
-      target: { value: conversations[1]!.id },
-    });
+    selectConversation(conversations[1]!.title);
     expect(within(screen.getByLabelText('对话消息')).getAllByText(/保存消息 1-/u)).toHaveLength(48);
     expect(historyReads()).toBe(mountReads);
     view.unmount();
 
     render(<SkillChatWorkbench {...props} />);
-    expect(screen.getByRole('combobox', { name: 'Codex 任务' })).toHaveValue(conversations[1]!.id);
+    expect(screen.getByRole('button', { name: '历史对话' })).toHaveAttribute('data-active-conversation', conversations[1]!.id);
     expect(within(screen.getByLabelText('对话消息')).getAllByText(/保存消息 1-/u)).toHaveLength(48);
     expect(historyReads()).toBe(mountReads + 1);
   });

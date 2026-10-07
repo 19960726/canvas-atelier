@@ -7,31 +7,26 @@ import {
 } from '@agent-canvas/provider-comfly';
 import type { FileSystem } from './file-system.js';
 import { createSecureProviderCredentialStore, type ProviderCredentialStore, type SafeStorageAdapter } from './provider-credential-vault.js';
-import { createProviderTaskMappingStore, type ProviderTaskMappingRecord } from './provider-task-ledger.js';
+import { assertMatchingProjectBinding, createProviderTaskMappingStore, persistPaidProviderMapping, type ProviderTaskMappingRecord } from './provider-task-ledger.js';
 import { createProviderConfigurationStore } from './provider-configuration-store.js';
 import { createElectronNetComflyFetch } from './electron-net-fetch.js';
 import { ManagedKnowledgeStore } from './managed-knowledge-store.js';
 import { readPinnedReverseKnowledge } from './provider-reverse-knowledge.js';
-import {
-  executeSkillChat,
-  type ManagedSkillChatImageResolver,
-  type ProjectMemoryContextResolver,
-} from './provider-skill-chat.js';
+import { executeSkillChat, type ManagedSkillChatImageResolver, type ProjectMemoryContextResolver } from './provider-skill-chat.js';
 import { createStoryboardService } from './storyboard-service.js';
 import { buildProfessionalReverseRequest } from './professional-reverse-analysis.js';
 import { resolveReverseAnalysisBudget } from './reverse-analysis-budget.js';
-import type {
-  GenerationHistoryDurableTerminal,
-  GenerationHistoryFailureCode,
-  GenerationHistoryProviderSinkContract,
-} from './generation-history-provider-sink.js';
+import type { GenerationHistoryDurableTerminal, GenerationHistoryFailureCode, GenerationHistoryProviderSinkContract } from './generation-history-provider-sink.js';
 import { deriveGenerationHistoryId } from './generation-history-provider-sink.js';
 import { buildImageGenerationHistorySubmission } from './generation-history-submission.js';
 import { buildComflyModelProfiles, cloneProviderProfile, markProviderProfileSelections, mergeProviderModelProfiles, repairComflyGptImageConstraints, repairComflyGeminiNativeReverseCapability, repairComflyGptImage25AsyncCapability, repairComflyImageEditCapability } from './provider-model-catalog.js';
 import { createComflyVideoJobHandlers } from './comfly-video-jobs.js';
+import { createComflyImageHistoryRecovery, pendingImageHistoryHash } from './comfly-image-history-recovery.js';
+import { reserveComflyImageSubmission } from './comfly-image-submission-reservation.js';
+import type { GenerationProjectBinding } from './generation-project-binding.js';
 import { createProviderCatalogCache } from './provider-catalog-cache.js';
 import { submitComflyImage } from './comfly-image-submission.js';
-import { downloadSafeProviderResult } from './provider-result-security.js';
+import { downloadSafeProviderResult, parseSafeProviderResultUrl } from './provider-result-security.js';
 import type { ProviderService } from './provider-service-types.js';
 import { decodeProviderInlineImage } from './provider-inline-image.js';
 import { detectGeneratedImageMediaType, findFirstProviderImageResult, normalizeImageTaskProgress, parseDirectProviderImageResponse } from './provider-image-result.js';
@@ -81,9 +76,10 @@ export {
   parseProviderBridgeRequest,
   parseProviderBridgeResponse,
 };
-export type { AckImageJobTerminalBridgeRequest, AckImageJobTerminalBridgeResult, AnalyzeReversePromptBridgeRequest, AnalyzeReversePromptBridgeResult, ChatSkillBridgeRequest, ChatSkillBridgeResult, CancelImageJobBridgeRequest, CancelImageJobBridgeResult, ConfigureProviderBridgeRequest, UpdateProviderProfilesBridgeRequest, ListProviderTasksBridgeRequest, ListProviderTasksBridgeResult, PollImageJobBridgeRequest, PollImageJobBridgeResult, ProviderBridgeBlockedReason, ProviderBridgeChannel, ProviderBridgeCapability, ProviderBridgeError, ProviderBridgeErrorCode, ProviderBridgeException, ProviderBridgeProfile, ProviderConfigurationStatus, ProviderConnectionCheckResult, ProviderImageJobResult, ManagedReversePromptMediaIdentity, RevealProviderCredentialBridgeResult, SubmitImageJobBridgeRequest, SubmitImageJobBridgeResult, UnlockProviderBridgeRequest } from './provider-contracts.js';
+export type { AckImageJobTerminalBridgeRequest, AckImageJobTerminalBridgeResult, AnalyzeReversePromptBridgeRequest, AnalyzeReversePromptBridgeResult, ChatSkillBridgeRequest, ChatSkillBridgeResult, CancelImageJobBridgeRequest, CancelImageJobBridgeResult, ConfigureProviderBridgeRequest, UpdateProviderProfilesBridgeRequest, ListProviderTasksBridgeRequest, ListProviderTasksBridgeResult, LayeringOutputContract, PollImageJobBridgeRequest, PollImageJobBridgeResult, ProviderBridgeBlockedReason, ProviderBridgeChannel, ProviderBridgeCapability, ProviderBridgeError, ProviderBridgeErrorCode, ProviderBridgeException, ProviderBridgeProfile, ProviderConfigurationStatus, ProviderConnectionCheckResult, ProviderImageJobResult, ManagedReversePromptMediaIdentity, RevealProviderCredentialBridgeResult, SubmitImageJobBridgeRequest, SubmitImageJobBridgeResult, UnlockProviderBridgeRequest } from './provider-contracts.js';
 export type { ProviderCredentialStore, SafeStorageAdapter } from './provider-credential-vault.js';
-const DEFAULT_COMFLY_BASE_URL = 'https://ai.comfly.org'; const DEFAULT_TERMINAL_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000; const CURRENT_GENERATION_JOB_ID_PREFIX = 'model-job-v2-';
+const DEFAULT_COMFLY_BASE_URL = 'https://ai.comfly.org'; const DEFAULT_TERMINAL_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DIRECT_IMAGE_RESULT_TASK_PREFIX = 'direct-image-result:';
 export const DEFAULT_PROVIDER_PROFILES: ProviderBridgeProfile[] = [];
 export type { ProviderBridgeHandlers, ProviderIpcMainLike, ProviderService } from './provider-service-types.js';
 export { registerProviderBridgeHandlers } from './provider-ipc-registration.js';
@@ -109,15 +105,14 @@ export function createComflyProviderService(options: {
   readonly readManagedReverseMedia?: (sessionId: string, media: AnalyzeReversePromptBridgeRequest['media']) => Promise<readonly { readonly bytes: Uint8Array; readonly mediaType: string }[]>;
   readonly projectMemoryContextResolver?: ProjectMemoryContextResolver;
   readonly readManagedSkillChatImages?: ManagedSkillChatImageResolver['readManagedSkillChatImages'];
-  readonly readManagedGenerationImages?: (
-    sessionId: string,
-    referenceAssetIds: readonly string[],
-  ) => Promise<readonly {
-    readonly bytes: Uint8Array;
-    readonly mediaType: 'image/gif' | 'image/jpeg' | 'image/png' | 'image/webp';
+  readonly readManagedGenerationImages?: (sessionId: string, referenceAssetIds: readonly string[]) => Promise<readonly {
+    readonly bytes: Uint8Array; readonly mediaType: 'image/gif' | 'image/jpeg' | 'image/png' | 'image/webp';
   }[]>;
   readonly storeGeneratedImage?: (sessionId: string, bytes: Uint8Array, mediaType: string) => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
+  readonly bindGenerationProject?: (sessionId: string, expectedProjectId?: string) => Promise<GenerationProjectBinding>;
+  readonly storeGeneratedImageForProject?: (binding: GenerationProjectBinding, bytes: Uint8Array, mediaType: string) => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
   readonly storeGeneratedVideo?: (sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
+  readonly storeGeneratedVideoForProject?: (binding: GenerationProjectBinding, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
 }): ProviderService {
   let configurationCache: ConfigurationSnapshot = {
     profiles: sanitizeProfiles(options.profiles ?? DEFAULT_PROVIDER_PROFILES),
@@ -132,6 +127,13 @@ export function createComflyProviderService(options: {
   const providerTaskMappings = createProviderTaskMappingStore({
     appDataRoot: options.appDataRoot,
     fileSystem: options.fileSystem,
+    secretSupplier: () => options.credentialStore.getMappingSecrets(),
+  });
+  const imageHistory = createComflyImageHistoryRecovery({
+    appDataRoot: options.appDataRoot, fileSystem: options.fileSystem, historySink: options.historySink,
+    mappings: providerTaskMappings, nowIso, storeGeneratedImage: options.storeGeneratedImage,
+    storeGeneratedImageForProject: options.storeGeneratedImageForProject,
+    allowLegacyStorage: options.bindGenerationProject === undefined,
     secretSupplier: () => options.credentialStore.getMappingSecrets(),
   });
   const providerConfiguration = createProviderConfigurationStore({
@@ -149,6 +151,7 @@ export function createComflyProviderService(options: {
     tokenSupplier: async () => role === 'image' ? snapshot.imageToken : snapshot.languageToken,
   });
   const videoJobs = createComflyVideoJobHandlers({
+    appDataRoot: options.appDataRoot, fileSystem: options.fileSystem, secretSupplier: () => options.credentialStore.getMappingSecrets(),
     mappings: providerTaskMappings,
     listProfiles: async () => (await captureRuntimeSnapshot()).profiles,
     submitProvider: async (input) => {
@@ -163,9 +166,11 @@ export function createComflyProviderService(options: {
       );
     },
     readManagedGenerationImages: options.readManagedGenerationImages,
-    downloadResult: async (url) => downloadProviderResult(url, 'video'),
+    downloadResult: async (url) => downloadSafeProviderResult(url, 'video', options.fetch, options.resolveResultHost),
     historySink: options.historySink,
     storeGeneratedVideo: options.storeGeneratedVideo,
+    bindGenerationProject: options.bindGenerationProject,
+    storeGeneratedVideoForProject: options.storeGeneratedVideoForProject,
     createPublicTaskId: createPublicProviderTaskId,
     nowIso,
   });  return {
@@ -268,6 +273,8 @@ export function createComflyProviderService(options: {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request) as SubmitImageJobBridgeRequest;
       const snapshot = await captureRuntimeSnapshot();
       const profile = selectProfile(snapshot.profiles, validated.provider, validated.modelRoute);
+      const projectBinding = options.bindGenerationProject === undefined ? undefined
+        : await options.bindGenerationProject(validated.sessionId ?? '', validated.projectId);
       if (profile.modelId === 'seedream-v5-pro' && validated.referenceAssetIds.length > 10) {
         throw createProviderBridgeError(
           'INVALID_REQUEST',
@@ -276,11 +283,13 @@ export function createComflyProviderService(options: {
       }
       const historyId = deriveGenerationHistoryId(validated.jobId);
       const existingMapping = await providerTaskMappings.findByHistoryId(historyId);
-      if (existingMapping !== undefined) return { providerTaskId: existingMapping.publicTaskId };
+      if (existingMapping !== undefined) { assertMatchingProjectBinding(projectBinding, existingMapping); return { providerTaskId: existingMapping.publicTaskId }; }
+      const recovered = await imageHistory.recoverUnmapped(historyId, projectBinding);
+      if (recovered !== null) return recovered;
       const references = validated.referenceAssetIds.length === 0
         ? []
         : await requireManagedGenerationImages(validated, profile, options.readManagedGenerationImages);
-      const prompt = buildGenerationReferencePrompt(validated.prompt, references.length);
+      const prompt = buildGenerationReferencePrompt(validated.prompt, references.length, validated.imagePurpose);
       if (references.length > 0 && !profile.capabilities.includes('image_edit')
         && !profile.capabilities.includes('gemini_native')) {
         throw createProviderBridgeError(
@@ -288,72 +297,28 @@ export function createComflyProviderService(options: {
           'Selected image model does not support reference images',
         );
       }
-      const submissionCreated = await providerTaskMappings.reserveSubmission({
-        currentIdentity: validated.jobId.startsWith(CURRENT_GENERATION_JOB_ID_PREFIX), historyId,
+      const reservation = await reserveComflyImageSubmission({
+        jobId: validated.jobId, historyId, historySink: options.historySink,
+        historySubmission: { jobId: validated.jobId, ...buildImageGenerationHistorySubmission(profile, validated) },
+        mappings: providerTaskMappings, projectBinding,
       });
-      if (!submissionCreated) {
-        const existingMapping = await providerTaskMappings.findByHistoryId(historyId);
-        if (existingMapping !== undefined) return { providerTaskId: existingMapping.publicTaskId };
-        let durableTerminal: GenerationHistoryDurableTerminal | null = null;
-        try {
-          durableTerminal = await options.historySink?.getTerminal(historyId) ?? null;
-        } catch {
-          // The provider submission tombstone remains authoritative after history deletion.
-        }
-        if (durableTerminal !== null) {
-          const publicTaskId = createPublicProviderTaskId();
-          await providerTaskMappings.set(createHistoryTerminalMappingRecord(
-            publicTaskId,
-            historyId,
-            durableTerminal,
-            nowIso(),
-          ));
-          return { providerTaskId: publicTaskId };
-        }
-        throw createProviderBridgeError(
-          'PROVIDER_INVALID_RESPONSE',
-          'Generation job is already reserved; create a new run to submit again',
-        );
-      }
-      const reservation = await options.historySink?.reserveSubmission({
-        jobId: validated.jobId, ...buildImageGenerationHistorySubmission(profile, validated),
-      });
-      if (reservation !== undefined && reservation.historyId !== historyId) {
-        throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Generation history reservation identity is invalid');
-      }
-      if (reservation !== undefined && !reservation.created) {
-        const existingMapping = await providerTaskMappings.findByHistoryId(historyId);
-        if (existingMapping !== undefined) return { providerTaskId: existingMapping.publicTaskId };
-        if (reservation.terminal !== null) {
-          const publicTaskId = createPublicProviderTaskId();
-          await providerTaskMappings.set(createHistoryTerminalMappingRecord(
-            publicTaskId,
-            historyId,
-            reservation.terminal,
-            nowIso(),
-          ));
-          return { providerTaskId: publicTaskId };
-        }
-        throw createProviderBridgeError(
-          'PROVIDER_INVALID_RESPONSE',
-          'Generation job is already reserved; create a new run to submit again',
-        );
+      if (reservation !== null && 'publicTaskId' in reservation) return { providerTaskId: reservation.publicTaskId };
+      if (reservation !== null && 'terminal' in reservation) {
+        if (projectBinding !== undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Generation job project identity is unavailable');
+        const publicTaskId = createPublicProviderTaskId();
+        await providerTaskMappings.set(createHistoryTerminalMappingRecord(publicTaskId, historyId, reservation.terminal, nowIso()));
+        return { providerTaskId: publicTaskId };
       }
       if (profile.capabilities.includes('gemini_native') && profile.capabilities.includes('image_generation')) {
-        if (options.storeGeneratedImage === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Generated image storage is unavailable');
+        if (projectBinding === undefined && options.storeGeneratedImage === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Generated image storage is unavailable');
         try {
           const image = await translateProviderCall(() => createClient(snapshot, 'image').generateGeminiImage({
             model: profile.modelId ?? profile.modelRoute,
             prompt,
             images: references,
           }));
-          const stored = await options.storeGeneratedImage(validated.sessionId ?? validated.conversationId, image.bytes, image.mimeType);
-          const publicTaskId = createPublicProviderTaskId();
-          const timestamp = nowIso();
-          await providerTaskMappings.set({ provider: 'comfly', publicTaskId, rawTaskId: `gemini-inline-${publicTaskId}`, historyId, state: 'completed', createdAt: timestamp, updatedAt: timestamp, terminalAt: timestamp, result: { assetId: stored.assetId, ...(stored.width === null || stored.width === undefined ? {} : { width: stored.width }), ...(stored.height === null || stored.height === undefined ? {} : { height: stored.height }) } });
-          if (options.historySink !== undefined) await options.historySink.succeeded(historyId, image.bytes);
-          return { providerTaskId: publicTaskId };
-        } catch (error) { if (options.historySink !== undefined) await options.historySink.failed(historyId, historyFailureCode(error)); throw error; }
+          return await imageHistory.storeInlineImage(historyId, validated.sessionId ?? validated.conversationId, image.bytes, image.mimeType, projectBinding, validated.jobId);
+        } catch (error) { if (options.historySink !== undefined && !isRetryableHistoryStorageError(error)) await options.historySink.failed(historyId, historyFailureCode(error)); throw error; }
       }
       try {
         const response = await translateProviderCall(() => submitComflyImage(createClient(snapshot, 'image'), profile, validated, prompt, references));
@@ -369,45 +334,39 @@ export function createComflyProviderService(options: {
           }
         }
         if (directResult !== undefined) {
-          if (options.storeGeneratedImage === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Generated image storage is unavailable');
-          const bytes = directResult.inlineBytes ?? await downloadProviderResult(directResult.resultUrl, 'image');
+          if (projectBinding === undefined && options.storeGeneratedImage === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Generated image storage is unavailable');
+          if (directResult.inlineBytes === undefined) {
+            const resultUrl = parseSafeProviderResultUrl(directResult.resultUrl).toString();
+            const publicTaskId = createPublicProviderTaskId();
+            const timestamp = nowIso();
+            await persistPaidProviderMapping(providerTaskMappings, {
+              provider: 'comfly', publicTaskId,
+              rawTaskId: `${DIRECT_IMAGE_RESULT_TASK_PREFIX}${publicTaskId}:${resultUrl}`,
+              kind: 'image', sessionId: validated.sessionId ?? validated.conversationId,
+              historyId, projectBinding, state: 'running', createdAt: timestamp, updatedAt: timestamp,
+            }).catch(() => { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：供应商已接受图片任务但本地任务记录暂不可用，请保留原任务等待恢复', true); });
+            try { await options.historySink?.running(historyId); } catch { /* The durable handle remains usable. */ }
+            return { providerTaskId: publicTaskId };
+          }
+          const bytes = directResult.inlineBytes;
           const mediaType = detectGeneratedImageMediaType(bytes);
-          const stored = await options.storeGeneratedImage(validated.sessionId ?? validated.conversationId, bytes, mediaType);
-          const publicTaskId = createPublicProviderTaskId();
-          const timestamp = nowIso();
-          await providerTaskMappings.set({
-            provider: 'comfly',
-            publicTaskId,
-            rawTaskId: `direct-image-${publicTaskId}`,
-            historyId,
-            state: 'completed',
-            createdAt: timestamp,
-            updatedAt: timestamp,
-            terminalAt: timestamp,
-            result: {
-              assetId: stored.assetId,
-              ...(stored.width === null || stored.width === undefined ? {} : { width: stored.width }),
-              ...(stored.height === null || stored.height === undefined ? {} : { height: stored.height }),
-            },
-          });
-          if (options.historySink !== undefined) await options.historySink.succeeded(historyId, bytes);
-          return { providerTaskId: publicTaskId };
+          return await imageHistory.storeInlineImage(historyId, validated.sessionId ?? validated.conversationId, bytes, mediaType, projectBinding, validated.jobId);
         }
         if (parsed === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image task response');
         const publicTaskId = createPublicProviderTaskId();
         const timestamp = nowIso();
-        await providerTaskMappings.set({
+        await persistPaidProviderMapping(providerTaskMappings, {
           provider: 'comfly',
           publicTaskId,
-          rawTaskId: parsed.taskId, sessionId: validated.sessionId ?? validated.conversationId, historyId,
+          rawTaskId: parsed.taskId, sessionId: validated.sessionId ?? validated.conversationId, historyId, projectBinding,
           state: 'running',
           createdAt: timestamp,
           updatedAt: timestamp,
-        });
-        if (options.historySink !== undefined) await options.historySink.running(historyId);
+        }).catch(() => { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：供应商已接受图片任务但本地任务记录暂不可用，请保留原任务等待恢复', true); });
+        try { await options.historySink?.running(historyId); } catch { /* The durable provider task remains pollable. */ }
         return { providerTaskId: publicTaskId };
       } catch (error) {
-        if (options.historySink !== undefined) {
+        if (options.historySink !== undefined && !isRetryableHistoryStorageError(error)) {
           await options.historySink?.failed(historyId, historyFailureCode(error));
         }
         throw error;
@@ -513,7 +472,8 @@ export function createComflyProviderService(options: {
       assertSupportedProvider(validated.provider);
       let task: ProviderTaskMappingRecord | undefined;
       try {
-        task = await providerTaskMappings.get(validated.providerTaskId);
+        task = await providerTaskMappings.get(validated.providerTaskId)
+          ?? await imageHistory.recoverByHandle(validated.providerTaskId) ?? undefined;
       } catch (error) {
         if (isCredentialsLocked(error)) return blockedCredentialsPollResult();
         throw error;
@@ -523,39 +483,66 @@ export function createComflyProviderService(options: {
       }
       if (task.state !== 'running') return terminalMappingToPollResult(task);
       if (task.historyId !== undefined && options.historySink !== undefined) {
-        const durableTerminal = await options.historySink.getTerminal(task.historyId);
+        const durableTerminal = await imageHistory.getTerminal(task.historyId);
+        if (durableTerminal?.status === 'succeeded' && task.result !== undefined) {
+          const terminal = await providerTaskMappings.markTerminal(validated.providerTaskId, { status: 'completed', progress: 1, result: task.result }, nowIso());
+          if (task.historyId !== undefined && pendingImageHistoryHash(task.rawTaskId) !== null) await imageHistory.cleanupAfterTerminal(task.historyId, task.publicTaskId);
+          return terminalMappingToPollResult(terminal ?? task);
+        }
         if (durableTerminal !== null && durableTerminal.status !== 'succeeded') return await commitHistoryTerminal(validated.providerTaskId, durableTerminal);
       }
-      const snapshot = await captureRuntimeSnapshot();
+      const pendingHash = pendingImageHistoryHash(task.rawTaskId);
+      if (pendingHash !== null) {
+        return terminalMappingToPollResult(await imageHistory.recoverPending(task, pendingHash));
+      }
+      if (task.rawTaskId.startsWith('pending-image-history:')) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Pending image history is invalid');
       let response: unknown;
-      try {
-        response = await translateProviderCall(
-          () => createClient(snapshot, 'image').getImageTask(task.rawTaskId),
-          { publicTaskId: validated.providerTaskId, rawTaskId: task.rawTaskId, request: 'poll' },
-        );
-      } catch (error) {
-        if (isCredentialsLocked(error)) return blockedCredentialsPollResult();
-        throw error;
+      const directResultUrl = directImageResultUrl(task);
+      if (directResultUrl === undefined) {
+        const snapshot = await captureRuntimeSnapshot();
+        try {
+          response = await translateProviderCall(
+            () => createClient(snapshot, 'image').getImageTask(task.rawTaskId),
+            { publicTaskId: validated.providerTaskId, rawTaskId: task.rawTaskId, request: 'poll' },
+          );
+        } catch (error) {
+          if (isCredentialsLocked(error)) return blockedCredentialsPollResult();
+          throw error;
+        }
+      } else {
+        response = { taskId: task.rawTaskId, status: 'succeeded', data: [{ url: directResultUrl }] };
       }
       const mapped = mapImageTaskPollResult(validated.provider, validated.providerTaskId, task.rawTaskId, response);
       let result = mapped.publicResult;
-      if (result.status === 'completed' && options.storeGeneratedImage !== undefined && task.sessionId !== undefined) {
+      if (result.status === 'completed' && options.bindGenerationProject !== undefined && task.projectBinding === undefined) {
+        let durable: GenerationHistoryDurableTerminal | undefined;
+        try { if (task.historyId !== undefined) durable = await options.historySink?.failed(task.historyId, 'provider_unavailable'); }
+        catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Generation history is temporarily unavailable', true); }
+        const priorResult = historyTerminalAfterFailedWrite(task, durable);
+        if (priorResult?.status === 'cancelled') return await commitHistoryTerminal(task.publicTaskId, { status: 'cancelled' });
+        const failed = { status: 'failed' as const, error: createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Original project identity cannot be verified; provider task remains recorded') };
+        const terminal = await providerTaskMappings.markTerminal(task.publicTaskId, priorResult ?? failed, nowIso());
+        return terminalMappingToPollResult(terminal ?? task);
+      }
+      if (result.status === 'completed' && (task.projectBinding !== undefined || options.storeGeneratedImage !== undefined) && task.sessionId !== undefined) {
         try {
-          const bytes = mapped.inlineBytes ?? await downloadProviderResult(mapped.resultUrl, 'image');
-          const stored = await options.storeGeneratedImage(task.sessionId, bytes, detectGeneratedImageMediaType(bytes));
-          result = { status: 'completed', progress: 1, result: { assetId: stored.assetId, ...(stored.width === null || stored.width === undefined ? {} : { width: stored.width }), ...(stored.height === null || stored.height === undefined ? {} : { height: stored.height }) } };
-          if (task.historyId !== undefined && options.historySink !== undefined) await options.historySink.succeeded(task.historyId, bytes);
-        } catch {
-          if (task.historyId !== undefined && options.historySink !== undefined) await options.historySink.failed(task.historyId, 'invalid_result');
-          result = { status: 'failed', error: createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result') };
+          const bytes = mapped.inlineBytes ?? await downloadSafeProviderResult(mapped.resultUrl, 'image', options.fetch, options.resolveResultHost);
+          return terminalMappingToPollResult(await imageHistory.stageProviderImage(task, bytes));
+        } catch (error) {
+          if (isProviderBridgeError(error) && error.retryable) throw error;
+          const durable = task.historyId !== undefined && options.historySink !== undefined
+            ? await options.historySink.failed(task.historyId, 'invalid_result') : undefined;
+          result = historyTerminalAfterFailedWrite(task, durable)
+            ?? { status: 'failed', error: createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result') };
         }
       } else if (task.historyId !== undefined && options.historySink !== undefined) {
         let effective: GenerationHistoryDurableTerminal | null = null;
         if (result.status === 'completed') {
           try {
-            const bytes = mapped.inlineBytes ?? await downloadProviderResult(mapped.resultUrl, 'image');
+            const bytes = mapped.inlineBytes ?? await downloadSafeProviderResult(mapped.resultUrl, 'image', options.fetch, options.resolveResultHost);
             effective = await options.historySink.succeeded(task.historyId, bytes);
-          } catch {
+          } catch (error) {
+            if (isProviderBridgeError(error) && error.retryable) throw error;
             effective = await options.historySink.failed(task.historyId, 'invalid_result');
           }
         } else if (result.status === 'failed') {
@@ -579,7 +566,8 @@ export function createComflyProviderService(options: {
       await gcTerminalTombstones();
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, request) as CancelImageJobBridgeRequest;
       assertSupportedProvider(validated.provider);
-      const current = await providerTaskMappings.get(validated.providerTaskId);
+      const current = await providerTaskMappings.get(validated.providerTaskId)
+        ?? await imageHistory.recoverByHandle(validated.providerTaskId, false) ?? undefined;
       if (current === undefined || current.provider !== validated.provider) {
         throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
       }
@@ -598,6 +586,10 @@ export function createComflyProviderService(options: {
     async ackImageJobTerminal(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, request) as AckImageJobTerminalBridgeRequest;
       assertSupportedProvider(validated.provider);
+      const task = await providerTaskMappings.get(validated.providerTaskId);
+      if (task?.state !== 'running' && task?.historyId !== undefined && pendingImageHistoryHash(task.rawTaskId) !== null) {
+        await imageHistory.remove(task.historyId, task.publicTaskId);
+      }
       await providerTaskMappings.ackTerminal(validated.providerTaskId, validated.status);
       return { acknowledged: true };
     },
@@ -652,9 +644,6 @@ export function createComflyProviderService(options: {
   }
   function nowIso(): string {
     return new Date(nowMs()).toISOString();
-  }
-  async function downloadProviderResult(rawUrl: string | undefined, kind: 'image' | 'video'): Promise<Uint8Array> {
-    return downloadSafeProviderResult(rawUrl, kind, options.fetch, options.resolveResultHost);
   }
   async function commitHistoryTerminal(
     publicTaskId: string,
@@ -794,18 +783,13 @@ function selectProfile(
   }
   return profile;
 }
-function buildGenerationReferencePrompt(prompt: string, count: number): string {
+function buildGenerationReferencePrompt(prompt: string, count: number, purpose?: 'layering'): string {
   if (count === 0) return prompt;
+  if (purpose === 'layering') return prompt;
   const contract = [
-    '@1 is the authoritative scene: preserve its composition, camera, lighting, and background.',
+    `Reference images are attached in the supplied order (${count} ${count === 1 ? 'input' : 'inputs'}).`,
+    'Follow the prompt\'s roles, edit boundaries, and preservation constraints for each reference; do not infer a scene, product, or replacement role from its position alone.',
   ];
-  if (count >= 2) {
-    contract.push(
-      '@2 is the authoritative replacement product: preserve its identity, proportions, material, color, and logo.',
-      'Replace only the primary subject in @1 with @2. Do not blend, duplicate, or redesign the scene.',
-    );
-  }
-  if (count > 2) contract.push('@3 and later images are supplemental references only.');
   return [...contract, prompt].join('\n');
 }
 async function requireManagedGenerationImages(
@@ -922,7 +906,9 @@ function historyFailureCode(error: unknown): GenerationHistoryFailureCode {
 function createPublicProviderTaskId(): string {
   return `provider-job-${randomBytes(16).toString('hex')}`;
 }
-
+function directImageResultUrl(task: ProviderTaskMappingRecord): string | undefined {
+  const prefix = `${DIRECT_IMAGE_RESULT_TASK_PREFIX}${task.publicTaskId}:`; return task.rawTaskId.startsWith(prefix) ? task.rawTaskId.slice(prefix.length) : undefined;
+}
 function createProviderResultAssetId(_provider: string, publicTaskId: string): string {
   if (!/^provider-job-[a-f0-9]{32}$/u.test(publicTaskId)) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
@@ -1060,13 +1046,20 @@ function isProviderBridgeError(error: unknown): error is ProviderBridgeException
     && typeof error.retryable === 'boolean';
 }
 
+function historyTerminalAfterFailedWrite(task: ProviderTaskMappingRecord, durable: GenerationHistoryDurableTerminal | undefined):
+  Extract<PollImageJobBridgeResult, { status: 'completed' | 'cancelled' }> | null {
+  if (durable === undefined || durable.status === 'failed') return null;
+  if (durable.status === 'cancelled') return { status: 'cancelled' };
+  if (task.result === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：生成历史已成功，但项目图片尚未恢复，请保留原任务继续同步', true);
+  return { status: 'completed', progress: 1, result: task.result };
+}
+function isRetryableHistoryStorageError(error: unknown): boolean { return isProviderBridgeError(error) && error.code === 'PROVIDER_UNAVAILABLE' && error.retryable; }
+
 function isCredentialsLocked(error: unknown): boolean {
   return isProviderBridgeError(error) && error.code === 'CREDENTIALS_LOCKED';
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object';
-}
+function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object'; }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return isRecord(value) && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;

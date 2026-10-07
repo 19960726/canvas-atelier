@@ -6,9 +6,13 @@ export function isExternalProviderJob(job: Pick<ModelJob, 'provider'>): boolean 
   return job.provider === 'julun' || job.provider === '4dai';
 }
 
+export function isPotentiallyPaidProviderJob(job: Pick<ModelJob, 'provider'>): boolean {
+  return job.provider === 'comfly' || job.provider === 'relayme' || isExternalProviderJob(job);
+}
+
 export function isUncertainExternalSubmission(job: Pick<ModelJob, 'provider' | 'status' | 'error'>): boolean {
-  return job.status === 'cancelled'
-    && isExternalProviderJob(job)
+  return (job.status === 'failed' || job.status === 'cancelled')
+    && isPotentiallyPaidProviderJob(job)
     && job.error?.startsWith('提交状态不确定') === true;
 }
 

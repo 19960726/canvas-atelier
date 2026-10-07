@@ -54,6 +54,38 @@ describe('ComflyClient', () => {
     expect(images.map((image) => image.type)).toEqual(['image/png', 'image/jpeg']);
     expect(new Uint8Array(await images[0]!.arrayBuffer())).toEqual(Uint8Array.from([0x89, 0x50, 0x4e, 0x47]));
   });
+  it.each([
+    ['gpt-image-1', '1:1', '1024x1024'],
+    ['gpt-image-1', '3:2', '1536x1024'],
+    ['gpt-image-1', '2:3', '1024x1536'],
+    ['gpt-image-1.5', '1:1', '1024x1024'],
+    ['gpt-image-1.5', '3:2', '1536x1024'],
+    ['gpt-image-1.5', '2:3', '1024x1536'],
+  ] as const)('preserves the native %s %s edit size %s at the default 2K tier', async (model, aspect_ratio, size) => {
+    const fetch = vi.fn<ComflyFetch>(async () => jsonResponse({ task_id: 'native-edit-task' }));
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'fixture', fetch });
+    await client.editImage({ model, prompt: 'Preserve the source frame', async: true, size: '2K', aspect_ratio,
+      output_format: 'png', background: 'transparent', image: [{ mediaType: 'image/png', bytes: Uint8Array.of(137, 80, 78, 71) }] });
+    const [url, init] = fetch.mock.calls[0]!;
+    expect(url).toBe('https://ai.comfly.org/v1/images/edits?async=true');
+    const multipart = await new Response(new Blob([Uint8Array.from(init!.body as Uint8Array)]),
+      { headers: { 'content-type': init!.headers!['content-type']! } }).formData();
+    expect(multipart.get('model')).toBe(model);
+    expect(multipart.get('size')).toBe(size);
+    expect(multipart.get('background')).toBe('transparent');
+    expect(multipart.get('output_format')).toBe('png');
+    expect(multipart.has('aspect_ratio')).toBe(false);
+    expect(multipart.has('async')).toBe(false);
+  });
+  it.each(['gpt-image-1', 'gpt-image-1.5'])('preserves the unsupported native 4K rejection for %s before transport', async model => {
+    const fetch = vi.fn<ComflyFetch>(async () => jsonResponse({ task_id: 'must-not-submit' }));
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'fixture', fetch });
+    await expect(client.editImage({ model, prompt: 'Preserve the source frame', size: '4K', aspect_ratio: '2:3',
+      image: [{ mediaType: 'image/png', bytes: Uint8Array.of(137, 80, 78, 71) }] })).rejects.toMatchObject({
+        code: 'CAPABILITY_UNSUPPORTED', retryable: false,
+      });
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it.each(['gpt-image-2.5-flare-4k', 'gpt-image-2.5-sunburst-4k', 'edit-model'])('submits %s edits asynchronously and polls the returned task without resubmission', async (model) => {
     const fetch = vi.fn<ComflyFetch>(async (url) => jsonResponse(url.includes('/tasks/')
       ? { task_id: 'async-edit', status: 'SUCCESS', data: { data: [{ url: 'https://cdn.example.com/done.png' }] } }

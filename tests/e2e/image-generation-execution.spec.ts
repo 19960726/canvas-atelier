@@ -158,7 +158,7 @@ test('a transparent managed result keeps alpha in preview and original download'
   expect(await readFile(await download.path()!)).toEqual(fixture.buffer);
 });
 
-test('Stop image generation finishes even when provider cancellation never responds', async ({ page }) => {
+test('Stop image generation preserves the paid task until provider cancellation is confirmed', async ({ page }) => {
   await openEmptyApp(page);
   await page.evaluate(() => window.__NOVUS_E2E__!.createModule('image_generation', { x: 420, y: 140 }));
 
@@ -173,8 +173,21 @@ test('Stop image generation finishes even when provider cancellation never respo
   await page.evaluate(() => window.__NOVUS_E2E__!.setModelCancellationMode('hang'));
   await generation.getByRole('button', { name: '停止生成' }).click();
 
+  // The local cancellation wait is 3 seconds. Its expiry cannot establish
+  // that the provider stopped the paid task or authorize another submission.
+  await page.waitForTimeout(3_250);
+  await expect(generation.getByRole('button', { name: '停止生成' })).toBeVisible();
+  expect((await e2eState(page)).modelJobs[0]).toMatchObject({
+    status: 'running',
+    providerTaskId: expect.any(String),
+  });
+  expect((await e2eState(page)).modelSubmissions).toHaveLength(1);
+
+  await page.evaluate(() => window.__NOVUS_E2E__!.setModelCancellationMode('complete'));
+  await generation.getByRole('button', { name: '停止生成' }).click();
   await expect(generation.getByRole('button', { name: 'Generate image' })).toBeVisible({ timeout: 7_000 });
   await expect.poll(async () => (await e2eState(page)).modelJobs[0]?.status).toBe('cancelled');
+  expect((await e2eState(page)).modelSubmissions).toHaveLength(1);
 });
 
 test('a completed formal image remains inside its source node after reload without an external result node', async ({ page }) => {

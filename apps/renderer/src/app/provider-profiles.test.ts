@@ -848,6 +848,11 @@ describe('listAgentChatProfiles', () => {
 
   it('fails closed for explicit media-output families mislabeled as chat-only', () => {
     const mediaOutputModelIds = [
+      'advanced-voice',
+      'animate-anyone-detect-gen2',
+      'animate-anyone-gen2',
+      'custom-voices',
+      'tts-1',
       'gemini-3-pro-image-4k',
       'gemini-3.1-flash-image-4k',
       'gpt-4-dalle',

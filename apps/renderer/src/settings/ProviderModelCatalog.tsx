@@ -10,6 +10,8 @@ type ProviderModelCatalogProps = {
   readonly profiles: readonly ProviderBridgeProfile[];
   readonly enabledProfileKeys?: readonly string[];
   readonly defaultProfileKeys?: Partial<Record<CatalogCapability, string>>;
+  readonly showDefaultSelection?: boolean;
+  readonly showSummary?: boolean;
   readonly onConfigure?: () => void;
   readonly configureLabel?: string;
   readonly onRetry?: () => void;
@@ -18,18 +20,21 @@ type ProviderModelCatalogProps = {
   readonly onDefaultProfileChange?: (capability: CatalogCapability, profileKey: string) => void;
 };
 
+type ProviderModelDefaultsProps = Pick<ProviderModelCatalogProps, 'profiles' | 'enabledProfileKeys' | 'defaultProfileKeys' | 'onDefaultProfileChange'>;
+
 const MODEL_GROUPS: readonly {
   readonly capability: CatalogCapability;
   readonly label: string;
   readonly defaultLabel: string;
+  readonly shortLabel: string;
   readonly Icon: typeof Image;
 }[] = [
-  { capability: 'image_generation', label: '生图模型', defaultLabel: '生图默认模型', Icon: Image },
-  { capability: 'video_generation', label: '视频模型', defaultLabel: '视频默认模型', Icon: Video },
-  { capability: 'chat', label: '对话模型', defaultLabel: '对话默认模型', Icon: MessageSquare },
-  { capability: 'reverse_prompt', label: '反推模型', defaultLabel: '反推默认模型', Icon: WandSparkles },
-  { capability: 'vision', label: '视觉模型', defaultLabel: '视觉默认模型', Icon: Eye },
-  { capability: 'video_understanding', label: '视频理解模型', defaultLabel: '视频理解默认模型', Icon: ScanSearch },
+  { capability: 'image_generation', label: '生图模型', defaultLabel: '生图默认模型', shortLabel: '图片生成', Icon: Image },
+  { capability: 'video_generation', label: '视频模型', defaultLabel: '视频默认模型', shortLabel: '视频生成', Icon: Video },
+  { capability: 'chat', label: '对话模型', defaultLabel: '对话默认模型', shortLabel: '对话', Icon: MessageSquare },
+  { capability: 'reverse_prompt', label: '反推模型', defaultLabel: '反推默认模型', shortLabel: '反推', Icon: WandSparkles },
+  { capability: 'vision', label: '视觉模型', defaultLabel: '视觉默认模型', shortLabel: '视觉分析', Icon: Eye },
+  { capability: 'video_understanding', label: '视频理解模型', defaultLabel: '视频理解默认模型', shortLabel: '视频理解', Icon: ScanSearch },
 ];
 
 export function createProviderProfileKey(profile: Pick<ProviderBridgeProfile, 'provider' | 'modelRoute'>): string {
@@ -68,10 +73,79 @@ export function isProviderProfileCatalogRunnable(profile: ProviderBridgeProfile)
   return profile.capabilityStatus !== 'incomplete';
 }
 
+function enabledProfileKeySet(profiles: readonly ProviderBridgeProfile[], enabledProfileKeys?: readonly string[]): Set<string> {
+  return new Set(enabledProfileKeys ?? profiles
+    .filter((profile) => profile.enabled !== false)
+    .map(createProviderProfileKey));
+}
+
+function ProviderModelDefaultSelection({
+  group,
+  families,
+  enabled,
+  defaultProfileKey,
+  onDefaultProfileChange,
+  label,
+}: {
+  readonly group: typeof MODEL_GROUPS[number];
+  readonly families: ReturnType<typeof profileFamiliesForCapability>;
+  readonly enabled: ReadonlySet<string>;
+  readonly defaultProfileKey?: string;
+  readonly onDefaultProfileChange: ProviderModelCatalogProps['onDefaultProfileChange'];
+  readonly label: string;
+}) {
+  const enabledFamilies = families.flatMap((family) => {
+    const runnableMembers = family.members.filter((member) => isProviderProfileCatalogRunnable(member)
+      && enabled.has(createProviderProfileKey(member)));
+    const profile = runnableMembers.find((member) => member === family.profile) ?? runnableMembers[0];
+    return profile === undefined ? [] : [{ profile, members: family.members }];
+  });
+  const defaultFamily = enabledFamilies.find((family) => family.members.some((member) => createProviderProfileKey(member) === defaultProfileKey));
+  const hasEnabledFamily = enabledFamilies.length > 0;
+
+  return <label className="settings-model-default">
+    <span>{label}</span>
+    <select
+      aria-label={group.defaultLabel}
+      value={defaultFamily ? createProviderProfileKey(defaultFamily.profile) : ''}
+      disabled={!hasEnabledFamily || onDefaultProfileChange === undefined}
+      onChange={(event) => {
+        const profileKey = event.target.value;
+        if (profileKey === '' || enabledFamilies.some((family) => createProviderProfileKey(family.profile) === profileKey)) {
+          onDefaultProfileChange?.(group.capability, profileKey);
+        }
+      }}
+    >
+      <option value="">{hasEnabledFamily ? '未选择默认模型' : '暂无已启用的可用模型'}</option>
+      {enabledFamilies.map(({ profile }) => {
+        const key = createProviderProfileKey(profile);
+        return <option key={key} value={key}>{group.capability === 'image_generation' ? imageModelFamilyDisplayName(profile) : profile.displayName}</option>;
+      })}
+    </select>
+  </label>;
+}
+
+export function ProviderModelDefaults({ profiles, enabledProfileKeys, defaultProfileKeys, onDefaultProfileChange }: ProviderModelDefaultsProps) {
+  const enabled = enabledProfileKeySet(profiles, enabledProfileKeys);
+  return <div className="settings-model-defaults">
+    {MODEL_GROUPS.map((group) => <ProviderModelDefaultSelection
+      key={group.capability}
+      group={group}
+      families={profileFamiliesForCapability(profiles, group.capability)}
+      enabled={enabled}
+      defaultProfileKey={defaultProfileKeys?.[group.capability]}
+      onDefaultProfileChange={onDefaultProfileChange}
+      label={group.shortLabel}
+    />)}
+  </div>;
+}
+
 export function ProviderModelCatalog({
   profiles,
   enabledProfileKeys,
   defaultProfileKeys,
+  showDefaultSelection = true,
+  showSummary = true,
   onConfigure,
   configureLabel = '配置模型密钥',
   onRetry,
@@ -79,9 +153,7 @@ export function ProviderModelCatalog({
   onToggleFamily,
   onDefaultProfileChange,
 }: ProviderModelCatalogProps) {
-  const enabled = new Set(enabledProfileKeys ?? profiles
-    .filter((profile) => profile.enabled !== false)
-    .map(createProviderProfileKey));
+  const enabled = enabledProfileKeySet(profiles, enabledProfileKeys);
   const populatedGroups = MODEL_GROUPS.map((group) => ({
     ...group,
     families: profileFamiliesForCapability(profiles, group.capability),
@@ -96,10 +168,10 @@ export function ProviderModelCatalog({
 
   if (profiles.length === 0) {
     return <section className="settings-section settings-model-catalog settings-model-catalog--empty" aria-label="模型选择列表">
-      <header className="settings-model-catalog__summary">
+      {showSummary && <header className="settings-model-catalog__summary">
         <div><strong>模型目录</strong><small>当前供应商尚未加载模型</small></div>
         <span>0 个</span>
-      </header>
+      </header>}
       <section className="settings-model-catalog__empty-state" role="region" aria-label="模型目录为空">
         <strong>暂未发现可用模型</strong>
         <p>请先保存当前供应商密钥，然后重新检测模型目录。</p>
@@ -112,10 +184,10 @@ export function ProviderModelCatalog({
   }
 
   return <section className="settings-section settings-model-catalog" aria-label="模型选择列表">
-    <header className="settings-model-catalog__summary">
+    {showSummary && <header className="settings-model-catalog__summary">
       <div><strong>模型目录</strong><small>按用途启用模型并设置默认项</small></div>
       <span>{profileFamiliesForCapability(profiles, 'image_generation').length + profiles.filter((profile) => !profile.capabilities.includes('image_generation')).length} 个模型系列</span>
-    </header>
+    </header>}
     <nav className="settings-model-tabs" role="tablist" aria-label="模型能力分类">
       {populatedGroups.map((group) => {
         const selected = group.capability === activeCapability;
@@ -131,7 +203,6 @@ export function ProviderModelCatalog({
       const enabledFamilies = groupFamilies.filter((family) => family.members.some((profile) => isProviderProfileCatalogRunnable(profile)
         && enabled.has(createProviderProfileKey(profile))));
       const visibleFamilies = groupFamilies.filter((family) => family.members.some((profile) => `${profile.displayName} ${profile.modelId ?? ''} ${profile.modelRoute}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())));
-      const defaultFamily = enabledFamilies.find((family) => family.members.some((member) => createProviderProfileKey(member) === defaultProfileKeys?.[group.capability]));
       return <section key={group.capability} className="settings-model-group settings-model-group--active" aria-label={group.label} data-capability={group.capability}>
         <header>
           <i aria-hidden="true"><group.Icon size={18} strokeWidth={1.8} /></i>
@@ -171,23 +242,17 @@ export function ProviderModelCatalog({
           })}
           {visibleFamilies.length === 0 && <p className="settings-model-no-results">没有匹配的模型，试试其他名称。</p>}
         </div>
-        {onDefaultProfileChange && <label className="settings-model-default">
-          <span>{group.defaultLabel}</span>
-          <select
-            aria-label={group.defaultLabel}
-            value={defaultFamily ? createProviderProfileKey(defaultFamily.profile) : ''}
-            onChange={(event) => onDefaultProfileChange(group.capability, event.target.value)}
-          >
-            <option value="">未选择默认模型</option>
-            {enabledFamilies.map(({ profile }) => {
-              const key = createProviderProfileKey(profile);
-              return <option key={key} value={key}>{group.capability === 'image_generation' ? imageModelFamilyDisplayName(profile) : profile.displayName}</option>;
-            })}
-          </select>
-        </label>}
+        {showDefaultSelection && onDefaultProfileChange && <ProviderModelDefaultSelection
+          group={group}
+          families={groupFamilies}
+          enabled={enabled}
+          defaultProfileKey={defaultProfileKeys?.[group.capability]}
+          onDefaultProfileChange={onDefaultProfileChange}
+          label={group.defaultLabel}
+        />}
       </section>;
     })}
   </section>;
 }
 
-export type { CatalogCapability, ProviderModelCatalogProps };
+export type { CatalogCapability, ProviderModelCatalogProps, ProviderModelDefaultsProps };

@@ -102,7 +102,7 @@ export function resolveConnectedReverseMedia(input: {
   const videosById = new Map(input.videos.map((asset) => [asset.assetId, asset]));
   const nodesById = new Map(input.project.nodes.map((candidate) => [candidate.id, candidate]));
   const inboundEdges = [...input.project.edges]
-    .filter((edge) => edge.target === input.nodeId && (edge.targetPortId === 'references' || edge.targetPortId === 'video'))
+    .filter((edge) => edge.target === input.nodeId && (edge.targetPortId === 'references' || edge.targetPortId === 'video' || edge.targetPortId === 'line_art'))
     .sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
   if (inboundEdges.length > MAX_GENERATION_REFERENCES) {
     return { ok: false, reason: `Agent 反推最多连接 ${MAX_GENERATION_REFERENCES} 个图片或视频素材。` };
@@ -113,13 +113,16 @@ export function resolveConnectedReverseMedia(input: {
   const orderedMedia: OrderedAgentMediaItem[] = [];
   const edgeIds: string[] = [];
   const seenAssetIds = new Set<string>();
+  if (inboundEdges.filter(edge => edge.targetPortId === 'line_art').length > 1) {
+    return { ok: false, reason: '线稿输入只能连接一张图片。' };
+  }
 
   for (const edge of inboundEdges) {
     const source = nodesById.get(edge.source);
-    if (source?.type !== 'module') continue;
+    if (source?.type !== 'module') return { ok: false, reason: '所选 Agent 连接的素材节点已失效。' };
     const assetId = typeof source.data.config.assetId === 'string' ? source.data.config.assetId : null;
 
-    if (source.data.moduleType === 'video_input' && edge.sourcePortId === 'video') {
+    if (source.data.moduleType === 'video_input' && edge.sourcePortId === 'video' && edge.targetPortId !== 'line_art') {
       const video = assetId === null ? undefined : videosById.get(assetId);
       if (!isUsableManagedVideo(video)) {
         return { ok: false, reason: '所选 Agent 连接了不可用的受管 MP4。' };
@@ -146,7 +149,7 @@ export function resolveConnectedReverseMedia(input: {
     }
 
     if (
-      edge.targetPortId !== 'references'
+      (edge.targetPortId !== 'references' && edge.targetPortId !== 'line_art')
       || (source.data.moduleType !== 'image_input' && source.data.moduleType !== 'upload_image')
       || edge.sourcePortId !== 'image'
     ) {

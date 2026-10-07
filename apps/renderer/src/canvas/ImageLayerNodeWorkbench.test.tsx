@@ -14,6 +14,26 @@ describe('ImageLayerNodeWorkbench', () => {
     expect(within(region).getByText('格式检查通过 · 待检查边缘')).toBeVisible();
     expect(within(region).queryByText('像素验证通过')).not.toBeInTheDocument();
   });
+  it('rechecks a standalone legacy passed result and stops after its current format proof is saved', async () => {
+    const decoded = vi.fn(async () => {});
+    vi.stubGlobal('Image', class { naturalWidth = 2; naturalHeight = 2; crossOrigin = ''; src = ''; decode = decoded; });
+    const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn(),
+      getImageData: () => ({ data: new Uint8ClampedArray([30, 60, 90, 255, 30, 60, 90, 64, 0, 0, 0, 0, 0, 0, 0, 0]) }),
+    } as never);
+    try {
+      const config = { name: '产品', layerKind: 'transparent', resultAssetId: 'legacy-result', pixelMode: 'source',
+        canvasWidth: 2, canvasHeight: 2, status: 'completed', qualityStatus: 'passed', qualityValidationVersion: 2 };
+      const asset = { assetId: 'legacy-result', displayUrl: 'novus-asset://legacy-result', mediaType: 'image/png' as const, width: 2, height: 2 };
+      const saved = vi.fn(async () => {});
+      const view = render(<ImageLayerNodeWorkbench nodeId="legacy" config={config} asset={asset}
+        onQualityResult={saved} onVisibilityChange={vi.fn()} />);
+      await waitFor(() => expect(saved).toHaveBeenCalledWith('legacy-result', { ok: true }));
+      view.rerender(<ImageLayerNodeWorkbench nodeId="legacy" config={{ ...config, formatQualityStatus: 'passed',
+        qualityFormatCheckedAssetId: 'legacy-result' }} asset={asset} onQualityResult={saved} onVisibilityChange={vi.fn()} />);
+      expect(decoded).toHaveBeenCalledOnce();
+      expect(saved).toHaveBeenCalledOnce();
+    } finally { context.mockRestore(); vi.unstubAllGlobals(); }
+  });
   it('places a centered provider mask into the original corner before testing selection visibility', async () => {
     const width = 8, height = 8;
     const mask = Uint8ClampedArray.from(Array.from({ length: 64 }, (_, i) => [255, 255, 255,

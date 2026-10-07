@@ -4,8 +4,14 @@ import {
   supportsVerifiedComflyVideoInputMode,
 } from '@agent-canvas/domain';
 import type { ProviderTaskMappingRecord, ProviderTaskMappingStore } from './provider-task-ledger.js';
+import { assertMatchingProjectBinding, persistPaidProviderMapping } from './provider-task-ledger.js';
+import type { GenerationProjectBinding } from './generation-project-binding.js';
+import type { FileSystem } from './file-system.js';
+import type { ProviderMappingSecrets } from './provider-credential-vault.js';
+import { createProviderPendingMediaStore, pendingMediaTaskMarker } from './provider-pending-media.js';
 import {
   deriveGenerationHistoryId,
+  type GenerationHistoryDurableTerminal,
   type GenerationHistoryProviderSinkContract,
 } from './generation-history-provider-sink.js';
 import {
@@ -20,6 +26,7 @@ import {
   type PollVideoJobBridgeRequest,
   type PollVideoJobBridgeResult,
   type ProviderBridgeProfile,
+  type ProviderVideoJobResult,
   type SubmitVideoJobBridgeRequest,
   type SubmitVideoJobBridgeResult,
 } from './provider-contracts.js';
@@ -40,6 +47,9 @@ interface ManagedComflyVideoImage {
 }
 
 export function createComflyVideoJobHandlers(options: {
+  readonly appDataRoot?: string;
+  readonly fileSystem?: FileSystem;
+  readonly secretSupplier?: () => Promise<ProviderMappingSecrets>;
   readonly mappings: ProviderTaskMappingStore;
   readonly listProfiles: () => Promise<readonly ProviderBridgeProfile[]>;
   readonly submitProvider: (input: ComflyVideoGenerationRequest) => Promise<{ readonly taskId: string }>;
@@ -51,9 +61,53 @@ export function createComflyVideoJobHandlers(options: {
   readonly downloadResult: (url: string) => Promise<Uint8Array>;
   readonly historySink?: GenerationHistoryProviderSinkContract;
   readonly storeGeneratedVideo?: (sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
+  readonly bindGenerationProject?: (sessionId: string, expectedProjectId?: string) => Promise<GenerationProjectBinding>;
+  readonly storeGeneratedVideoForProject?: (binding: GenerationProjectBinding, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
   readonly createPublicTaskId: () => string;
   readonly nowIso: () => string;
 }) {
+  const pendingMedia = options.appDataRoot === undefined || options.secretSupplier === undefined ? undefined
+    : createProviderPendingMediaStore({ appDataRoot: options.appDataRoot, fileSystem: options.fileSystem, secretSupplier: options.secretSupplier });
+  const readPaidTask = async (publicTaskId: string) => {
+    try { return await options.mappings.get(publicTaskId); }
+    catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：已付费视频任务记录暂不可用', true); }
+  };
+  const reconcileFailedHistory = async (
+    task: ProviderTaskMappingRecord,
+    durable: GenerationHistoryDurableTerminal,
+    fallback: Extract<PollVideoJobBridgeResult, { status: 'failed' }>,
+  ): Promise<Exclude<PollVideoJobBridgeResult, { status: 'running' }>> => {
+    if (durable.status === 'failed') return fallback;
+    const latest = await readPaidTask(task.publicTaskId);
+    if (latest === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider video job handle is unavailable');
+    if (latest.state !== 'running') {
+      const terminal = terminalToPoll(latest);
+      if (terminal.status === (durable.status === 'succeeded' ? 'completed' : 'cancelled')) return terminal;
+      throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：视频历史与任务终态暂不一致，请保留原任务', true);
+    }
+    if (durable.status === 'cancelled') return { status: 'cancelled' };
+    if (latest.result === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：视频历史已完成，正在恢复任务结果，请保留原任务', true);
+    return { status: 'completed', progress: 1, result: latest.result as ProviderVideoJobResult };
+  };
+  const persistVideoTerminal = async (
+    publicTaskId: string,
+    result: Exclude<PollVideoJobBridgeResult, { status: 'running' }>,
+  ): Promise<PollVideoJobBridgeResult> => {
+    let terminal: ProviderTaskMappingRecord | undefined;
+    try {
+      terminal = result.status === 'cancelled'
+        ? await options.mappings.markCancelled(publicTaskId, options.nowIso())
+        : await options.mappings.markTerminal(publicTaskId, result, options.nowIso());
+    } catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：已付费视频终态记录暂不可用', true); }
+    if (terminal === undefined) {
+      try { await pendingMedia?.remove(publicTaskId); } catch { /* Keep the ACK result authoritative. */ }
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider video job handle is unavailable');
+    }
+    if (terminal.state !== 'running') {
+      try { await pendingMedia?.remove(publicTaskId); } catch { /* ACK retries confined cleanup. */ }
+    }
+    return terminalToPoll(terminal);
+  };
   return {
     async submitVideoJob(request: SubmitVideoJobBridgeRequest): Promise<SubmitVideoJobBridgeResult> {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitVideoJob, request) as SubmitVideoJobBridgeRequest;
@@ -66,36 +120,65 @@ export function createComflyVideoJobHandlers(options: {
       if (profile === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Requested video model profile is unavailable');
       if ((validated.outputCount ?? 1) !== 1) throw createProviderBridgeError('CAPABILITY_UNSUPPORTED', 'Comfly video jobs must be submitted one result at a time');
       assertComflyVideoInputMode(profile.modelId ?? profile.modelRoute, validated.referenceAssetIds.length);
+      const projectBinding = options.bindGenerationProject === undefined ? undefined
+        : await options.bindGenerationProject(validated.sessionId ?? '', validated.projectId);
       const references = await resolveManagedVideoImages(validated, options.readManagedGenerationImages);
       const historyId = deriveGenerationHistoryId(validated.jobId);
-      const created = await options.mappings.reserveSubmission({ currentIdentity: validated.jobId.startsWith(CURRENT_GENERATION_JOB_ID_PREFIX), historyId });
-      if (!created) {
-        const existing = await options.mappings.findByHistoryId(historyId);
-        if (existing?.kind === 'video') return { providerTaskId: existing.publicTaskId };
-        throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Video job is already reserved; create a new run to submit again');
+      const reservation = await options.historySink?.reserveSubmission({
+        jobId: validated.jobId,
+        kind: 'video',
+        modelDisplayName: profile.displayName,
+        provider: 'comfly',
+      });
+      if (reservation !== undefined && reservation.historyId !== historyId) {
+        throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Generation history reservation identity is invalid');
       }
-      try {
-        const reservation = await options.historySink?.reserveSubmission({
-          jobId: validated.jobId,
-          kind: 'video',
-          modelDisplayName: profile.displayName,
-          provider: 'comfly',
-        });
-        if (reservation !== undefined && reservation.historyId !== historyId) {
-          throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Generation history reservation identity is invalid');
+      if (reservation !== undefined && !reservation.created) {
+        // History can outlive a lost mapping ledger. A queued history alone
+        // cannot prove the provider POST never happened, so do not reserve a
+        // fresh ledger entry and submit this paid job again.
+        let existing: ProviderTaskMappingRecord | undefined;
+        try { existing = await options.mappings.findByHistoryId(historyId); }
+        catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：已付费视频任务记录暂不可用，请保留原任务', true); }
+        if (existing?.provider === 'comfly' && existing.kind === 'video') {
+          assertMatchingProjectBinding(projectBinding, existing);
+          return { providerTaskId: existing.publicTaskId };
         }
+        throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：视频历史已预约但任务句柄不可确认，请保留原任务并检查供应商记录', true);
+      }
+      let created: boolean;
+      try {
+        created = await options.mappings.reserveSubmission({ currentIdentity: validated.jobId.startsWith(CURRENT_GENERATION_JOB_ID_PREFIX), historyId });
+      } catch (error) {
+        if (isKnownNonRetryableLedgerRejection(error)) throw error;
+        throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：视频任务预留记录暂不可用，请使用原任务重试', true);
+      }
+      if (!created) {
+        let existing: ProviderTaskMappingRecord | undefined;
+        try { existing = await options.mappings.findByHistoryId(historyId); }
+        catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：已付费视频任务记录暂不可用', true); }
+        if (existing?.provider === 'comfly' && existing.kind === 'video') { assertMatchingProjectBinding(projectBinding, existing); return { providerTaskId: existing.publicTaskId }; }
+        throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：视频任务正在提交，请保留原任务等待恢复', true);
+      }
+      if (reservation?.terminal !== null && reservation?.terminal !== undefined) {
+        throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：视频历史已结束但任务记录暂不可用，请保留原任务', true);
+      }
+      let providerAccepted = false;
+      try {
         const response = await options.submitProvider(mapVideoGenerationRequest(validated, profile, references));
+        providerAccepted = true;
         const publicTaskId = options.createPublicTaskId();
         const timestamp = options.nowIso();
-        await options.mappings.set({
+        await persistPaidProviderMapping(options.mappings, {
           provider: 'comfly', publicTaskId, rawTaskId: response.taskId, kind: 'video',
-          sessionId: validated.sessionId ?? validated.conversationId, historyId,
+          sessionId: validated.sessionId ?? validated.conversationId, historyId, projectBinding,
           state: 'running', createdAt: timestamp, updatedAt: timestamp,
         });
-        if (options.historySink !== undefined) await options.historySink.running(historyId);
+        try { await options.historySink?.running(historyId); } catch { /* The durable handle remains usable. */ }
         return { providerTaskId: publicTaskId };
       } catch (error) {
-        if (options.historySink !== undefined) await options.historySink.failed(historyId, 'provider_unavailable');
+        if (providerAccepted) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：供应商已接受视频任务但本地任务记录暂不可用，请保留原任务等待恢复', true);
+        if (!providerAccepted && options.historySink !== undefined) await options.historySink.failed(historyId, 'provider_unavailable');
         throw error;
       }
     },
@@ -103,56 +186,160 @@ export function createComflyVideoJobHandlers(options: {
     async pollVideoJob(request: PollVideoJobBridgeRequest): Promise<PollVideoJobBridgeResult> {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.pollVideoJob, request) as PollVideoJobBridgeRequest;
       assertComfly(validated.provider);
-      const task = await options.mappings.get(validated.providerTaskId);
+      const task = await readPaidTask(validated.providerTaskId);
       if (task === undefined || task.kind !== 'video') throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider video job handle is unavailable');
       if (task.state !== 'running') return terminalToPoll(task);
-      const mapped = mapTaskState(await options.pollProvider(task.rawTaskId, validated.providerTaskId));
+      if (options.bindGenerationProject !== undefined && task.projectBinding === undefined) {
+        const fallback: Extract<PollVideoJobBridgeResult, { status: 'failed' }> = { status: 'failed',
+          error: normalizeProviderBridgeError(createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Original project identity cannot be verified; provider task remains recorded')) };
+        let result: Exclude<PollVideoJobBridgeResult, { status: 'running' }> = fallback;
+        try {
+          if (task.historyId !== undefined && options.historySink !== undefined) {
+            result = await reconcileFailedHistory(task, await options.historySink.failed(task.historyId, 'provider_unavailable'), fallback);
+          }
+        }
+        catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：已付费视频历史暂不可用，请保留原任务重试', true); }
+        return persistVideoTerminal(task.publicTaskId, result);
+      }
+      try {
+      let pending = await pendingMedia?.read(task);
+      const mapped: MappedVideoTaskState = pending === undefined || pending === null
+        ? mapTaskState(await options.pollProvider(task.rawTaskId, validated.providerTaskId))
+        : { status: 'provider_completed', resultUrl: '', ...(pending.entries[0]?.durationSeconds === undefined ? {} : { durationSeconds: pending.entries[0].durationSeconds }) };
       let result: PollVideoJobBridgeResult;
       if (mapped.status === 'provider_completed') {
-        if (options.storeGeneratedVideo === undefined || task.sessionId === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Generated video storage is unavailable');
-        const bytes = await options.downloadResult(mapped.resultUrl);
+        if ((task.projectBinding === undefined && options.storeGeneratedVideo === undefined) || task.sessionId === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Generated video storage is unavailable', true);
+        const bytes = pending === undefined || pending === null
+          ? await options.downloadResult(mapped.resultUrl) : await pendingMedia!.readItem(pending, 0);
         if (!hasMp4Signature(bytes)) {
           result = { status: 'failed', error: normalizeProviderBridgeError(
             createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid video result'),
           ) };
         } else {
-          const stored = await options.storeGeneratedVideo(task.sessionId, bytes, 'video/mp4');
-          if (options.historySink !== undefined && task.historyId !== undefined) {
-            await options.historySink.succeeded(task.historyId, bytes, {
-              ...(stored.width == null ? {} : { width: stored.width }),
-              ...(stored.height == null ? {} : { height: stored.height }),
-              ...(mapped.durationSeconds === undefined ? {} : { durationSeconds: mapped.durationSeconds }),
-            });
+          if (pending === undefined || pending === null) {
+            const entry = await pendingMedia?.writeItem(task, 0, bytes,
+              mapped.durationSeconds === undefined ? {} : { durationSeconds: mapped.durationSeconds });
+            if (entry !== undefined) {
+              await pendingMedia!.seal(task, [entry]);
+              pending = await pendingMedia!.read(task);
+              if (pending === null) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：已付费视频暂存记录暂不可用', true);
+            }
           }
-          result = { status: 'completed', progress: 1, result: {
+          let current = await readPaidTask(task.publicTaskId);
+          if (pending !== undefined && pending !== null && current?.state === 'running') {
+            const marker = pendingMediaTaskMarker(pending);
+            if (current.rawTaskId !== marker) {
+              try { current = await options.mappings.updateRunning(task.publicTaskId, {
+                expectedRawTaskId: task.rawTaskId, rawTaskId: marker,
+              }, options.nowIso()); }
+              catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：已付费视频暂存状态暂不可用', true); }
+            }
+            if (current?.state === 'running' && current.rawTaskId !== marker) {
+              throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：已付费视频暂存状态暂不可用', true);
+            }
+          }
+          if (current === undefined) {
+            try { await pendingMedia?.remove(task.publicTaskId); } catch { /* Keep the ACK result authoritative. */ }
+            throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider video job handle is unavailable');
+          }
+          if (current.state !== 'running') {
+            try { await pendingMedia?.remove(task.publicTaskId); } catch { /* ACK retries cleanup. */ }
+            return terminalToPoll(current);
+          }
+          const stored = current.result === undefined
+            ? task.projectBinding === undefined
+              ? await options.storeGeneratedVideo!(task.sessionId, bytes, 'video/mp4')
+              : await requireBoundVideoStore(options.storeGeneratedVideoForProject)(task.projectBinding, bytes, 'video/mp4')
+            : current.result as ProviderVideoJobResult;
+          const storedResult: ProviderVideoJobResult = {
             assetId: stored.assetId,
             ...(stored.width == null ? {} : { width: stored.width }),
             ...(stored.height == null ? {} : { height: stored.height }),
             ...(mapped.durationSeconds === undefined ? {} : { durationSeconds: mapped.durationSeconds }),
-          } };
+          };
+          try { current = await options.mappings.updateRunning(task.publicTaskId, { result: storedResult }, options.nowIso()); }
+          catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：已付费视频结果记录暂不可用', true); }
+          if (current === undefined) {
+            try { await pendingMedia?.remove(task.publicTaskId); } catch { /* Keep the ACK result authoritative. */ }
+            throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider video job handle is unavailable');
+          }
+          if (current.state !== 'running') {
+            try { await pendingMedia?.remove(task.publicTaskId); } catch { /* ACK retries cleanup. */ }
+            return terminalToPoll(current);
+          }
+          let invalidHistoryMedia = false;
+          let historyCancelled = false;
+          if (options.historySink !== undefined && task.historyId !== undefined) {
+            try {
+              const durable = await options.historySink.succeeded(task.historyId, bytes, {
+                ...(stored.width == null ? {} : { width: stored.width }),
+                ...(stored.height == null ? {} : { height: stored.height }),
+                ...(mapped.durationSeconds === undefined ? {} : { durationSeconds: mapped.durationSeconds }),
+              });
+              historyCancelled = durable.status === 'cancelled';
+              invalidHistoryMedia = durable.status === 'failed';
+            } catch (error) {
+              if (error instanceof Error && error.message === 'Generated result was invalid') invalidHistoryMedia = true;
+              else throw createProviderBridgeError('PROVIDER_ERROR', 'Generated video history is temporarily unavailable', true);
+            }
+          }
+          result = historyCancelled ? { status: 'cancelled' } : invalidHistoryMedia ? { status: 'failed', error: normalizeProviderBridgeError(
+            createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid video result'),
+          ) } : { status: 'completed', progress: 1, result: current.result as ProviderVideoJobResult };
         }
       } else result = mapped;
       if (result.status === 'failed' && options.historySink !== undefined && task.historyId !== undefined) {
-        await options.historySink.failed(task.historyId, 'provider_failed');
+        result = await reconcileFailedHistory(task, await options.historySink.failed(task.historyId, 'provider_failed'), result);
       }
-      if (result.status === 'completed' || result.status === 'failed') {
-        const terminal = await options.mappings.markTerminal(validated.providerTaskId, result, options.nowIso());
-        return terminal === undefined ? result : terminalToPoll(terminal);
-      }
+      if (result.status !== 'running') return persistVideoTerminal(validated.providerTaskId, result);
       return result;
+      } catch (error) {
+        if (!isPaidMediaIntegrityFailure(error)) throw paidVideoPollError(error);
+        const fallback: Extract<PollVideoJobBridgeResult, { status: 'failed' }> = { status: 'failed', error: normalizeProviderBridgeError(error) };
+        let result: Exclude<PollVideoJobBridgeResult, { status: 'running' }> = fallback;
+        try {
+          if (task.historyId !== undefined && options.historySink !== undefined) {
+            result = await reconcileFailedHistory(task, await options.historySink.failed(task.historyId, 'invalid_result'), fallback);
+          }
+        }
+        catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：已付费视频历史暂不可用', true); }
+        return persistVideoTerminal(task.publicTaskId, result);
+      }
     },
 
     async cancelVideoJob(request: CancelVideoJobBridgeRequest): Promise<CancelVideoJobBridgeResult> {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.cancelVideoJob, request) as CancelVideoJobBridgeRequest;
       assertComfly(validated.provider);
-      const current = await options.mappings.get(validated.providerTaskId);
+      const current = await readPaidTask(validated.providerTaskId);
       if (current === undefined || current.kind !== 'video') throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider video job handle is unavailable');
       if (current.state !== 'running') return terminalToCancel(current);
       if (options.historySink !== undefined && current.historyId !== undefined) {
-        await options.historySink.cancelled(current.historyId, 'cancelled_by_user');
+        let durable: Awaited<ReturnType<GenerationHistoryProviderSinkContract['cancelled']>>;
+        try { durable = await options.historySink.cancelled(current.historyId, 'cancelled_by_user'); }
+        catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：视频历史暂不可用，请保留原任务重试', true); }
+        if (durable.status !== 'cancelled') {
+          const latest = await readPaidTask(validated.providerTaskId);
+          if (latest === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider video job handle is unavailable');
+          if (latest.state !== 'running') return terminalToCancel(latest);
+          if (durable.status === 'succeeded' && latest.result === undefined) {
+            throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：视频历史已完成，正在恢复任务结果，请保留原任务重试', true);
+          }
+          const result: Extract<PollVideoJobBridgeResult, { status: 'completed' | 'failed' }> = durable.status === 'succeeded'
+            ? { status: 'completed', progress: 1, result: latest.result as ProviderVideoJobResult }
+            : { status: 'failed', error: normalizeProviderBridgeError(createProviderBridgeError('PROVIDER_ERROR', '视频任务历史已失败，请检查生成历史')) };
+          let terminal: ProviderTaskMappingRecord | undefined;
+          try { terminal = await options.mappings.markTerminal(validated.providerTaskId, result, options.nowIso()); }
+          catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：视频任务终态暂不可用，请保留原任务重试', true); }
+          if (terminal === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider video job handle is unavailable');
+          try { await pendingMedia?.remove(validated.providerTaskId); } catch { /* ACK retries confined cleanup. */ }
+          return terminalToCancel(terminal);
+        }
       }
-      const terminal = await options.mappings.markCancelled(validated.providerTaskId, options.nowIso());
+      let terminal: ProviderTaskMappingRecord | undefined;
+      try { terminal = await options.mappings.markCancelled(validated.providerTaskId, options.nowIso()); }
+      catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：视频任务终态暂不可用，请保留原任务重试', true); }
       if (terminal === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider video job handle is unavailable');
+      try { await pendingMedia?.remove(validated.providerTaskId); } catch { /* ACK retries confined cleanup. */ }
       return terminalToCancel(terminal);
     },
 
@@ -160,6 +347,7 @@ export function createComflyVideoJobHandlers(options: {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.ackVideoJobTerminal, request) as AckVideoJobTerminalBridgeRequest;
       assertComfly(validated.provider);
       await options.mappings.ackTerminal(validated.providerTaskId, validated.status);
+      await pendingMedia?.remove(validated.providerTaskId);
       return { acknowledged: true };
     },
   };
@@ -204,6 +392,29 @@ function terminalToCancel(record: ProviderTaskMappingRecord): CancelVideoJobBrid
 
 function hasMp4Signature(bytes: Uint8Array): boolean {
   return bytes.byteLength >= 12 && Buffer.from(bytes.buffer, bytes.byteOffset + 4, 4).toString('ascii') === 'ftyp';
+}
+
+function isPaidMediaIntegrityFailure(error: unknown): error is { readonly code: 'PROVIDER_INVALID_RESPONSE'; readonly message: string } {
+  return error !== null && typeof error === 'object' && 'code' in error && error.code === 'PROVIDER_INVALID_RESPONSE'
+    && 'message' in error && typeof error.message === 'string' && error.message.startsWith('提交状态不确定');
+}
+
+function isKnownNonRetryableLedgerRejection(error: unknown): boolean {
+  return error !== null && typeof error === 'object' && 'code' in error
+    && error.code === 'PROVIDER_INVALID_RESPONSE' && 'retryable' in error && error.retryable === false;
+}
+
+function paidVideoPollError(error: unknown): Error {
+  if (error instanceof Error && 'retryable' in error && error.retryable === false) return error;
+  if (error instanceof Error && error.message.startsWith('提交状态不确定')) return error;
+  const code = error instanceof Error && 'code' in error && error.code === 'PROVIDER_ERROR'
+    ? 'PROVIDER_ERROR' : 'PROVIDER_UNAVAILABLE';
+  return createProviderBridgeError(code, '提交状态不确定：已付费视频任务暂不可用，请保留原任务并重试', true);
+}
+
+function requireBoundVideoStore(store: ((binding: GenerationProjectBinding, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>) | undefined) {
+  if (store === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Bound video storage is unavailable', true);
+  return store;
 }
 
 function assertComfly(provider: string): asserts provider is 'comfly' {

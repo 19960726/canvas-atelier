@@ -1,6 +1,27 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
-import { resolveQaUserDataRoot, shouldShowQaWindow } from './qa-user-data-root';
+import { resolveDesktopDataRoots, resolveQaUserDataRoot, shouldShowQaWindow } from './qa-user-data-root';
+
+describe('resolveDesktopDataRoots', () => {
+  it('uses the explicit QA root without querying unavailable Windows default paths', () => {
+    const getPath = vi.fn(() => { throw new Error("Failed to get 'userData' path"); });
+    const qaRoot = 'E:\\build\\canvasforge-qa-candidate';
+    expect(resolveDesktopDataRoots({ CANVASFORGE_QA_MODE: '1', CANVASFORGE_QA_USER_DATA_ROOT: qaRoot }, getPath))
+      .toEqual({ qaUserDataRoot: qaRoot, stableUserDataRoot: qaRoot, legacyUserDataRoots: [] });
+    expect(getPath).not.toHaveBeenCalled();
+  });
+
+  it('retains normal user data discovery and migration outside QA', () => {
+    const getPath = vi.fn((name: 'appData' | 'userData') => name === 'appData'
+      ? 'C:\\Users\\demo\\AppData\\Roaming' : 'C:\\Users\\demo\\AppData\\Roaming\\Old Canvas');
+    const result = resolveDesktopDataRoots({}, getPath);
+    expect(result.qaUserDataRoot).toBeNull();
+    expect(result.stableUserDataRoot).toBe('C:\\Users\\demo\\AppData\\Roaming\\Canvas Atelier');
+    expect(result.legacyUserDataRoots).toContain('C:\\Users\\demo\\AppData\\Roaming\\Old Canvas');
+    expect(getPath).toHaveBeenCalledWith('appData');
+    expect(getPath).toHaveBeenCalledWith('userData');
+  });
+});
 
 describe('resolveQaUserDataRoot', () => {
   it('accepts only an explicit absolute QA root with the QA mode gate enabled', () => {

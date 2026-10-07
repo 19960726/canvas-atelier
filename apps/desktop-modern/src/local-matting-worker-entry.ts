@@ -1,7 +1,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { parseLocalMattingRequest, createSourceTrimap } from '../../../packages/desktop-core/src/local-matting.js';
+import { parseLocalMattingRequest, createSourceTrimap, createLocalMattingPrompts } from '../../../packages/desktop-core/src/local-matting.js';
 import { estimateMatteForeground } from '../../../packages/desktop-core/src/matting-colors.js';
 import { refineGlassForeground } from '../../../packages/desktop-core/src/glass-refinement.js';
 
@@ -19,10 +19,11 @@ async function run() {
   try {
     const processor=await AutoProcessor.from_pretrained(samId,{revision:samRevision,local_files_only:true});
     const {width,height,rgba,bounds,regions}=request;
+    const prompts=createLocalMattingPrompts(width,height,bounds,regions);
     const original=new RawImage(new Uint8ClampedArray(rgba),width,height,4);
     const inputs=await processor(original,{
       input_boxes:[[[bounds.x*width,bounds.y*height,(bounds.x+bounds.width)*width,(bounds.y+bounds.height)*height]]],
-      input_points:[[[(bounds.x+bounds.width/2)*width,(bounds.y+bounds.height/2)*height]]],input_labels:[[[1]]],
+      input_points:[prompts.points],input_labels:[prompts.labels],
     });
     const prediction=await model(inputs);
     const masks=await processor.post_process_masks(prediction.pred_masks,inputs.original_sizes,inputs.reshaped_input_sizes);

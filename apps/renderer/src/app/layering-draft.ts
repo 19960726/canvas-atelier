@@ -1,14 +1,17 @@
 import { z } from 'zod';
 import type { CanvasNode } from '@agent-canvas/domain';
-import type { LayeringPlan } from './layering-plan';
+import { foregroundOutputContractSchema, layeringPlanElementSchema, type LayeringPlan } from './layering-plan';
 import { boxSchema, layeringSelectionSchema } from './layering-selection';
 
 // Drafts may contain unfinished text; validate structure before rendering it.
 const draftPlanSchema = z.object({
   sourceAssetId: z.string(), canvasWidth: z.number().int().positive().max(8192), canvasHeight: z.number().int().positive().max(8192),
   pixelMode: z.literal('source').optional(), selection: layeringSelectionSchema.optional(),
+  foregroundOutputContract: foregroundOutputContractSchema.optional(),
   layers: z.array(z.object({ layerId: z.string(), kind: z.enum(['background', 'transparent']), name: z.string(),
-    description: z.string(), included: z.boolean(), sourceBounds: boxSchema.optional() })).max(12),
+    description: z.string(), included: z.boolean(), sourceBounds: boxSchema.optional(),
+    elementIds: z.array(z.string()).max(150).optional() })).max(12),
+  elements: z.array(layeringPlanElementSchema).max(150).optional(),
 });
 
 const draftSchema = z.object({
@@ -33,11 +36,17 @@ export function restoreLayeringDraft(sourceAssetId: string, sourceConfig: Readon
   if (group?.type !== 'module') return null;
   const config = group.data.config;
   if (typeof config.canvasWidth !== 'number' || typeof config.canvasHeight !== 'number') return null;
-  const layers = (config.planLayers as unknown[]).map(layer => typeof layer === 'object' && layer !== null ? { ...layer, included: true } : layer);
+  const ownershipLayers = Array.isArray(config.planOwnershipLayers) ? config.planOwnershipLayers : config.planLayers as unknown[];
+  const layers = ownershipLayers.map(layer => typeof layer === 'object' && layer !== null
+    ? { ...layer, included: Array.isArray(config.planOwnershipLayers) ? (layer as Record<string, unknown>).included === true : true }
+    : layer);
   if (!layers.length) return null;
   const selection = layeringSelectionSchema.safeParse(config.layerSelection ?? { mode: 'whole' });
   if (!selection.success) return null;
-  const plan = draftPlanSchema.safeParse({ sourceAssetId, canvasWidth: config.canvasWidth, canvasHeight: config.canvasHeight, layers, selection: selection.data, ...(config.pixelMode === 'source' ? { pixelMode: 'source' } : {}) });
+  const plan = draftPlanSchema.safeParse({ sourceAssetId, canvasWidth: config.canvasWidth, canvasHeight: config.canvasHeight, layers,
+    ...(Array.isArray(config.planElements) ? { elements: config.planElements } : {}),
+    selection: selection.data, ...(config.pixelMode === 'source' ? { pixelMode: 'source' } : {}),
+    ...(config.foregroundOutputContract !== undefined ? { foregroundOutputContract: config.foregroundOutputContract } : {}) });
   if (!plan.success) return null;
   return { sourceAssetId, plan: plan.data,
     selection: selection.data, analysisRoute: '', generationRoute: '', resolution: '4K', layerCountMode: 'auto', targetLayerCount: 5,

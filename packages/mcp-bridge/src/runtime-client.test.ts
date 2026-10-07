@@ -70,7 +70,71 @@ describe('Canvas Atelier MCP runtime client', () => {
       error: { code: 'MCP_CLIENT_CLOSED', message: 'The Canvas Atelier MCP client is closed.' },
     });
   });
+
+  it('cancels every in-flight pipe request and timer when closed', async () => {
+    const descriptor = createMcpRuntimeDescriptor({ instanceId: 'bridge-close', processId: process.pid, serverVersion: '1.0.0' });
+    const sockets = new Set<import('node:net').Socket>();
+    const closures: Array<Promise<void>> = [];
+    let accepted = 0;
+    let resolveAccepted: () => void = () => undefined;
+    const requestsAccepted = new Promise<void>((resolve) => { resolveAccepted = resolve; });
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      closures.push(new Promise<void>((resolve) => { socket.once('close', resolve); }));
+      socket.on('close', () => { sockets.delete(socket); });
+      socket.on('error', () => undefined);
+      socket.once('data', () => { accepted += 1; if (accepted === 2) resolveAccepted(); });
+    });
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(descriptor.pipeName, resolve); });
+    await writeMcpRuntimeFile(runtimeFilePath, descriptor);
+    const client = createMcpRuntimeClient({ runtimeFilePath });
+    const pending = [client.call({ tool: 'canvas_read_workflow' }), client.call({ tool: 'canvas_describe_nodes' })];
+    try {
+      expect(await settleWithin(requestsAccepted, 1_000)).not.toBe('pending');
+      await client.close(); await client.close();
+      const result = await settleWithin(Promise.all(pending), 500);
+      expect(result).not.toBe('pending');
+      expect(result).toEqual(Array.from({ length: 2 }, () => ({ ok: false,
+        error: { code: 'MCP_CLIENT_CLOSED', message: 'The Canvas Atelier MCP client is closed.' } })));
+      expect(await settleWithin(Promise.all(closures), 500)).not.toBe('pending');
+      expect(sockets.size).toBe(0);
+      await expect(client.call({ tool: 'canvas_read_workflow' })).resolves.toMatchObject({ error: { code: 'MCP_CLIENT_CLOSED' } });
+      expect(accepted).toBe(2);
+    } finally {
+      await client.close();
+      for (const socket of sockets) socket.end();
+      await Promise.all(pending);
+      await new Promise<void>((resolve) => { server.close(() => resolve()); });
+    }
+  });
+
+  it('does not open a pipe when closed during descriptor discovery', async () => {
+    const descriptor = createMcpRuntimeDescriptor({ instanceId: 'bridge-discovery-close', processId: process.pid, serverVersion: '1.0.0' });
+    let connections = 0;
+    const server = createServer((socket) => {
+      connections += 1;
+      socket.once('data', (chunk) => {
+        const { requestId } = JSON.parse(String(chunk).trim()) as { requestId: string };
+        socket.end(`${JSON.stringify({ protocol: 'canvasforge.mcp.pipe.v1', requestId, response: { ok: true, result: {} } })}\n`);
+      });
+    });
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(descriptor.pipeName, resolve); });
+    closeCallbacks.push(() => new Promise((resolve) => server.close(() => resolve())));
+    await writeMcpRuntimeFile(runtimeFilePath, descriptor);
+    const client = createMcpRuntimeClient({ runtimeFilePath });
+    const pending = client.call({ tool: 'canvas_read_workflow' });
+    await client.close();
+    await expect(pending).resolves.toMatchObject({ ok: false, error: { code: 'MCP_CLIENT_CLOSED' } });
+    expect(connections).toBe(0);
+  });
 });
+
+async function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T | 'pending'> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<'pending'>((resolve) => { timer = setTimeout(() => resolve('pending'), timeoutMs); })]);
+  } finally { clearTimeout(timer); }
+}
 type TestRuntimeDescriptor = {
   protocol: 'canvasforge.mcp.runtime.v1';
   instanceId: string;

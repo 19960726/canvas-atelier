@@ -14,6 +14,15 @@ function Control({ efforts, defaultValue = 'medium' }: { efforts: readonly Codex
 }
 
 describe('CodexReasoningPopover', () => {
+  it('labels creative analysis separately from model reasoning', () => {
+    render(<CodexReasoningPopover modelLabel="Gemini" efforts={['low', 'medium', 'high']} value="medium" open
+      onChange={vi.fn()} onToggle={vi.fn()} onClose={vi.fn()} onSelectModel={vi.fn()}
+      reverseDepth={{ value: 'deep', purpose: 'creative', onChange: vi.fn() }} />);
+    expect(screen.getByRole('button', { name: '分析深度：深度分析' })).toBeEnabled();
+    expect(screen.getByRole('group', { name: '分析深度' })).toBeVisible();
+    expect(screen.getByText('模型思考能力')).toBeVisible();
+    expect(screen.queryByText('深度反推')).not.toBeInTheDocument();
+  });
   it('orders a sparse catalog and keeps Max distinct from Ultra', () => {
     render(<Control efforts={['ultra', 'max', 'low', 'xhigh', 'high', 'medium', 'ultra']} />);
     const slider = screen.getByRole('slider');

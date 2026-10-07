@@ -19,7 +19,10 @@ export async function downloadSafeProviderResult(
   let addresses: readonly string[];
   try {
     addresses = await resolveResultHost(url.hostname);
-  } catch {
+  } catch (error) {
+    if (isTemporaryResultDnsError(error)) {
+      throw createProviderBridgeError('PROVIDER_ERROR', 'Provider result address lookup failed', true);
+    }
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
   }
   if (addresses.length === 0 || addresses.some((address) => !isPublicProviderAddress(address))) {
@@ -33,7 +36,7 @@ export async function downloadSafeProviderResult(
       trustedResolvedAddress: addresses[0],
     });
   } catch (error) {
-    if (error instanceof TypeError) throw createProviderBridgeError('PROVIDER_ERROR', 'Provider result download failed', true);
+    if (isRetryableResultTransportError(error)) throw createProviderBridgeError('PROVIDER_ERROR', 'Provider result download failed', true);
     throw error;
   }
   if (response.status === 429 || response.status >= 500) {
@@ -45,9 +48,27 @@ export async function downloadSafeProviderResult(
   try {
     return new Uint8Array(await response.arrayBuffer());
   } catch (error) {
-    if (error instanceof TypeError) throw createProviderBridgeError('PROVIDER_ERROR', 'Provider result download failed', true);
+    if (isRetryableResultTransportError(error)) throw createProviderBridgeError('PROVIDER_ERROR', 'Provider result download failed', true);
     throw error;
   }
+}
+
+function isTemporaryResultDnsError(error: unknown): boolean {
+  if (error === null || typeof error !== 'object' || !('code' in error)) return false;
+  return error.code === 'EAI_AGAIN' || error.code === 'ETIMEOUT' || error.code === 'ETIMEDOUT';
+}
+
+function isRetryableResultTransportError(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  if (error === null || typeof error !== 'object') return false;
+  if ('retryable' in error && typeof error.retryable === 'boolean') return error.retryable;
+  if ('code' in error && (error.code === 'ECONNRESET' || error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT')) return true;
+  if (!(error instanceof Error)) return false;
+  return error.message === 'Provider network request timed out'
+    || error.message === 'Provider network request failed'
+    || error.message === 'Provider network request aborted'
+    || error.message === 'Provider network response failed'
+    || /^Provider network request failed \((?:net::)?ERR_(?:CONNECTION_(?:RESET|CLOSED|ABORTED|TIMED_OUT|REFUSED)|TIMED_OUT|NETWORK_CHANGED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED)\)$/u.test(error.message);
 }
 
 export function parseSafeProviderResultUrl(value: string | undefined): URL {

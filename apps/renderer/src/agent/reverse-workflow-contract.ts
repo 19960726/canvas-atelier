@@ -64,6 +64,12 @@ export function normalizeReverseAnalysisResult(value: unknown, references: reado
   for (const field of visualFields) if (!isNonEmptyString(sourceVisual[field])) missing.push(`visual.${field}`);
   if (!isNonEmptyString(sourcePrompts.zh)) missing.push('prompts.zh');
   if (!isNonEmptyString(sourcePrompts.en)) missing.push('prompts.en');
+  const modelDuties = Array.isArray(source.referenceDuties) ? source.referenceDuties : [];
+  if (references.some((reference) => !modelDuties.some((item: unknown) => isRecord(item)
+    && item.assetId === reference.assetId && isNonEmptyString(item.responsibility)
+    && (item.mention === undefined || item.mention === reference.mention)))) missing.push('referenceDuties');
+  if (modelDuties.some((item: unknown) => isRecord(item)
+    && !references.some((reference) => reference.assetId === item.assetId))) missing.push('referenceDuties.unknown');
   const duties = Array.isArray(source.referenceDuties)
     ? references.map((reference) => {
       const found = source.referenceDuties.find((item: unknown) => isRecord(item) && item.assetId === reference.assetId);
@@ -71,6 +77,7 @@ export function normalizeReverseAnalysisResult(value: unknown, references: reado
     })
     : references.map((reference) => normalizeDuty(undefined, reference));
   const variants = normalizeVariants(source.variants, isNonEmptyString(sourcePrompts.zh) ? sourcePrompts.zh : '');
+  if (variants.length === 0) missing.push('variants');
   const result: ReverseAnalysisResult = {
     intent: normalizeIntent(source.intent, missing),
     referenceDuties: duties,
@@ -139,16 +146,30 @@ function normalizeIntent(value: unknown, missing: readonly string[]) {
 
 function normalizeVariants(value: unknown, basePrompt: string): ReverseAnalysisResult['variants'] {
   const defaults: ReverseAnalysisResult['variants'] = [
-    { id: 'faithful', name: 'faithful', change: '最大程度保留参考图职责与构图。', prompt: basePrompt },
-    { id: 'balanced', name: 'balanced', change: '保留主体身份并提升清晰度与成片质量。', prompt: basePrompt },
-    { id: 'exploratory', name: 'exploratory', change: '只改变受控的次要构图、灯光或环境维度。', prompt: basePrompt },
+    { id: 'faithful', name: 'faithful', change: '采用本次反推的完整提示词。', prompt: basePrompt },
   ];
   if (!Array.isArray(value) || value.length === 0) return defaults;
+  const ids = new Set<string>();
+  const prompts = new Set<string>();
   return value.flatMap((item) => {
     if (!isRecord(item) || !isString(item.id) || !isString(item.name)) return [];
     if (!['faithful', 'balanced', 'exploratory'].includes(item.name)) return [];
-    return [{ id: item.id, name: item.name as ReverseAnalysisResult['variants'][number]['name'], change: readString(item.change), prompt: readString(item.prompt) || basePrompt }];
-  });
+    const prompt = readString(item.prompt) || basePrompt;
+    const key = prompt.replace(/\s+/gu, ' ').toLocaleLowerCase();
+    if (!prompt || ids.has(item.id) || prompts.has(key)) return [];
+    ids.add(item.id);
+    prompts.add(key);
+    return [{ id: item.id, name: item.name as ReverseAnalysisResult['variants'][number]['name'], change: readString(item.change), prompt }];
+  }).slice(0, 3);
+}
+
+export function reverseWorkflowPlanningInstructions(references: readonly { assetId: string; mention: string; label: string }[]): string {
+  return [
+    '按本次参考素材和用户需求反推，先分析再提供可编辑工作流，不能声称已生成图片或修改画布。观察必须来自可见图像；推测与未知单独说明。',
+    `本次有序素材清单（原编号与 assetId 必须逐项对应）：${JSON.stringify(references.map(({ assetId, mention, label }) => ({ assetId, mention, label: label.slice(0, 100) })))}`,
+    '只返回以下 JSON 合同，不输出代码块或八段散文：{"intent":{"deliverable":"交付物","useCase":"用途","defaults":[],"missing":[]},"referenceDuties":[{"assetId":"清单中的ID","mention":"原编号","responsibility":"本图负责的主体/构图/光线/风格","inherit":[],"replace":[],"doNotCopy":[],"conflict":"冲突或未知"}],"visual":{"subject":"主体","environment":"环境","material":"材质","lighting":"光线","camera":"机位镜头","depth":"景深","composition":"构图","perspective":"透视","layers":"前中后景"},"prompts":{"zh":"完整中文执行提示词","en":"完整英文执行提示词","negative":[]},"variants":[{"id":"faithful","name":"faithful","change":"实际改动与取舍","prompt":"完整执行提示词"}],"checklist":[{"id":"check-1","label":"可核验的用户要求","state":"pending"}],"missing":[]}。',
+    '每张输入都要给出职责，保留其编号，不得忽略或交换素材。不确定的内容填 missing，不能编造观察。给出1至3个真正不同且符合用户边界的 variants，name 只用 faithful/balanced/exploratory；提示词相同只提供一版，不得为了三版擅改产品或构图。数量、位置、比例、颜色、不得改变的内容必须写进各版完整提示词。',
+  ].join('\n');
 }
 
 function normalizeChecklist(value: unknown): ReverseAnalysisResult['checklist'] {

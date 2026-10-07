@@ -144,7 +144,7 @@ const MODULE_COPY: Readonly<Record<CanvasModuleType, ModuleCopy>> = Object.freez
   text_prompt: copy('文本提示词', 'Text Prompt', '编写可复用的生成或分析文本。', '向下游模块提供结构化提示词。', '填写文本后连接到生成或 Agent 模块。', '文本本身不会触发付费执行。', ['提示词', '文本']),
   image_generation: copy('图片生成', 'Image Generation', '根据提示词和模型能力生成图片。', '提供唯一的图片生成入口。', '连接必需提示词，可按兼容模型能力添加参考图、蒙版与姿态。', '运行前必须配置兼容模型并确认；V1/V2 仅作为旧项目迁移别名。', ['图像生成', '生图', 'image generation v1', 'image generation v2', 'generation v1', 'generation v2', 'v1', 'v2']),
   image_layer: copy('图片图层', 'Image Layer', '保存图片分层任务生成的一张独立受管像素层。', '让背景和透明前景各自成为可操作的画布节点。', '等待 GPT 图像编辑任务完成后连接到图片分层合成节点。', '透明像素、尺寸和图层来源必须验证通过后才能导出完整 PSD。', ['独立图层', '透明图层', 'image layer']),
-  image_layering: copy('图片自动分层', 'Image Layering', '将一张受管图片拆分为可编辑的透明图层。', '保留真正的底图和独立透明像素层，支持合成与 PSD 导出。', '连接一张图片；供应商分层结果就绪后可检查图层并导出 PSD。', 'Comfly 分层提交接口尚未核实，暂不发起付费分层任务。', ['自动分层', '图层拆分', 'layer decomposition', 'PSD']),
+  image_layering: copy('图片自动分层', 'Image Layering', '检查、整理图片的独立图层并导出 PSD。', '保留背景与透明前景，支持预览、图层整理和 PSD 导出。', '从图片的 AI 分层入口分析并确认方案，图层返回后在这里预览、整理和导出。', '生成前需要确认方案与兼容模型；图层内容、位置和透明像素验证通过后才能正式导出 PSD。', ['自动分层', '图层拆分', 'layer decomposition', 'PSD']),
   image_editor: copy('图片编辑', 'Image Editor', '组合图片、提示词与可选蒙版执行受控编辑。', '完成常规图片修改和编辑准备。', '连接原图及可选蒙版、提示词，再选择兼容编辑路线。', '具体模型执行能力由后续动态路由提供。', ['图像编辑', '图片修改']),
   drawing_mask: copy('绘制蒙版', 'Drawing Mask', '在受管图片上定义可编辑区域。', '为编辑和局部重绘提供受管蒙版。', '连接图片并在画布工具中绘制需要修改的区域。', '本任务只提供合同和节点状态，不实现完整绘制器。', ['蒙版绘制', 'mask drawing']),
   local_redraw: copy('局部重绘', 'Local Redraw', '使用图片、蒙版和提示词生成局部修改结果。', '把明确的局部编辑意图转为生成结果。', '连接原图、蒙版和提示词，确认兼容模型后执行。', '必须同时提供图片、蒙版和提示词。', ['局部编辑', 'inpaint', 'local edit']),

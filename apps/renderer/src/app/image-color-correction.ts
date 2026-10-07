@@ -297,6 +297,7 @@ export async function renderImageColorCorrectionBlob(
   const correction = await resolveImageColorCorrection(sourceUrl, value);
   const source = await readImageSourceBlob(sourceUrl);
   if (correction.mode === 'original' || (!hasImageColorCorrection(correction) && source.type === 'image/png')) return source;
+  if (typeof Worker !== 'undefined') return renderImageColorCorrectionInWorker(source, correction);
   const bitmap = await createImageBitmap(source);
   try {
     const canvas = document.createElement('canvas');
@@ -315,4 +316,23 @@ export async function renderImageColorCorrectionBlob(
   } finally {
     bitmap.close();
   }
+}
+
+function renderImageColorCorrectionInWorker(source: Blob, correction: ImageColorCorrection): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./image-color-correction-worker.ts', import.meta.url), { type: 'module' });
+    const timeout = globalThis.setTimeout(() => finish(null), 60_000);
+    const finish = (blob: Blob | null) => {
+      globalThis.clearTimeout(timeout);
+      worker.terminate();
+      if (blob === null) reject(new Error('Corrected image could not be encoded'));
+      else resolve(blob);
+    };
+    worker.onmessage = (event: MessageEvent<{ ok: boolean; blob?: Blob }>) => {
+      finish(event.data?.ok === true && event.data.blob instanceof Blob ? event.data.blob : null);
+    };
+    worker.onerror = () => finish(null);
+    worker.onmessageerror = () => finish(null);
+    worker.postMessage({ source, correction });
+  });
 }

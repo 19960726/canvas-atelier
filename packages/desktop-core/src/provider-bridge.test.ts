@@ -13,6 +13,7 @@ import {
   PROVIDER_BRIDGE_CHANNELS,
   createElectronNetComflyFetch,
   createComflyProviderService,
+  createProviderBridgeError,
   createProviderBridgeHandlers,
   createSecureProviderCredentialStore,
   normalizeProviderBridgeError,
@@ -2109,6 +2110,1138 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
+  it('checks a writable project binding before a paid Comfly image submission', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const fetch = vi.fn(async () => jsonResponse({ taskId: 'should-not-submit', status: 'queued' }));
+      const bindGenerationProject = vi.fn(async () => {
+        throw createProviderBridgeError('INVALID_REQUEST', 'Generation job belongs to a different project');
+      });
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+        failed: vi.fn(async () => ({ status: 'failed' as const })),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const service = createComflyProviderService({
+        appDataRoot, fetch, profiles, historySink, bindGenerationProject,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+        storeGeneratedImage: vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 })),
+      } as never);
+      await service.configure({ token });
+      await expect(service.submitImageJob({
+        jobId: 'model-job-v2-cross-project-bound', provider: 'comfly', modelRoute: 'gpt-image',
+        prompt: 'draw a product', conversationId: 'conversation-cross-project-bound',
+        sessionId: 'desktop-session-cross-project-bound', referenceAssetIds: [],
+      })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+      expect(bindGenerationProject).toHaveBeenCalledWith('desktop-session-cross-project-bound', undefined);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(historySink.reserveSubmission).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('retries a Comfly image reservation after history storage fails before POST', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(jsonResponse({ taskId: 'one-paid-image', status: 'queued' }))
+        .mockResolvedValueOnce(jsonResponse({ taskId: 'one-paid-image', status: 'succeeded', data: [
+          { b64_json: Buffer.from(imageBytes).toString('base64') },
+        ] }));
+      let reservations = 0;
+      let historyCompleted = false;
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => {
+          if (++reservations === 1) throw new Error('history index temporarily locked');
+          return { created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null };
+        }),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => { historyCompleted = true; return { status: 'succeeded' as const, width: 1, height: 1 }; }),
+        failed: vi.fn(async () => ({ status: 'failed' as const })),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const service = createComflyProviderService({ appDataRoot, fetch, profiles, historySink,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+        storeGeneratedImage: async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 }),
+      });
+      await service.configure({ token });
+      const request = { jobId: 'model-job-v2-prepost-history-image', provider: 'comfly' as const,
+        modelRoute: 'gpt-image', prompt: 'draw a product', conversationId: 'conversation-prepost-image',
+        sessionId: 'desktop-session-prepost-image', referenceAssetIds: [] as string[] };
+      await expect(service.submitImageJob(request)).rejects.toThrow('history index temporarily locked');
+      expect(fetch).not.toHaveBeenCalled();
+      const submitted = await service.submitImageJob(request);
+      await expect(service.submitImageJob(request)).resolves.toEqual(submitted);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'completed' });
+      expect(historyCompleted).toBe(true);
+      expect(historySink.failed).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('does not reuse a Comfly image handle for a copied project root with the same project ID', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      let rootFingerprint = 'a'.repeat(64);
+      const fetch = vi.fn(async () => jsonResponse({ taskId: 'paid-image-task', status: 'queued' }));
+      const service = createComflyProviderService({ appDataRoot, fetch, profiles,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+        bindGenerationProject: async () => ({ projectId: 'same-id', rootFingerprint }),
+        storeGeneratedImageForProject: async () => ({ assetId: '0123456789abcdef' }),
+      });
+      await service.configure({ token });
+      const job = { jobId: 'model-job-v2-copied-root', provider: 'comfly' as const, modelRoute: 'gpt-image',
+        prompt: 'draw a product', projectId: 'same-id', conversationId: 'copied-root', sessionId: 'session-a', referenceAssetIds: [] };
+      await service.submitImageJob(job);
+      rootFingerprint = 'b'.repeat(64);
+      await expect(service.submitImageJob(job)).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally { await cleanupTempRoot(appDataRoot); }
+  });
+
+  it('recovers a bound direct image after project storage is unavailable across restart without a second paid POST', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64');
+      const binding = { projectId: 'project-bound-direct', rootFingerprint: 'a'.repeat(64) };
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) return jsonResponse({ data: [{ b64_json: imageBytes.toString('base64') }] });
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      let writable = false;
+      const boundStore = vi.fn(async (actual: typeof binding) => {
+        expect(actual).toEqual(binding);
+        if (!writable) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Bound project is closed', true);
+        return { assetId: '0123456789abcdef', width: 1, height: 1 };
+      });
+      const legacyStore = vi.fn(async () => { throw new Error('Legacy session must not receive a bound image'); });
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+        failed: vi.fn(async () => ({ status: 'failed' as const })),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+      const bindGenerationProject = vi.fn(async () => binding);
+      const createService = () => createComflyProviderService({
+        appDataRoot, credentialStore, fetch, profiles, historySink, bindGenerationProject,
+        storeGeneratedImage: legacyStore, storeGeneratedImageForProject: boundStore,
+      });
+      const service = createService();
+      await service.configure({ token });
+      const job = {
+        jobId: 'model-job-v2-bound-direct-restart', provider: 'comfly' as const,
+        modelRoute: 'gpt-image', prompt: 'draw a product', projectId: binding.projectId,
+        conversationId: 'conversation-bound-direct-restart', sessionId: 'old-session', referenceAssetIds: [],
+      };
+      const submitted = await service.submitImageJob(job);
+      expect(bindGenerationProject).toHaveBeenCalledWith('old-session', binding.projectId);
+      expect(historySink.succeeded).not.toHaveBeenCalled();
+      const restarted = createService();
+      const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+      await expect(restarted.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+      writable = true;
+      await expect(restarted.pollImageJob(request)).resolves.toEqual({ status: 'completed', progress: 1,
+        result: { assetId: '0123456789abcdef', width: 1, height: 1 } });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(boundStore).toHaveBeenCalledTimes(3);
+      expect(legacyStore).not.toHaveBeenCalled();
+      expect(historySink.failed).not.toHaveBeenCalled();
+      await expect(readFile(join(appDataRoot, `provider-image-pending-${deriveGenerationHistoryId(job.jobId)}.bin`)))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it.each([false, true])('recovers a paid bound image after all mapping writes fail, tampered=%s', async (tampered) => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const jobId = `model-job-v2-bound-intent-${tampered ? 'tampered' : 'valid'}`;
+      const historyId = deriveGenerationHistoryId(jobId);
+      const pendingName = `provider-image-pending-${historyId}.bin`;
+      class FailPaidMappingFileSystem extends NodeFileSystem {
+        private staged = false;
+        override async rename(source: string, destination: string): Promise<void> {
+          if (this.staged && destination.endsWith('provider-task-mappings.json')) throw new Error('mapping disk unavailable');
+          await super.rename(source, destination);
+          if (destination.endsWith(pendingName)) this.staged = true;
+        }
+      }
+      const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64');
+      const binding = { projectId: 'bound-intent-project', rootFingerprint: 'c'.repeat(64) };
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) return jsonResponse({ data: [{ b64_json: imageBytes.toString('base64') }] });
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const boundStore = vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 }));
+      const legacyStore = vi.fn(async () => { throw new Error('Wrong project'); });
+      const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+      const createService = (fileSystem?: FileSystem) => createComflyProviderService({
+        appDataRoot, credentialStore, fetch, profiles, fileSystem,
+        bindGenerationProject: async () => binding,
+        storeGeneratedImageForProject: boundStore, storeGeneratedImage: legacyStore,
+      });
+      const job = { jobId, projectId: binding.projectId, provider: 'comfly' as const,
+        modelRoute: 'gpt-image', prompt: 'draw a product', conversationId: 'intent-recovery',
+        sessionId: 'old-session', referenceAssetIds: [] };
+      const first = createService(new FailPaidMappingFileSystem());
+      await first.configure({ token });
+      const submitted = await first.submitImageJob(job);
+      await expect(readFile(join(appDataRoot, pendingName))).resolves.toEqual(imageBytes);
+      const intentPath = join(appDataRoot, `provider-image-intent-${historyId}.json`);
+      const originalIntent = JSON.parse(await readFile(intentPath, 'utf8')) as Record<string, unknown>;
+      expect(originalIntent).not.toHaveProperty('token');
+      if (tampered) {
+        await writeFile(intentPath, JSON.stringify({ ...originalIntent, projectBinding: { ...binding, rootFingerprint: 'd'.repeat(64) } }));
+        await expect(createService().pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId }))
+          .rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE', message: expect.stringMatching(/^提交状态不确定/u) });
+        expect(boundStore).not.toHaveBeenCalled();
+      } else {
+        const restarted = createService();
+        await expect(restarted.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId }))
+          .resolves.toMatchObject({ status: 'completed', result: { assetId: '0123456789abcdef' } });
+        await expect(restarted.submitImageJob(job)).resolves.toEqual(submitted);
+        expect(boundStore).toHaveBeenCalledOnce();
+        expect(legacyStore).not.toHaveBeenCalled();
+        await expect(readFile(intentPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('keeps a stored async image running until history succeeds after a service restart', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64');
+      const base64 = imageBytes.toString('base64');
+      let submissions = 0;
+      let historyAttempts = 0;
+      let providerTaskPolls = 0;
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) {
+          submissions += 1;
+          return jsonResponse({ taskId: 'raw-history-recovery-task', status: 'queued' });
+        }
+        if (url.endsWith('/v1/images/tasks/raw-history-recovery-task')) {
+          providerTaskPolls += 1;
+          if (providerTaskPolls > 1) throw new Error('Provider task result expired after the first poll');
+          return jsonResponse({ taskId: 'raw-history-recovery-task', status: 'succeeded', data: [{ b64_json: base64 }] });
+        }
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => {
+          historyAttempts += 1;
+          if (historyAttempts <= 2) throw new Error('history index temporarily unavailable');
+          return { status: 'succeeded' as const, width: 1, height: 1 };
+        }),
+        failed: vi.fn(async () => ({ status: 'failed' as const })),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const storeGeneratedImage = vi.fn(async () => {
+        if (storeGeneratedImage.mock.calls.length > 1) throw new Error('Project image must not be stored twice');
+        return { assetId: '0123456789abcdef', width: 1, height: 1 };
+      });
+      const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+      const createService = () => createComflyProviderService({
+        appDataRoot, credentialStore, fetch, profiles, historySink, storeGeneratedImage,
+      });
+      const service = createService();
+      await service.configure({ token });
+      const job = {
+        jobId: 'model-job-v2-async-history-restart-recovery', provider: 'comfly' as const,
+        modelRoute: 'gpt-image', prompt: 'draw a product',
+        conversationId: 'conversation-history-restart-recovery',
+        sessionId: 'desktop-session-history-restart-recovery', referenceAssetIds: [],
+      };
+      const submitted = await service.submitImageJob(job);
+      const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+
+      await expect(service.pollImageJob(request)).rejects.toMatchObject({ retryable: true });
+      await expect(service.submitImageJob(job)).resolves.toEqual(submitted);
+      const restarted = createService();
+      await expect(restarted.pollImageJob(request)).resolves.toEqual({
+        status: 'completed', progress: 1,
+        result: { assetId: '0123456789abcdef', width: 1, height: 1 },
+      });
+      expect(submissions).toBe(1);
+      expect(providerTaskPolls).toBe(1);
+      expect(storeGeneratedImage).toHaveBeenCalledOnce();
+      expect(historySink.succeeded).toHaveBeenCalledTimes(3);
+      expect(historySink.failed).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('does not revive a cancelled async image while project storage finishes', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64');
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) return jsonResponse({ taskId: 'raw-cancel-during-store', status: 'queued' });
+        if (url.endsWith('/v1/images/tasks/raw-cancel-during-store')) {
+          return jsonResponse({ taskId: 'raw-cancel-during-store', status: 'succeeded', data: [{ b64_json: imageBytes.toString('base64') }] });
+        }
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      let releaseStorage!: () => void;
+      let signalStorageStarted!: () => void;
+      const storageStarted = new Promise<void>((resolve) => { signalStorageStarted = resolve; });
+      const storageGate = new Promise<void>((resolve) => { releaseStorage = resolve; });
+      const storeGeneratedImage = vi.fn(async () => {
+        signalStorageStarted();
+        await storageGate;
+        return { assetId: '0123456789abcdef', width: 1, height: 1 };
+      });
+      let cancelled = false;
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => cancelled
+          ? { status: 'cancelled' as const }
+          : { status: 'succeeded' as const, width: 1, height: 1 }),
+        failed: vi.fn(async () => ({ status: 'cancelled' as const })),
+        cancelled: vi.fn(async () => { cancelled = true; return { status: 'cancelled' as const }; }),
+        getTerminal: vi.fn(async () => cancelled ? { status: 'cancelled' as const } : null),
+      };
+      const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+      const createService = () => createComflyProviderService({
+        appDataRoot, credentialStore, fetch, profiles, historySink, storeGeneratedImage,
+      });
+      const service = createService();
+      await service.configure({ token });
+      const submitted = await service.submitImageJob({
+        jobId: 'model-job-v2-cancel-during-project-store', provider: 'comfly', modelRoute: 'gpt-image',
+        prompt: 'draw a product', conversationId: 'conversation-cancel-during-store',
+        sessionId: 'desktop-session-cancel-during-store', referenceAssetIds: [],
+      });
+      const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+      const poll = service.pollImageJob(request);
+      await storageStarted;
+      await expect(service.cancelImageJob(request)).resolves.toMatchObject({ status: 'cancelled' });
+      releaseStorage();
+      await expect(poll).resolves.toMatchObject({ status: 'cancelled' });
+      await expect(createService().pollImageJob(request)).resolves.toMatchObject({ status: 'cancelled' });
+      expect(historySink.succeeded).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it.each(['direct', 'gemini'] as const)('recovers a stored %s inline image history after restart without another paid submission', async (kind) => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64');
+      const base64 = imageBytes.toString('base64');
+      let submissions = 0;
+      let historyAttempts = 0;
+      let terminalReads = 0;
+      const fetch = vi.fn(async (url: string) => {
+        if (url.includes(':generateContent')) {
+          submissions += 1;
+          return jsonResponse({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: base64 } }] } }] });
+        }
+        if (url.endsWith('/v1/images/generations?async=true')) {
+          submissions += 1;
+          return jsonResponse({ data: [{ b64_json: base64 }] });
+        }
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => {
+          historyAttempts += 1;
+          if (historyAttempts <= 2) throw new Error('history index temporarily unavailable');
+          return { status: 'succeeded' as const, width: 1, height: 1 };
+        }),
+        failed: vi.fn(async () => ({ status: 'failed' as const })),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => {
+          terminalReads += 1;
+          if (terminalReads === 1) throw new Error('history index temporarily locked');
+          return null;
+        }),
+      };
+      const storeGeneratedImage = vi.fn(async () => {
+        if (storeGeneratedImage.mock.calls.length > 1) throw new Error('Project image must not be stored twice');
+        return { assetId: '0123456789abcdef', width: 1, height: 1 };
+      });
+      const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+      const createService = () => createComflyProviderService({
+        appDataRoot, credentialStore, fetch, historySink, storeGeneratedImage,
+        profiles: kind === 'gemini'
+          ? [{ provider: 'comfly', modelRoute: 'gemini-image', modelId: 'gemini-3-pro-image-preview',
+            displayName: 'Gemini Image', capabilities: ['image_generation', 'gemini_native'] }]
+          : profiles,
+      });
+      const service = createService();
+      await service.configure({ token });
+      const job = {
+        jobId: `model-job-v2-${kind}-pending-history-restart`, provider: 'comfly' as const,
+        modelRoute: kind === 'gemini' ? 'gemini-image' : 'gpt-image', prompt: 'draw a product',
+        conversationId: `conversation-${kind}-pending-history-restart`,
+        sessionId: `desktop-session-${kind}-pending-history-restart`, referenceAssetIds: [],
+      };
+      const submitted = await service.submitImageJob(job);
+      const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+      await expect(service.submitImageJob(job)).resolves.toEqual(submitted);
+
+      const restarted = createService();
+      await expect(restarted.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+      await expect(restarted.pollImageJob(request)).resolves.toEqual({
+        status: 'completed', progress: 1,
+        result: { assetId: '0123456789abcdef', width: 1, height: 1 },
+      });
+      expect(submissions).toBe(1);
+      expect(storeGeneratedImage).toHaveBeenCalledOnce();
+      expect(historySink.succeeded).toHaveBeenCalledTimes(3);
+      expect(historySink.failed).not.toHaveBeenCalled();
+      const historyId = deriveGenerationHistoryId(job.jobId);
+      await expect(readFile(join(appDataRoot, `provider-image-pending-${historyId}.bin`))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('fails closed when a pending inline image file changes before history recovery', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64');
+      let submissions = 0;
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) {
+          submissions += 1;
+          return jsonResponse({ data: [{ b64_json: imageBytes.toString('base64') }] });
+        }
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      let historyAttempts = 0;
+      let failureWrites = 0;
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => {
+          historyAttempts += 1;
+          if (historyAttempts <= 2) throw new Error('history index temporarily unavailable');
+          return { status: 'succeeded' as const, width: 1, height: 1 };
+        }),
+        failed: vi.fn(async () => {
+          failureWrites += 1;
+          if (failureWrites === 1) throw new Error('history failure update temporarily locked');
+          return { status: 'failed' as const };
+        }),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+      const createService = () => createComflyProviderService({
+        appDataRoot, credentialStore, fetch, profiles, historySink,
+        storeGeneratedImage: vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 })),
+      });
+      const service = createService();
+      await service.configure({ token });
+      const job = {
+        jobId: 'model-job-v2-inline-history-corrupt', provider: 'comfly' as const,
+        modelRoute: 'gpt-image', prompt: 'draw a product',
+        conversationId: 'conversation-inline-history-corrupt',
+        sessionId: 'desktop-session-inline-history-corrupt', referenceAssetIds: [],
+      };
+      const submitted = await service.submitImageJob(job);
+      const historyId = deriveGenerationHistoryId(job.jobId);
+      await writeFile(join(appDataRoot, `provider-image-pending-${historyId}.bin`), Buffer.from('tampered bytes'));
+
+      const restarted = createService();
+      const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+      await expect(restarted.pollImageJob(request))
+        .rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+      await expect(restarted.pollImageJob(request)).resolves.toMatchObject({ status: 'failed',
+        error: { message: expect.stringMatching(/^提交状态不确定/u) } });
+      const intentPath = join(appDataRoot, `provider-image-intent-${historyId}.json`);
+      await writeFile(intentPath, '{"tampered":true}');
+      await expect(restarted.ackImageJobTerminal({ ...request, status: 'failed' })).resolves.toEqual({ acknowledged: true });
+      await expect(readFile(join(appDataRoot, `provider-image-pending-${historyId}.bin`))).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(submissions).toBe(1);
+      expect(historySink.succeeded).toHaveBeenCalledTimes(2);
+      expect(historySink.failed).toHaveBeenCalledTimes(2);
+      expect(historySink.failed).toHaveBeenCalledWith(historyId, 'invalid_result');
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('does not falsely fail paid inline history when the pending file cannot be written', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64');
+      let submissions = 0;
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) {
+          submissions += 1;
+          return jsonResponse({ data: [{ b64_json: imageBytes.toString('base64') }] });
+        }
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const jobId = 'model-job-v2-inline-pending-write-error';
+      const historyId = deriveGenerationHistoryId(jobId);
+      const historySink = {
+        reserveSubmission: vi.fn(async () => ({ created: true, historyId, status: 'queued' as const, terminal: null })),
+        queued: vi.fn(async () => historyId),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+        failed: vi.fn(async () => ({ status: 'failed' as const })),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const service = createComflyProviderService({
+        appDataRoot,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+        fetch, profiles, historySink,
+        fileSystem: new FailingAtomicWriteFileSystem(`provider-image-pending-${historyId}.bin`, 'open'),
+        storeGeneratedImage: vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 })),
+      });
+      await service.configure({ token });
+      const job = {
+        jobId, provider: 'comfly' as const, modelRoute: 'gpt-image', prompt: 'draw a product',
+        conversationId: 'conversation-inline-pending-write-error',
+        sessionId: 'desktop-session-inline-pending-write-error', referenceAssetIds: [],
+      };
+      const submitted = await service.submitImageJob(job);
+      expect(historySink.failed).not.toHaveBeenCalled();
+      expect(historySink.succeeded).toHaveBeenCalledOnce();
+      await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'completed', result: { assetId: '0123456789abcdef' } });
+      await expect(service.submitImageJob(job)).resolves.toEqual(submitted);
+      expect(submissions).toBe(1);
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('retries a staged inline image mapping write failure without another paid submission', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const jobId = 'model-job-v2-inline-pending-mapping-error';
+      const historyId = deriveGenerationHistoryId(jobId);
+      const pendingName = `provider-image-pending-${historyId}.bin`;
+      class FailMappingAfterPendingFileSystem extends NodeFileSystem {
+        private pendingStaged = false;
+        override async rename(source: string, destination: string): Promise<void> {
+          if (this.pendingStaged && destination.endsWith('provider-task-mappings.json')) {
+            this.pendingStaged = false;
+            throw new Error('injected mapping write failure after pending file');
+          }
+          await super.rename(source, destination);
+          if (destination.endsWith(pendingName)) this.pendingStaged = true;
+        }
+      }
+      const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64');
+      let submissions = 0;
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) {
+          submissions += 1;
+          return jsonResponse({ data: [{ b64_json: imageBytes.toString('base64') }] });
+        }
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const historySink = {
+        reserveSubmission: vi.fn(async () => ({ created: true, historyId, status: 'queued' as const, terminal: null })),
+        queued: vi.fn(async () => historyId),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+        failed: vi.fn(async () => ({ status: 'failed' as const })),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const service = createComflyProviderService({
+        appDataRoot, fetch, profiles, historySink,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+        fileSystem: new FailMappingAfterPendingFileSystem(),
+        storeGeneratedImage: vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 })),
+      });
+      await service.configure({ token });
+      const submitted = await service.submitImageJob({
+        jobId, provider: 'comfly', modelRoute: 'gpt-image', prompt: 'draw a product',
+        conversationId: 'conversation-inline-pending-mapping-error',
+        sessionId: 'desktop-session-inline-pending-mapping-error', referenceAssetIds: [],
+      });
+      await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'completed', result: { assetId: '0123456789abcdef' } });
+      await expect(readFile(join(appDataRoot, pendingName))).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(historySink.failed).not.toHaveBeenCalled();
+      expect(submissions).toBe(1);
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('resumes a direct Comfly image URL after CDN 503 without submitting another paid request', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const resultUrl = 'https://assets.example/direct-temporary-image.png';
+      let submissions = 0;
+      let downloads = 0;
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) {
+          submissions += 1;
+          return jsonResponse({ data: [{ url: resultUrl }] });
+        }
+        if (url === resultUrl) {
+          downloads += 1;
+          if (downloads === 1) return { ok: false, status: 503, json: async () => ({}) };
+          return { ok: true, status: 200, json: async () => ({}), arrayBuffer: async () => imageBytes.buffer };
+        }
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+        failed: vi.fn(async () => ({ status: 'failed' as const })),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+      const storeGeneratedImage = vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 }));
+      const createService = () => createComflyProviderService({
+        appDataRoot, credentialStore, fetch, profiles, historySink, storeGeneratedImage,
+        resolveResultHost: async () => ['93.184.216.34'],
+      });
+      const service = createService();
+      await service.configure({ token });
+      const job = {
+        jobId: 'model-job-v2-direct-temporary-image-download', provider: 'comfly' as const,
+        modelRoute: 'gpt-image', prompt: 'draw a product',
+        conversationId: 'conversation-direct-temporary-image', sessionId: 'desktop-session-direct-temporary-image',
+        referenceAssetIds: [],
+      };
+
+      const submitted = await service.submitImageJob(job);
+      const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+      await expect(service.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_ERROR', retryable: true });
+      expect(historySink.failed).not.toHaveBeenCalled();
+      await expect(service.submitImageJob(job)).resolves.toEqual(submitted);
+
+      const restartedService = createService();
+      await expect(restartedService.pollImageJob(request)).resolves.toMatchObject({
+        status: 'completed', result: { assetId: '0123456789abcdef' },
+      });
+      expect(submissions).toBe(1);
+      expect(downloads).toBe(2);
+      expect(storeGeneratedImage).toHaveBeenCalledTimes(1);
+      expect(historySink.succeeded).toHaveBeenCalledOnce();
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('returns a persisted direct Comfly image handle when history running write fails', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const resultUrl = 'https://assets.example/direct-image-after-history-error.png';
+      let submissions = 0;
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) {
+          submissions += 1;
+          return jsonResponse({ data: [{ url: resultUrl }] });
+        }
+        if (url === resultUrl) {
+          return { ok: true, status: 200, json: async () => ({}), arrayBuffer: async () => imageBytes.buffer };
+        }
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => { throw new Error('history running write failed'); }),
+        succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+        failed: vi.fn(async () => ({ status: 'failed' as const })),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+      const storeGeneratedImage = vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 }));
+      const service = createComflyProviderService({
+        appDataRoot, credentialStore, fetch, profiles, historySink, storeGeneratedImage,
+        resolveResultHost: async () => ['93.184.216.34'],
+      });
+      await service.configure({ token });
+
+      const submitted = await service.submitImageJob({
+        jobId: 'model-job-v2-direct-image-history-error', provider: 'comfly', modelRoute: 'gpt-image',
+        prompt: 'draw a product', conversationId: 'conversation-direct-history-error',
+        sessionId: 'desktop-session-direct-history-error', referenceAssetIds: [],
+      });
+      const restartedService = createComflyProviderService({
+        appDataRoot, credentialStore, fetch, profiles, historySink, storeGeneratedImage,
+        resolveResultHost: async () => ['93.184.216.34'],
+      });
+      await expect(restartedService.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'completed', result: { assetId: '0123456789abcdef' } });
+      expect(submissions).toBe(1);
+      expect(historySink.failed).not.toHaveBeenCalled();
+      expect(historySink.succeeded).toHaveBeenCalledOnce();
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('keeps an async Comfly image task pollable when the running history write fails', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64');
+      const resultUrl = 'https://assets.example/async-image-after-history-error.png';
+      let submissions = 0;
+      let terminal: 'failed' | 'succeeded' | null = null;
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) {
+          submissions += 1;
+          return jsonResponse({ task_id: 'async-image-after-history-error' });
+        }
+        if (url.endsWith('/v1/images/tasks/async-image-after-history-error')) {
+          return jsonResponse({ task_id: 'async-image-after-history-error', status: 'SUCCESS', data: [{ url: resultUrl }] });
+        }
+        if (url === resultUrl) return {
+          ok: true, status: 200, json: async () => ({}),
+          arrayBuffer: async () => imageBytes.buffer.slice(imageBytes.byteOffset, imageBytes.byteOffset + imageBytes.byteLength),
+        };
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => { throw new Error('history running write failed'); }),
+        succeeded: vi.fn(async () => { terminal = 'succeeded' as const; return { status: 'succeeded' as const, width: 1, height: 1 }; }),
+        failed: vi.fn(async () => { terminal = 'failed' as const; return { status: 'failed' as const }; }),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => terminal === 'failed' ? { status: 'failed' as const } : terminal === 'succeeded' ? { status: 'succeeded' as const, width: 1, height: 1 } : null),
+      };
+      const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+      const storeGeneratedImage = vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 }));
+      const createService = () => createComflyProviderService({
+        appDataRoot, credentialStore, fetch, profiles, historySink, storeGeneratedImage,
+        resolveResultHost: async () => ['93.184.216.34'],
+      });
+      const service = createService();
+      await service.configure({ token });
+      const job = {
+        jobId: 'model-job-v2-async-image-history-error', provider: 'comfly' as const,
+        modelRoute: 'gpt-image', prompt: 'draw a product',
+        conversationId: 'conversation-async-history-error', sessionId: 'desktop-session-async-history-error',
+        referenceAssetIds: [],
+      };
+      const submitted = await service.submitImageJob(job);
+      await expect(createService().submitImageJob(job)).resolves.toEqual(submitted);
+      await expect(createService().pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'completed', result: { assetId: '0123456789abcdef' } });
+      expect(submissions).toBe(1);
+      expect(historySink.failed).not.toHaveBeenCalled();
+      expect(historySink.succeeded).toHaveBeenCalledOnce();
+      expect(terminal).toBe('succeeded');
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it.each([
+    ['async', 1], ['direct', 1], ['gemini', 1],
+    ['async', Infinity], ['direct', Infinity], ['gemini', Infinity],
+  ] as const)('keeps a stored %s image recoverable after %s history success write failures', async (kind, failuresBeforeSuccess) => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64');
+      const base64 = Buffer.from(imageBytes).toString('base64');
+      let submissions = 0;
+      let historyAttempts = 0;
+      let historyCompleted = false;
+      const fetch = vi.fn(async (url: string) => {
+        if (url.includes(':generateContent')) {
+          submissions += 1;
+          return jsonResponse({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: base64 } }] } }] });
+        }
+        if (url.endsWith('/v1/images/generations?async=true')) {
+          submissions += 1;
+          return jsonResponse(kind === 'direct'
+            ? { data: [{ b64_json: base64 }] }
+            : { taskId: 'raw-image-history-write-task', status: 'queued' });
+        }
+        if (url.endsWith('/v1/images/tasks/raw-image-history-write-task')) {
+          return jsonResponse({ taskId: 'raw-image-history-write-task', status: 'succeeded', data: [{ b64_json: base64 }] });
+        }
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => {
+          historyAttempts += 1;
+          if (historyAttempts <= failuresBeforeSuccess) throw new Error('history ingest temporarily unavailable');
+          historyCompleted = true;
+          return { status: 'succeeded' as const, width: 1, height: 1 };
+        }),
+        failed: vi.fn(async () => ({ status: 'failed' as const })),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const storeGeneratedImage = vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 }));
+      const service = createComflyProviderService({
+        appDataRoot,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+        fetch, historySink, storeGeneratedImage,
+        profiles: kind === 'gemini'
+          ? [{ provider: 'comfly', modelRoute: 'gemini-image', modelId: 'gemini-3-pro-image-preview',
+            displayName: 'Gemini Image', capabilities: ['image_generation', 'gemini_native'] }]
+          : profiles,
+      });
+      await service.configure({ token });
+      const job = {
+        jobId: `model-job-v2-${kind}-history-success-error`, provider: 'comfly' as const,
+        modelRoute: kind === 'gemini' ? 'gemini-image' : 'gpt-image',
+        prompt: 'draw a product', conversationId: `conversation-${kind}-history-success-error`,
+        sessionId: `desktop-session-${kind}-history-success-error`, referenceAssetIds: [],
+      };
+
+      const submitted = await service.submitImageJob(job);
+      const poll = service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId });
+      if (failuresBeforeSuccess === Infinity) {
+        await expect(poll).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+      } else {
+        await expect(poll).resolves.toMatchObject({ status: 'completed', result: { assetId: '0123456789abcdef' } });
+      }
+      await expect(service.submitImageJob(job)).resolves.toEqual(submitted);
+      expect(submissions).toBe(1);
+      expect(storeGeneratedImage).toHaveBeenCalledTimes(1);
+      expect(historySink.failed).not.toHaveBeenCalled();
+      expect(historyAttempts).toBe(failuresBeforeSuccess === Infinity && kind !== 'async' ? 4 : 2);
+      expect(historyCompleted).toBe(failuresBeforeSuccess === 1);
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it.each(['async', 'direct'] as const)('keeps an invalid %s image terminal after history validation rejects it', async (kind) => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const base64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64');
+      let submissions = 0;
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) {
+          submissions += 1;
+          return jsonResponse(kind === 'direct'
+            ? { data: [{ b64_json: base64 }] }
+            : { taskId: 'raw-invalid-history-image', status: 'queued' });
+        }
+        if (url.endsWith('/v1/images/tasks/raw-invalid-history-image')) {
+          return jsonResponse({ taskId: 'raw-invalid-history-image', status: 'succeeded', data: [{ b64_json: base64 }] });
+        }
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      let historyFailed = false;
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => { throw new Error('Generated result was invalid'); }),
+        failed: vi.fn(async () => { historyFailed = true; return { status: 'failed' as const }; }),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => historyFailed ? { status: 'failed' as const } : null),
+      };
+      const service = createComflyProviderService({
+        appDataRoot,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+        fetch, profiles, historySink,
+        storeGeneratedImage: vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 })),
+      });
+      await service.configure({ token });
+      const job = {
+        jobId: `model-job-v2-${kind}-invalid-history-image`, provider: 'comfly' as const,
+        modelRoute: 'gpt-image', prompt: 'draw a product',
+        conversationId: `conversation-${kind}-invalid-history-image`,
+        sessionId: `desktop-session-${kind}-invalid-history-image`, referenceAssetIds: [],
+      };
+
+      if (kind === 'direct') {
+        await expect(service.submitImageJob(job)).rejects.toThrow('Generated result was invalid');
+      } else {
+        const submitted = await service.submitImageJob(job);
+        await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId }))
+          .resolves.toMatchObject({ status: 'failed', error: { code: 'PROVIDER_INVALID_RESPONSE' } });
+      }
+      expect(historyFailed).toBe(true);
+      expect(historySink.succeeded).toHaveBeenCalledOnce();
+      const replay = await service.submitImageJob(job);
+      await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: replay.providerTaskId }))
+        .resolves.toMatchObject({ status: 'failed' });
+      expect(submissions).toBe(1);
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it.each([true, false])('retries a completed Comfly image after CDN 503 with project storage %s', async (storeInProject) => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const resultUrl = 'https://assets.example/temporary-image.png';
+      let downloads = 0;
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) {
+          return jsonResponse({ taskId: 'raw-temporary-image-task', status: 'queued' });
+        }
+        if (url.endsWith('/v1/images/tasks/raw-temporary-image-task')) {
+          return jsonResponse({ taskId: 'raw-temporary-image-task', status: 'succeeded', data: [{ url: resultUrl }] });
+        }
+        if (url === resultUrl) {
+          downloads += 1;
+          if (downloads === 1) return { ok: false, status: 503, json: async () => ({}) };
+          return { ok: true, status: 200, json: async () => ({}), arrayBuffer: async () => imageBytes.buffer };
+        }
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+        failed: vi.fn(async () => ({ status: 'failed' as const })),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const storeGeneratedImage = vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 }));
+      const service = createComflyProviderService({
+        appDataRoot,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+        fetch,
+        profiles,
+        historySink,
+        resolveResultHost: async () => ['93.184.216.34'],
+        ...(storeInProject ? { storeGeneratedImage } : {}),
+      });
+      await service.configure({ token });
+      const submitted = await service.submitImageJob({
+        jobId: 'model-job-v2-temporary-image-download', provider: 'comfly', modelRoute: 'gpt-image',
+        prompt: 'draw a product', conversationId: 'conversation-temporary-image',
+        sessionId: 'desktop-session-temporary-image', referenceAssetIds: [],
+      });
+      const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+
+      await expect(service.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_ERROR', retryable: true });
+      expect(historySink.failed).not.toHaveBeenCalled();
+      await expect(service.pollImageJob(request)).resolves.toMatchObject({
+        status: 'completed', progress: 1,
+        result: { assetId: storeInProject ? '0123456789abcdef' : `provider-result-${submitted.providerTaskId}` },
+      });
+      expect(downloads).toBe(2);
+      expect(storeGeneratedImage).toHaveBeenCalledTimes(storeInProject ? 1 : 0);
+      expect(historySink.succeeded).toHaveBeenCalledOnce();
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('keeps a permanently invalid Comfly image result terminal', async () => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-invalid-image-task', status: 'queued' }))
+        .mockResolvedValueOnce(jsonResponse({
+          taskId: 'raw-invalid-image-task', status: 'succeeded',
+          data: [{ url: 'https://assets.example/missing-image.png' }],
+        }))
+        .mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) });
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+          created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null,
+        })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+        failed: vi.fn(async () => ({ status: 'failed' as const })),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const storeGeneratedImage = vi.fn();
+      const service = createComflyProviderService({
+        appDataRoot,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+        fetch, profiles, historySink,
+        resolveResultHost: async () => ['93.184.216.34'],
+        storeGeneratedImage,
+      });
+      await service.configure({ token });
+      const submitted = await service.submitImageJob({
+        jobId: 'model-job-v2-invalid-image-download', provider: 'comfly', modelRoute: 'gpt-image',
+        prompt: 'draw a product', conversationId: 'conversation-invalid-image',
+        sessionId: 'desktop-session-invalid-image', referenceAssetIds: [],
+      });
+      const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+
+      await expect(service.pollImageJob(request)).resolves.toMatchObject({
+        status: 'failed', error: { code: 'PROVIDER_INVALID_RESPONSE', retryable: false },
+      });
+      await expect(service.pollImageJob(request)).resolves.toMatchObject({ status: 'failed' });
+      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(storeGeneratedImage).not.toHaveBeenCalled();
+      expect(historySink.failed).toHaveBeenCalledOnce();
+    } finally {
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it.each(['cancelled', 'succeeded'] as const)('honors %s history when a completed Comfly image lost its project binding', async (durableStatus) => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const rawTaskId = `raw-missing-binding-${durableStatus}`;
+      const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64');
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) return jsonResponse({ taskId: rawTaskId, status: 'queued' });
+        if (url.endsWith(`/v1/images/tasks/${rawTaskId}`)) return jsonResponse({ taskId: rawTaskId, status: 'succeeded', data: [{ b64_json: imageBytes.toString('base64') }] });
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const durable = durableStatus === 'cancelled'
+        ? { status: 'cancelled' as const }
+        : { status: 'succeeded' as const, width: 1, height: 1 };
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({ created: true,
+          historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+        failed: vi.fn(async () => durable),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+      const baseOptions = { appDataRoot, credentialStore, fetch, profiles, historySink,
+        storeGeneratedImage: vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 })) };
+      const submitService = createComflyProviderService(baseOptions);
+      await submitService.configure({ token });
+      const submitted = await submitService.submitImageJob({
+        jobId: `model-job-v2-missing-binding-${durableStatus}`, provider: 'comfly', modelRoute: 'gpt-image',
+        prompt: 'draw a product', conversationId: 'conversation-missing-binding',
+        sessionId: 'desktop-session-missing-binding', referenceAssetIds: [],
+      });
+      const pollService = createComflyProviderService({ ...baseOptions,
+        bindGenerationProject: vi.fn(async () => ({ projectId: 'project-missing-binding', rootFingerprint: 'a'.repeat(64) })) });
+      const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+      if (durableStatus === 'cancelled') {
+        await expect(pollService.pollImageJob(request)).resolves.toEqual({ status: 'cancelled' });
+        await expect(pollService.pollImageJob(request)).resolves.toEqual({ status: 'cancelled' });
+        expect(fetch).toHaveBeenCalledTimes(2);
+      } else {
+        await expect(pollService.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true,
+          message: expect.stringContaining('提交状态不确定') });
+        await expect(pollService.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+        expect(fetch).toHaveBeenCalledTimes(3);
+      }
+      expect(historySink.failed).toHaveBeenCalledWith(deriveGenerationHistoryId(`model-job-v2-missing-binding-${durableStatus}`), 'provider_unavailable');
+      expect(baseOptions.storeGeneratedImage).not.toHaveBeenCalled();
+    } finally { await cleanupTempRoot(appDataRoot); }
+  });
+
+  it.each(['cancelled', 'succeeded'] as const)('honors %s history after an invalid Comfly image download', async (durableStatus) => {
+    const appDataRoot = await makeTempRoot();
+    try {
+      const rawTaskId = `raw-invalid-download-race-${durableStatus}`;
+      const resultUrl = 'https://assets.example/missing-image.png';
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith('/v1/images/generations?async=true')) return jsonResponse({ taskId: rawTaskId, status: 'queued' });
+        if (url.endsWith(`/v1/images/tasks/${rawTaskId}`)) return jsonResponse({ taskId: rawTaskId, status: 'succeeded', data: [{ url: resultUrl }] });
+        if (url === resultUrl) return { ok: false, status: 404, json: async () => ({}) };
+        throw new Error(`Unexpected fixture URL: ${url}`);
+      });
+      const durable = durableStatus === 'cancelled'
+        ? { status: 'cancelled' as const }
+        : { status: 'succeeded' as const, width: 1, height: 1 };
+      const historySink = {
+        reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({ created: true,
+          historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null })),
+        queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+        running: vi.fn(async () => undefined),
+        succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+        failed: vi.fn(async () => durable),
+        cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+        getTerminal: vi.fn(async () => null),
+      };
+      const service = createComflyProviderService({ appDataRoot,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+        fetch, profiles, historySink, resolveResultHost: async () => ['93.184.216.34'],
+        storeGeneratedImage: vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1, height: 1 })),
+      });
+      await service.configure({ token });
+      const submitted = await service.submitImageJob({
+        jobId: `model-job-v2-invalid-download-race-${durableStatus}`, provider: 'comfly', modelRoute: 'gpt-image',
+        prompt: 'draw a product', conversationId: 'conversation-invalid-download-race',
+        sessionId: 'desktop-session-invalid-download-race', referenceAssetIds: [],
+      });
+      const request = { provider: 'comfly' as const, providerTaskId: submitted.providerTaskId };
+      if (durableStatus === 'cancelled') {
+        await expect(service.pollImageJob(request)).resolves.toEqual({ status: 'cancelled' });
+        await expect(service.pollImageJob(request)).resolves.toEqual({ status: 'cancelled' });
+        expect(fetch).toHaveBeenCalledTimes(3);
+      } else {
+        await expect(service.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true,
+          message: expect.stringContaining('提交状态不确定') });
+        await expect(service.pollImageJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+        expect(fetch).toHaveBeenCalledTimes(5);
+      }
+      expect(historySink.failed).toHaveBeenCalledWith(deriveGenerationHistoryId(`model-job-v2-invalid-download-race-${durableStatus}`), 'invalid_result');
+    } finally { await cleanupTempRoot(appDataRoot); }
+  });
+
   it('materializes a provider result when history already reports success but the project asset is missing', async () => {
     const appDataRoot = await makeTempRoot();
     const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -2487,9 +3620,12 @@ describe('Comfly provider service', () => {
 
   it('pins the focused bridge test to the local Comfly tier mapping contract', async () => {
     const source = await readFile(join(process.cwd(), 'packages/provider-comfly/src/client.ts'), 'utf8');
+    const sizeContract = await readFile(join(process.cwd(), 'packages/provider-comfly/src/image-size.ts'), 'utf8');
     expect(source).toMatch(/mapComflyImageResolutionTier\(input\.size, input\.aspect_ratio\)/u);
+    expect(source).toMatch(/from ['"]\.\/image-size['"]/u);
     expect(source).toMatch(/CAPABILITY_UNSUPPORTED/u);
-    expect(source).toMatch(/native 4K output/u);
+    expect(sizeContract).toMatch(/CAPABILITY_UNSUPPORTED/u);
+    expect(sizeContract).toMatch(/native 4K output/u);
   });
 
   it('stores Gemini native inline image output and returns the project asset id', async () => {
@@ -2517,6 +3653,31 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
+  it('does not assign replacement roles to a product and a lighting reference supplied for generation', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn(async () => jsonResponse({ taskId: 'role-preserving-task', status: 'pending' }));
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch,
+      readManagedGenerationImages: async () => [
+        { bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), mediaType: 'image/png' as const },
+        { bytes: Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), mediaType: 'image/jpeg' as const },
+      ],
+      profiles: [{ provider: 'comfly', modelRoute: 'nano-banana-2', modelId: 'nano-banana-2', displayName: 'Nano Banana 2',
+        capabilities: ['image_generation', 'image_edit', 'async_tasks'] }],
+    });
+    await service.configure({ token });
+    const prompt = '第1张输入：参考图片8，仅保留产品几何；第2张输入：参考图片3，只借用柔和窗光，禁止复制其中的产品。';
+    await service.submitImageJob({ jobId: 'role-preserving-job', provider: 'comfly', modelRoute: 'nano-banana-2', prompt, conversationId: 'reference-role-conversation',
+      sessionId: 'desktop-session-1', referenceAssetIds: ['a'.repeat(16), 'b'.repeat(16)] });
+    const sent = JSON.parse(String((fetch.mock.calls as unknown as Array<[string, RequestInit]>)[0]![1].body));
+    expect(sent.prompt).toContain(prompt);
+    expect(sent.prompt).not.toContain('authoritative scene');
+    expect(sent.prompt).not.toContain('authoritative replacement product');
+    expect(sent.prompt).not.toContain('Replace only the primary subject');
+    expect(sent.image).toEqual(['data:image/png;base64,iVBORw==', 'data:image/jpeg;base64,/9j/2Q==']);
+    await cleanupTempRoot(appDataRoot);
+  });
+
   it('sends managed generation images in @1 then @2 order and preserves existing task retries', async () => {
     const fetch = vi.fn(async (_url, init) => {
       expect(JSON.parse(String(init.body))).toMatchObject({
@@ -2524,9 +3685,8 @@ describe('Comfly provider service', () => {
         aspect_ratio: '9:16',
         image_size: '2K',
         prompt: [
-          '@1 is the authoritative scene: preserve its composition, camera, lighting, and background.',
-          '@2 is the authoritative replacement product: preserve its identity, proportions, material, color, and logo.',
-          'Replace only the primary subject in @1 with @2. Do not blend, duplicate, or redesign the scene.',
+          'Reference images are attached in the supplied order (2 inputs).',
+          'Follow the prompt\'s roles, edit boundaries, and preservation constraints for each reference; do not infer a scene, product, or replacement role from its position alone.',
           'Replace the product only.',
         ].join('\n'),
         image: [

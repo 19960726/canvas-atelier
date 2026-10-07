@@ -14,8 +14,9 @@ export function McpWorkflowPlanPreview({ store = mcpUiConfirmationStore }: { rea
   if (!request) return null;
 
   const isWorkflow = request.kind === 'workflow';
-  const confirmLabel = isWorkflow ? '确认 MCP 工作流' : '确认 MCP 付费任务';
-  const dialogLabel = isWorkflow ? 'MCP 工作流确认' : 'MCP 付费任务确认';
+  const isLayering = request.kind === 'layering_operation';
+  const confirmLabel = isLayering ? '确认 MCP 分层操作' : isWorkflow ? '确认 MCP 工作流' : '确认 MCP 付费任务';
+  const dialogLabel = isLayering ? 'MCP 分层操作确认' : isWorkflow ? 'MCP 工作流确认' : 'MCP 付费任务确认';
 
   const confirm = () => {
     try {
@@ -37,11 +38,11 @@ export function McpWorkflowPlanPreview({ store = mcpUiConfirmationStore }: { rea
   return <aside className="mcp-workflow-preview" role="dialog" aria-label={dialogLabel} aria-modal="false">
     <header>
       <span>{isWorkflow ? <GitBranch size={16} /> : <Sparkles size={16} />}</span>
-      <div><strong>{request.title}</strong><small>{isWorkflow ? 'Codex / WorkBuddy 工作流计划' : '独立付费模型任务'}</small></div>
-      <b>{isWorkflow ? '待确认' : '额度操作'}</b>
+      <div><strong>{request.title}</strong><small>{isLayering ? 'Codex / WorkBuddy 分层请求' : isWorkflow ? 'Codex / WorkBuddy 工作流计划' : '独立付费模型任务'}</small></div>
+      <b>{isLayering || isWorkflow ? '待确认' : '额度操作'}</b>
     </header>
 
-    {isWorkflow ? <WorkflowSummary request={request} /> : <PaidJobSummary request={request} />}
+    {isLayering ? <ul aria-label="MCP 分层操作详情">{request.details.map((detail, index) => <li key={index}>{detail}</li>)}</ul> : isWorkflow ? <WorkflowSummary request={request} /> : <PaidJobSummary request={request} />}
 
     <p className="mcp-workflow-preview__notice"><AlertTriangle size={13} />确认只授权这一次、这一版本的请求；画布变化后授权自动失效。</p>
     {error && <p className="mcp-workflow-preview__error" role="alert">{error}</p>}

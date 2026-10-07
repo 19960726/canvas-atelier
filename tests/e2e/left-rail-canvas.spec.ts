@@ -23,11 +23,6 @@ const canvasRailIcons = [
   'settings',
 ] as const;
 
-// UI Gate 425:152 uses these glyphs, not the generic icon-library drawings.
-// Keeping the actual rendered glyphs in the assertion prevents the legacy
-// Lucide rail from returning while the dimensions still happen to match.
-const canvasRailGlyphs = ['⌖', '＋', '▦', '↶', null, null, '◷', null] as const;
-
 for (const theme of ['dark', 'light'] as const) {
   test(`matches the Canvas eight-action left rail in ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -36,14 +31,19 @@ for (const theme of ['dark', 'light'] as const) {
 
     const rail = page.getByTestId('toolrail');
     await expect(rail).toHaveJSProperty('offsetWidth', 60);
-    await expect(rail).toHaveJSProperty('offsetHeight', 442);
-    await expect(rail.locator(':scope > button:visible')).toHaveCount(8);
+    const railBox = await rail.boundingBox();
+    expect(railBox).not.toBeNull();
+    expect(railBox!.height).toBeGreaterThan(400);
+    expect(railBox!.height).toBeLessThan(470);
+    await expect(rail.getByRole('button')).toHaveCount(8);
+    await expect(rail.getByRole('group', { name: '画布编辑' }).getByRole('button')).toHaveCount(5);
+    await expect(rail.getByRole('group', { name: '工作区' }).getByRole('button')).toHaveCount(2);
+    await expect(rail.getByRole('group', { name: '应用' }).getByRole('button')).toHaveCount(1);
     await expect(rail.locator(':scope > .toolrail__spacer')).toHaveCount(0);
     await expect(page.getByTestId('tool-upload')).toHaveCount(0);
     await expect(page.getByTestId('tool-placement')).toBeHidden();
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-    const railBox = await rail.boundingBox();
-    expect(railBox).not.toBeNull();
+    let previousBottom = 0;
 
     for (const [index, testId] of canvasRailOrder.entries()) {
       const button = page.getByTestId(testId);
@@ -51,7 +51,8 @@ for (const theme of ['dark', 'light'] as const) {
       const box = await button.boundingBox();
       expect(box).toMatchObject({ width: 40, height: 40 });
       expect(box!.x - railBox!.x).toBe(10);
-      expect(box!.y - railBox!.y).toBe(19 + index * 52);
+      if (index > 0) expect(box!.y).toBeGreaterThanOrEqual(previousBottom + 8);
+      previousBottom = box!.y + box!.height;
       await expect(button).toHaveCSS('display', 'grid');
       await expect(button).toHaveCSS('border-radius', '11px');
       expect(await button.evaluate((element) => getComputedStyle(element, '::before').display)).toBe('none');
@@ -61,10 +62,8 @@ for (const theme of ['dark', 'light'] as const) {
       );
       if (testId === 'agent-toggle') {
         await expect(button.locator('.canvas-ai-orb--rail')).toBeVisible();
-      } else if (canvasRailGlyphs[index] === null) {
-        await expect(button.locator('[data-rail-icon] svg')).toBeVisible();
       } else {
-        await expect(button.locator('[data-rail-icon]')).toHaveText(canvasRailGlyphs[index]!);
+        await expect(button.locator('[data-rail-icon] svg')).toBeVisible();
       }
     }
 

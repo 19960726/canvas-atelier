@@ -4,6 +4,51 @@ import type { ModelJob } from '@agent-canvas/domain';
 import { createDesktopModelJobExecutor } from './desktop-model-executor';
 
 describe('desktop model job executor', () => {
+  it('forwards the paired layering output contract and confirmation digest across the native bridge', async () => {
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'image-layer-contract-task' }));
+    vi.stubGlobal('window', { novusDesktop: { provider: { submitImageJob } } });
+    const executor = createDesktopModelJobExecutor();
+
+    await executor.submit(job({
+      promptNodeId: 'image-layer-group-a-subject',
+      layeringGroupId: 'group-a',
+      layeringLayerId: 'subject',
+      layeringOutputContract: 'source-independent-rgba-v2',
+      layeringConfirmationDigest: 'a'.repeat(64),
+    }));
+
+    expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({
+      imagePurpose: 'layering',
+      layeringOutputContract: 'source-independent-rgba-v2',
+      layeringConfirmationDigest: 'a'.repeat(64),
+    }));
+  });
+
+  it.each([
+    [{ layeringOutputContract: 'source-independent-rgba-v2' }, /supplied together/u],
+    [{ layeringConfirmationDigest: 'A'.repeat(64) }, /supplied together/u],
+    [{ layeringOutputContract: 'source-independent-rgba-v2', layeringConfirmationDigest: 'A'.repeat(64) }, /lowercase SHA-256/u],
+    [{ layeringOutputContract: 'source-independent-rgba-v2', layeringConfirmationDigest: 'a'.repeat(64), layeringGroupId: undefined }, /bound image-layer/u],
+  ] as const)('rejects invalid or unbound layering metadata before native submission', async (overrides, error) => {
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'must-not-submit' }));
+    vi.stubGlobal('window', { novusDesktop: { provider: { submitImageJob } } });
+
+    await expect(createDesktopModelJobExecutor().submit(job({
+      promptNodeId: 'image-layer-group-a-subject', layeringGroupId: 'group-a', layeringLayerId: 'subject', ...overrides,
+    }))).rejects.toThrow(error);
+    expect(submitImageJob).not.toHaveBeenCalled();
+  });
+
+  it('passes the stable project id with image and video submissions', async () => {
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'image-task' }));
+    const submitVideoJob = vi.fn(async () => ({ providerTaskId: 'video-task' }));
+    vi.stubGlobal('window', { novusDesktop: { provider: { submitImageJob, submitVideoJob } } });
+    const executor = createDesktopModelJobExecutor();
+    await executor.submit(job({ projectId: 'project-before-restart' }));
+    await executor.submit(job({ kind: 'video', projectId: 'project-before-restart' }));
+    expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'project-before-restart' }));
+    expect(submitVideoJob).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'project-before-restart' }));
+  });
   it('uses only the narrow window.novusDesktop provider bridge', async () => {
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-public-bridge' }));
     const pollImageJob = vi.fn(async () => ({

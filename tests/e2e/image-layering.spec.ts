@@ -9,6 +9,74 @@ import { makeReferenceImage } from './helpers/fixtures';
 const visualArtifactDirectory = path.join(process.cwd(), 'work', process.env.CANVAS_LAYERING_UI_AUDIT_DIR ?? 'qa-layering-ui-2026-09-23');
 
 for (const theme of ['light', 'dark'] as const) {
+  test(`seven-layer workbench keeps proportional previews and accessible export actions in ${theme}`, async ({ page }) => {
+    await mkdir(visualArtifactDirectory, { recursive: true });
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await page.addInitScript(nextTheme => localStorage.setItem('novus.theme.mode', nextTheme), theme);
+    await openEmptyApp(page);
+    await page.evaluate(async () => {
+      await window.__NOVUS_E2E__!.createModule('image_input', { x: 40, y: 140 });
+      await window.__NOVUS_E2E__!.createModule('image_layering', { x: 440, y: 140 });
+    });
+    const assetIds: string[] = [];
+    const input = page.locator('[data-module-type="image_input"]');
+    for (let i = 0; i < 7; i++) {
+      await queueProjectImageImport(page, makeReferenceImage(`Workbench layout ${i}.png`, [60 + i * 10, 148, 132, i === 0 ? 255 : 128], { width: 300, height: 200 }), { preservePixels: true });
+      await input.getByRole('button', { name: i === 0 ? /Import image/u : /Replace image/u }).click();
+      assetIds.push((await e2eState(page)).projectImages.at(-1)!.assetId);
+    }
+    await page.evaluate(async assetIds => window.__NOVUS_E2E__!.configureModule('image_layering', { config: {
+      canvasWidth: 300, canvasHeight: 200, sourceAssetId: assetIds[0],
+      layers: Array.from({ length: 7 }, (_, i) => ({ layerId: `layout-${i}`, kind: i === 0 ? 'background' : 'transparent',
+        name: i === 0 ? '背景' : `前景 ${i}`, assetId: assetIds[i], x: 0, y: 0, width: 300, height: 200, visible: true, opacity: 1 })),
+    } }), assetIds);
+    await page.locator('.react-flow__controls-fitview').evaluate(button => (button as HTMLButtonElement).click());
+    const node = page.locator('[data-module-type="image_layering"]');
+    await expect(node.getByText('图层工作台', { exact: true })).toHaveCount(0);
+    await expect(node.getByText('预览、整理与导出', { exact: true })).toHaveCount(0);
+    const list = node.getByRole('list', { name: '分层图层' });
+    await expect(list.getByRole('listitem')).toHaveCount(7);
+    await expect(node.getByRole('button', { name: '导出 PSD' })).toBeEnabled();
+    const geometry = await node.evaluate(element => {
+      const list = element.querySelector('.image-layering__list') as HTMLElement;
+      const preview = element.querySelector('.image-layering__preview') as HTMLElement;
+      const thumbnail = element.querySelector('.image-layering__thumbnail') as HTMLElement;
+      const actions = element.querySelector('.image-layering__actions') as HTMLElement;
+      const photoshopButton = actions.querySelector('[aria-label="在 Photoshop 中打开"]') as HTMLElement;
+      const exportButton = actions.querySelector('.image-layering__export') as HTMLElement;
+      const body = element.querySelector('.image-layering__body') as HTMLElement;
+      return { listOverflow: list.scrollHeight - list.clientHeight, previewRatio: preview.offsetWidth / preview.offsetHeight,
+        previewHeight: preview.offsetHeight, thumbnailWidth: thumbnail.offsetWidth,
+        listHeight: list.clientHeight, listStyle: getComputedStyle(list).cssText,
+        listPadding: getComputedStyle(list).padding, rowHeights: [...list.children].map(row => (row as HTMLElement).offsetHeight),
+        photoshopText: getComputedStyle(photoshopButton).color, photoshopBackground: getComputedStyle(photoshopButton).backgroundColor,
+        exportText: getComputedStyle(exportButton).color, exportBackground: getComputedStyle(exportButton).backgroundColor,
+        bodyOverflow: body.scrollHeight - body.clientHeight, actionsOutsideScroll: !body.contains(actions) };
+    });
+    expect(geometry.listOverflow, JSON.stringify(geometry)).toBeLessThanOrEqual(1);
+    expect(geometry.previewHeight).toBeLessThanOrEqual(210);
+    expect(geometry.previewRatio).toBeCloseTo(1.5, 2);
+    expect(geometry.thumbnailWidth).toBeGreaterThanOrEqual(48);
+    expect(geometry.actionsOutsideScroll).toBe(true);
+    expect(geometry.bodyOverflow).toBeLessThanOrEqual(1);
+    expect(geometry.photoshopText).not.toEqual(geometry.photoshopBackground);
+    expect(geometry.exportText).not.toEqual(geometry.exportBackground);
+    await node.getByRole('button', { name: '原图', exact: true }).click();
+    await expect(node.getByRole('img', { name: '原图预览区域' })).toBeVisible();
+    await node.getByRole('button', { name: '合成图', exact: true }).click();
+    await node.getByRole('button', { name: '隐藏图层 前景 6' }).click();
+    await expect(node.getByRole('button', { name: '显示图层 前景 6' })).toBeVisible();
+    await node.getByRole('button', { name: '下移图层 前景 3' }).click();
+    await expect(list.getByRole('listitem').nth(2)).toContainText('前景 3');
+    await list.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await expect(node.getByRole('button', { name: '导出 PSD' })).toBeVisible();
+    await expect(node.getByRole('button', { name: '在 Photoshop 中打开', exact: true })).toBeVisible();
+    await node.screenshot({ path: path.join(visualArtifactDirectory, `workbench-seven-${theme}.png`) });
+    expect((await e2eState(page)).modelSubmissions).toHaveLength(0);
+  });
+}
+
+for (const theme of ['light', 'dark'] as const) {
   test(`captures the AI layering toolbar and independent canvas layers in ${theme} without provider jobs`, async ({ page }) => {
     await mkdir(visualArtifactDirectory, { recursive: true });
     await page.setViewportSize({ width: 1600, height: 1000 });
@@ -97,7 +165,11 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(layerNodes.nth(0).locator('.image-layer-node__heading strong')).toHaveText('背景');
     await expect(layerNodes.nth(1).getByRole('button', { name: /隐藏图层 主体/u })).toBeVisible();
     const composite = page.locator('[data-module-type="image_layering"]');
-    await expect(composite.getByRole('button', { name: '导出 PSD' })).toBeEnabled();
+    // Legacy passed flags do not authorize unreviewed full-frame materials.
+    await expect(composite.getByRole('button', { name: '导出 PSD', exact: true })).toBeDisabled();
+    await expect(composite.getByRole('button', { name: '在 Photoshop 中打开', exact: true })).toBeDisabled();
+    await expect(composite.locator('.image-layering__progress-heading')).toContainText('需复核');
+    await expect(layerNodes.nth(2).getByRole('status')).toHaveText('透明层没有透明像素，不能作为独立前景层。');
     await expect.poll(async () => (await e2eState(page)).edgeCount).toBeGreaterThanOrEqual(4);
     await page.screenshot({ path: path.join(visualArtifactDirectory, `independent-layer-nodes-${theme}.png`), fullPage: true });
     expect((await e2eState(page)).modelSubmissions).toHaveLength(0);
@@ -152,7 +224,7 @@ test('layering node preserves order and visibility after reopen and exports inde
   const psd = readPsd(new Uint8Array(bytes), { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true });
   expect([psd.width, psd.height, psd.bitsPerChannel]).toEqual([2, 2, 8]);
   expect(psd.children?.map(layer => [layer.name, layer.hidden])).toEqual([
-    ['Logo', true], ['Subject', false], ['Glass', false], ['Background', false],
+    ['Background', false], ['Glass', false], ['Subject', false], ['Logo', true],
   ]);
 
   await page.evaluate(() => {

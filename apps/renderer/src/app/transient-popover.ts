@@ -6,6 +6,7 @@
   | 'reasoning-model'
   | 'reference'
   | 'conversation-history'
+  | 'project-memory'
   | 'quick-insert'
   | 'project-menu';
 

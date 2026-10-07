@@ -11,12 +11,47 @@ export interface LocalMattingRequest {
 }
 export interface LocalMattingResult { width: number; height: number; rgba: Uint8Array; }
 
+/** Preserve integer source edges after normalization without rounding genuinely
+ * fractional selections inward. Division and multiplication can differ by a
+ * few floating-point ULPs even for an exact source-pixel rectangle. */
+export function sourceMattingBoxPixels(width: number, height: number, candidate: LocalMattingRequest['bounds']) {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width * height > 12_000_000)
+    throw new Error('精修标记尺寸无效');
+  const box = boxSchema.parse(candidate);
+  const snap = (value: number) => {
+    const nearest = Math.round(value);
+    return Math.abs(value - nearest) <= Number.EPSILON * Math.max(1, Math.abs(value)) * 8 ? nearest : value;
+  };
+  return {
+    left: Math.floor(snap(box.x * width)), top: Math.floor(snap(box.y * height)),
+    right: Math.min(width, Math.ceil(snap((box.x + box.width) * width))),
+    bottom: Math.min(height, Math.ceil(snap((box.y + box.height) * height))),
+  };
+}
+
 export function parseLocalMattingRequest(value: unknown): LocalMattingRequest {
   const result = z.object({ width: z.number().int().min(1).max(8192), height: z.number().int().min(1).max(8192),
     rgba: z.instanceof(Uint8Array), bounds: boxSchema, regions: z.array(regionSchema).max(64) }).parse(value);
   if (result.width * result.height > 12_000_000 || result.rgba.length !== result.width * result.height * 4)
     throw new Error('本地精修的原图像素尺寸无效或超过 1200 万像素');
   return result;
+}
+
+/** Feed deliberate user corrections into the local segmentation model itself.
+ * The same regions still constrain the trimap after segmentation. */
+export function createLocalMattingPrompts(width: number, height: number, bounds: LocalMattingRequest['bounds'],
+  regions: readonly MattingRegion[]): { points: number[][]; labels: number[] } {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) throw new Error('精修提示点尺寸无效');
+  const validBounds = boxSchema.parse(bounds);
+  const validRegions = regions.map(region => regionSchema.parse(region));
+  const center = (box: LocalMattingRequest['bounds']): number[] => [
+    Math.min(width - 1, Math.round((box.x + box.width / 2) * width)),
+    Math.min(height - 1, Math.round((box.y + box.height / 2) * height)),
+  ];
+  const positives = validRegions.filter(region => region.mode !== 'clear').map(region => center(region.box));
+  const negatives = validRegions.filter(region => region.mode === 'clear').map(region => center(region.box));
+  const foreground = positives.length ? positives : [center(validBounds)];
+  return { points: [...foreground, ...negatives], labels: [...foreground.map(() => 1), ...negatives.map(() => 0)] };
 }
 
 /** Build a trimap at source coordinates; regions are ordered user corrections. */
@@ -40,8 +75,9 @@ export function createSourceTrimap(mask: Uint8Array, width: number, height: numb
   }
   for (const candidate of regions) {
     const { mode, box } = regionSchema.parse(candidate), value = mode === 'keep' ? 255 : mode === 'clear' ? 0 : 128;
-    for (let y = Math.floor(box.y * height); y < Math.min(height, Math.ceil((box.y + box.height) * height)); y++)
-      for (let x = Math.floor(box.x * width); x < Math.min(width, Math.ceil((box.x + box.width) * width)); x++) result[y * width + x] = value;
+    const pixels = sourceMattingBoxPixels(width, height, box);
+    for (let y = pixels.top; y < pixels.bottom; y++)
+      for (let x = pixels.left; x < pixels.right; x++) result[y * width + x] = value;
   }
   return result;
 }

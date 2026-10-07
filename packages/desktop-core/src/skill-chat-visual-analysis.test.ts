@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { buildSkillChatSystemInstructions } from './skill-chat-visual-analysis.js';
 
 describe('buildSkillChatSystemInstructions', () => {
+  it('keeps image-backed creative planning in executable JSON instead of forcing a reverse-analysis essay', () => {
+    const instructions = buildSkillChatSystemInstructions({ agentMode: 'original', visualAnalysis: true,
+      referenceMentions: [{ assetId: 'a'.repeat(16), label: '早餐参考', mention: '@图片2' }] });
+    expect(instructions).toContain('options');
+    expect(instructions).toContain('JSON');
+    expect(instructions).toContain('@图片2（早餐参考）');
+    expect(instructions).not.toContain('按固定结构输出');
+    expect(instructions).not.toContain('最后依次输出中文提示词、英文提示词');
+  });
   it('builds the full visible-image analysis contract with ordered mention responsibilities', () => {
     const instructions = buildSkillChatSystemInstructions({
       visualAnalysis: true,

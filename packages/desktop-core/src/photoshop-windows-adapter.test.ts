@@ -388,6 +388,79 @@ describe('Windows Photoshop smart object adapter', () => {
     }
   });
 
+  it('keeps a neutral automatic correction on the managed original path even if a caller includes it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'photoshop-neutral-test-'));
+    const jsxResourcePath = join(root, 'place.jsx');
+    const images = nativeImages({ width: 4096, height: 4096 });
+    await writeFile(jsxResourcePath, 'jsx source');
+    let temporaryDirectory: string | undefined;
+    try {
+      const files = await createNodePhotoshopTemporaryFiles({
+        absolutePath: 'E:/managed/4096-photo.jpg',
+        layerName: 'Unchanged 4K photo',
+        mediaType: 'image/jpeg',
+        colorCorrection: { temperature: 0, tint: 0, saturation: 100, contrast: 100, brightness: 100 },
+      }, {
+        jsxResourcePath,
+        nativeImage: images,
+        runnerResourcePath: 'C:/app/photoshop-windows-runner.js',
+        temporaryDirectoryRoot: root,
+      });
+      temporaryDirectory = files.directory;
+      const payload = JSON.parse(await readFile(files.payloadPath, 'utf8')) as Record<string, unknown>;
+      expect(Buffer.from(String(payload.imagePathBase64), 'base64').toString('utf8'))
+        .toBe('E:/managed/4096-photo.jpg');
+      expect(images.createFromPath).not.toHaveBeenCalled();
+      expect(images.createFromBitmap).not.toHaveBeenCalled();
+    } finally {
+      if (temporaryDirectory !== undefined) await rm(temporaryDirectory, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a non-neutral 4096-square correction inside the bounded working set', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'photoshop-4096-correction-test-'));
+    const jsxResourcePath = join(root, 'place.jsx');
+    const bitmap = Buffer.alloc(4096 * 4096 * 4);
+    bitmap.set([80, 100, 120, 255], 0);
+    const images = {
+      createFromPath: vi.fn().mockReturnValue({
+        getSize: () => ({ width: 4096, height: 4096 }),
+        isEmpty: () => false,
+        toBitmap: () => bitmap,
+      }),
+      createFromBitmap: vi.fn().mockReturnValue({
+        isEmpty: () => false,
+        toPNG: () => Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      }),
+    };
+    await writeFile(jsxResourcePath, 'jsx source');
+    let temporaryDirectory: string | undefined;
+    try {
+      const files = await createNodePhotoshopTemporaryFiles({
+        absolutePath: 'E:/managed/4096-photo.jpg',
+        layerName: 'Corrected 4K photo',
+        mediaType: 'image/jpeg',
+        colorCorrection: { temperature: 4, tint: 0, saturation: 100, contrast: 100, brightness: 100 },
+      }, {
+        jsxResourcePath,
+        nativeImage: images,
+        runnerResourcePath: 'C:/app/photoshop-windows-runner.js',
+        temporaryDirectoryRoot: root,
+      });
+      temporaryDirectory = files.directory;
+      expect(images.createFromBitmap).toHaveBeenCalledOnce();
+      expect(images.createFromBitmap.mock.calls[0]?.[0]).toBeInstanceOf(Buffer);
+      expect(images.createFromBitmap.mock.calls[0]?.[1]).toEqual({ width: 4096, height: 4096, scaleFactor: 1 });
+      const payload = JSON.parse(await readFile(files.payloadPath, 'utf8')) as Record<string, unknown>;
+      expect(Buffer.from(String(payload.imagePathBase64), 'base64').toString('utf8'))
+        .toBe(join(files.directory, 'corrected.png'));
+    } finally {
+      if (temporaryDirectory !== undefined) await rm(temporaryDirectory, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('uses the trusted main-process WebP decoder for a real managed file and verifies its full dimensions', async () => {
     const root = await mkdtemp(join(tmpdir(), 'photoshop-webp-test-'));
     const jsxResourcePath = join(root, 'place.jsx');
@@ -488,7 +561,7 @@ describe('Windows Photoshop smart object adapter', () => {
   it('rejects decoded images above the bounded correction working set before reading their bitmap', async () => {
     const root = await mkdtemp(join(tmpdir(), 'photoshop-correction-size-test-'));
     const jsxResourcePath = join(root, 'place.jsx');
-    const images = nativeImages({ width: 4_000, height: 3_000 });
+    const images = nativeImages({ width: 4_096, height: 4_097 });
     await writeFile(jsxResourcePath, 'jsx source');
     try {
       await expect(createNodePhotoshopTemporaryFiles({
@@ -511,7 +584,7 @@ describe('Windows Photoshop smart object adapter', () => {
 
   it('fits and centers a small fallback image as one proportional Smart Object without clipboard transfer', async () => {
     const result = await runWindowsPlacementFallback({
-      primaryError: 'place-layer failed',
+      primaryError: 'canvas_placement_rolled_back: place-layer failed',
       layerWidth: 120,
       layerHeight: 60,
     });
@@ -525,13 +598,20 @@ describe('Windows Photoshop smart object adapter', () => {
   });
 
   it('closes the fallback source and stops when duplicate fails instead of pasting a possible second layer', async () => {
-    const result = await runWindowsPlacementFallback({ primaryError: 'place-layer failed', duplicateFails: true });
+    const result = await runWindowsPlacementFallback({ primaryError: 'canvas_placement_rolled_back: place-layer failed', duplicateFails: true });
 
     expect(result.output).toMatchObject({ kind: 'placement_failed' });
     expect(result.targetLayerCount).toBe(0);
     expect(result.closeSourceDocument).toHaveBeenCalledOnce();
     expect(result.copy).not.toHaveBeenCalled();
     expect(result.paste).not.toHaveBeenCalled();
+  });
+
+  it('does not attempt a second import after an unconfirmed primary failure', async () => {
+    const result = await runWindowsPlacementFallback({ primaryError: 'COM acknowledgement lost' });
+    expect(result.output).toMatchObject({ kind: 'placement_failed' });
+    expect(result.closeSourceDocument).not.toHaveBeenCalled();
+    expect(result.targetLayerCount).toBe(0);
   });
 
   it('creates the production adapter from fixed application resources', () => {

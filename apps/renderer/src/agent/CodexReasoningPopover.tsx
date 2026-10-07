@@ -23,6 +23,7 @@ interface CodexReasoningPopoverProps {
   readonly generationKind?: 'image' | 'video';
   readonly onOpenGeneration?: () => void;
   readonly reverseDepth?: {
+    readonly purpose?: 'creative' | 'reverse';
     readonly value: 'fast' | 'standard' | 'deep';
     readonly disabled?: boolean;
     readonly onChange: (value: 'fast' | 'standard' | 'deep') => void;
@@ -48,9 +49,13 @@ export function CodexReasoningPopover({ modelLabel, efforts, value, defaultValue
   const label = selected ? effortLabels[selected] : '不可用';
   const progress = levels.length > 1 ? index / (levels.length - 1) : 0;
   const ultra = selected === 'ultra';
-  const reverseLabel = reverseDepthOptions.find((option) => option.value === reverseDepth?.value)?.label;
-  const reverseShortLabel = reverseLabel?.replace('反推', '');
-  const triggerLabel = reverseDepth ? `反推强度：${reverseLabel}` : `思考能力：${label}`;
+  const depthName = reverseDepth?.purpose === 'creative' ? '分析深度' : '反推强度';
+  const depthOptions = reverseDepthOptions.map((option) => ({ ...option,
+    label: reverseDepth?.purpose === 'creative' ? option.label.replace('反推', '分析') : option.label,
+  }));
+  const reverseLabel = depthOptions.find((option) => option.value === reverseDepth?.value)?.label;
+  const reverseShortLabel = reverseLabel?.replace(/反推|分析/u, '');
+  const triggerLabel = reverseDepth ? `${depthName}：${reverseLabel}` : `思考能力：${label}`;
 
   useEffect(() => {
     if (open) (sliderRef.current ?? popupRef.current?.querySelector<HTMLInputElement>('input[type="search"]'))?.focus({ preventScroll: true });
@@ -73,18 +78,19 @@ export function CodexReasoningPopover({ modelLabel, efforts, value, defaultValue
       disabled={disabled || (levels.length === 0 && !reverseDepth)} onClick={onToggle} title={triggerLabel}>
       <Zap size={14} aria-hidden="true" /><span>{reverseDepth ? reverseShortLabel : label}</span>
     </button>}
-    {open && <div ref={popupRef} id={id} role="dialog" aria-label={hideTrigger ? '模型设置' : reverseDepth ? '模型与反推强度设置' : '思考能力设置'} className="codex-reasoning__popover" data-density="compact">
+    {open && <div ref={popupRef} id={id} role="dialog" aria-label={hideTrigger ? '模型设置' : reverseDepth ? `模型与${depthName}设置` : '思考能力设置'} className="codex-reasoning__popover" data-density="compact">
       {!hideTrigger && <div className="codex-reasoning__heading">
         <Zap className="codex-reasoning__bolt" size={19} fill="currentColor" aria-hidden="true" />
         <button type="button" className="codex-reasoning__model" aria-label="切换思考模型" onClick={onSelectModel}>
           <span className="codex-reasoning__level">{reverseDepth ? reverseLabel : label}<ChevronRight size={16} aria-hidden="true" /></span>
           <span className="codex-reasoning__model-name" title={modelLabel}>{modelLabel}</span>
         </button>
-        <button type="button" className="codex-reasoning__reset" aria-label={reverseDepth ? '恢复默认反推强度' : '恢复默认思考能力'}
-          title={reverseDepth ? '恢复默认：标准反推' : `恢复默认：${fallback ? effortLabels[fallback] : '不可用'}`}
+        <button type="button" className="codex-reasoning__reset" aria-label={reverseDepth ? `恢复默认${depthName}` : '恢复默认思考能力'}
+          title={reverseDepth ? `恢复默认：${depthOptions[1]!.label}` : `恢复默认：${fallback ? effortLabels[fallback] : '不可用'}`}
           disabled={reverseDepth ? reverseDepth.disabled : !fallback}
           onClick={() => { if (reverseDepth) reverseDepth.onChange('standard'); else if (fallback) onChange(fallback); }}><RotateCcw size={18} aria-hidden="true" /></button>
       </div>}
+      {!hideTrigger && reverseDepth && levels.length > 0 && <small className="codex-reasoning__section-label">模型思考能力</small>}
       {!hideTrigger && (levels.length > 0 || !reverseDepth) && <div className="codex-reasoning__track" style={{ '--reasoning-progress': progress } as CSSProperties}>
         <div className="codex-reasoning__fill" data-empty={index === 0 || undefined} aria-hidden="true" />
         <div className="codex-reasoning__stops" aria-hidden="true">
@@ -97,8 +103,8 @@ export function CodexReasoningPopover({ modelLabel, efforts, value, defaultValue
             if (effort) onChange(effort);
           }} />
       </div>}
-      {reverseDepth && <div className="codex-reasoning__reverse-depth" role="group" aria-label="反推强度">
-        {reverseDepthOptions.map((option) => <button key={option.value} type="button" aria-pressed={reverseDepth.value === option.value}
+      {reverseDepth && <div className="codex-reasoning__reverse-depth" role="group" aria-label={depthName}>
+        {depthOptions.map((option) => <button key={option.value} type="button" aria-pressed={reverseDepth.value === option.value}
           disabled={reverseDepth.disabled} title={option.title} className={reverseDepth.value === option.value ? 'is-active' : undefined}
           onClick={() => reverseDepth.onChange(option.value)}>{option.label}</button>)}
       </div>}

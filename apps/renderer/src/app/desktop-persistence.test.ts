@@ -13,6 +13,40 @@ import {
 import { PROJECT_STORAGE_KEY } from './project-persistence';
 
 describe('desktop persistence', () => {
+  it('does not adopt an old prepared-layer ACK after switching the active project', async () => {
+    const project = {...createStarterProject(),id:'old-owned-project'}, next = {...createStarterProject(),id:'new-owned-project'};
+    let finish!: (value:unknown)=>void;
+    const prepared = vi.fn(()=>new Promise(resolve=>{finish=resolve;}));
+    const bridge={openProject:vi.fn().mockResolvedValueOnce(createDesktopSession(project,'old-owned-session',4))
+      .mockResolvedValueOnce(createDesktopSession(next,'new-owned-session',9)),closeProject:vi.fn(async()=>{}),
+      projectImages:{importPreparedLayer:prepared,list:vi.fn(async()=>[])}};
+    const client=createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const importing=client.importProjectImage({kind:'agent_reference'} as never,
+      {arrayBuffer:async()=>new Uint8Array([137,80,78,71]).buffer} as File,
+      {preparedLayer:true,layerTarget:{projectId:project.id,nodeId:'layer',groupId:'group',layerId:'cupbody',sourceAssetId:'1'.repeat(16),
+        expectedResultAssetId:'2'.repeat(16),expectedRevision:4}} as never);
+    await vi.waitFor(()=>expect(prepared).toHaveBeenCalledOnce());
+    await client.openProject?.();
+    finish({asset:{assetId:'3'.repeat(16),mediaType:'image/png'},project,currentRevision:5});
+    expect(await importing).toBeNull();
+    expect((await client.hydrate()).project.id).toBe(next.id);
+  });
+  it('opens the durable canvas before a slow recovery inventory finishes', async () => {
+    const project = createStarterProject();
+    let finishRecovery!: (value: undefined) => void;
+    const getRecoveryPlan = vi.fn(() => new Promise<undefined>((resolve) => { finishRecovery = resolve; }));
+    const client = createDesktopPersistenceClient({
+      openProject: async () => createDesktopSession(project, 'slow-recovery', 0), getRecoveryPlan,
+    } as never);
+    let opened = false;
+    const opening = client.openProject!().then(() => { opened = true; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const openedBeforeInventory = opened;
+    finishRecovery(undefined);
+    await opening;
+    expect(openedBeforeInventory).toBe(true);
+  });
   it('imports an in-memory refined PNG without a file path or clipboard fallback', async () => {
     const project=createStarterProject();
     const prepared=vi.fn(async()=>null),dropped=vi.fn(async()=>null),clipboard=vi.fn(async()=>null);
@@ -371,6 +405,25 @@ describe('desktop persistence', () => {
     expect(analyzeReversePrompt).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'comfly', sessionId: 'created-reverse-session',
     }));
+  });
+
+  it('checks the internal reverse execution boundary after a pending writable session resolves without exposing it to IPC', async () => {
+    const project = createStarterProject();
+    let finishCreate!: (session: ReturnType<typeof createDesktopSession>) => void;
+    const createProject = vi.fn(() => new Promise<ReturnType<typeof createDesktopSession>>(resolve => { finishCreate = resolve; }));
+    const nativeAnalyze = vi.fn(async () => ({} as never));
+    const client = createDesktopPersistenceClient({ createProject, openProject: async () => null,
+      provider: { analyzeReversePrompt: nativeAnalyze }, getRecoveryPlan: async () => ({ candidates: [] }) } as never);
+    await client.hydrate();
+    let allowed = true;
+    const beforeProviderDispatch = vi.fn(() => { if (!allowed) throw Object.assign(new Error('Execution authorization changed'), { code: 'MCP_PERMISSION_DENIED' }); });
+    const running = client.analyzeReversePrompt!({ provider: 'comfly', run: {} as ReversePromptRun, media: [] }, beforeProviderDispatch);
+    const outcome = running.catch(error => error);
+    await vi.waitFor(() => expect(createProject).toHaveBeenCalledOnce());
+    expect(beforeProviderDispatch).not.toHaveBeenCalled();
+    allowed = false; finishCreate(createDesktopSession(project, 'pending-reverse-session', 0));
+    expect(await outcome).toMatchObject({ code: 'MCP_PERMISSION_DENIED' });
+    expect(beforeProviderDispatch).toHaveBeenCalledOnce(); expect(nativeAnalyze).not.toHaveBeenCalled();
   });
 
   it('receives a display-safe reverse provider error', async () => {
@@ -1465,7 +1518,7 @@ describe('desktop persistence', () => {
     const first = await client.openProject?.();
     const second = await client.openProject?.();
 
-    expect(first?.availableSnapshotIds).toEqual(['first-after']);
+    expect(first?.availableSnapshotIds).toEqual([]);
     expect(second).toMatchObject({
       availableSnapshotIds: [],
       project: { id: secondProject.id, name: secondProject.name },
@@ -1512,7 +1565,8 @@ describe('desktop persistence', () => {
     await client.openProject?.();
     const second = await client.openProject?.();
 
-    expect(second?.availableSnapshotIds).toEqual(['second-after']);
+    expect(second?.availableSnapshotIds).toEqual([]);
+    await expect(client.readRecoverySnapshotIds!()).resolves.toEqual(['second-after']);
     await expect(client.restore('first-after')).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
     expect(restore).not.toHaveBeenCalled();
     await client.restore('second-after');
@@ -1551,7 +1605,8 @@ describe('desktop persistence', () => {
     resolveFirstPlan(createRecoveryPlan(firstProject.id, 'first-after', 'candidate-first', 4));
     await firstOpen;
 
-    expect(second?.availableSnapshotIds).toEqual(['second-after']);
+    expect(second?.availableSnapshotIds).toEqual([]);
+    await expect(client.readRecoverySnapshotIds!()).resolves.toEqual(['second-after']);
     await expect(client.hydrate()).resolves.toMatchObject({
       availableSnapshotIds: ['second-after'],
       project: { id: secondProject.id },

@@ -3,9 +3,10 @@ import type { LayeringBox } from '../app/layering-selection';
 
 const clamp = (value: number, min = 0, max = 1) => Math.max(min, Math.min(max, value));
 type Point = { x: number; y: number };
-export function LayeringSelectionEditor({ url, label, width, height, selecting, disabled, box, onChange }: {
+export function LayeringSelectionEditor({ url, label, width, height, selecting, disabled, box, onChange, annotations = [] }: {
   url: string; label: string; width: number; height: number; selecting: boolean; disabled: boolean;
   box: LayeringBox | null; onChange: (box: LayeringBox | null) => void;
+  annotations?: readonly { box: LayeringBox; label: string; kind: 'keep' | 'clear' | 'glass' }[];
 }) {
   const container = useRef<HTMLDivElement>(null);
   const drag = useRef<{ pointerId: number; start: Point; box: LayeringBox | null; handle: string } | null>(null);
@@ -70,15 +71,23 @@ export function LayeringSelectionEditor({ url, label, width, height, selecting, 
         onChange({ ...box, x: clamp(box.x + (event.key === 'ArrowLeft' ? -step / width : event.key === 'ArrowRight' ? step / width : 0), 0, 1 - box.width),
           y: clamp(box.y + (event.key === 'ArrowUp' ? -step / height : event.key === 'ArrowDown' ? step / height : 0), 0, 1 - box.height) });
       }}>
+      {annotations.map((annotation, index) => <g key={index} data-refinement-region={annotation.kind} pointerEvents="none"
+        style={{ color: `var(--refinement-${annotation.kind})` }}>
+        <title>{annotation.label}</title>
+        <rect x={annotation.box.x * 1000} y={annotation.box.y * 1000} width={annotation.box.width * 1000} height={annotation.box.height * 1000}
+          stroke="currentColor" strokeWidth="1.5" vectorEffect="non-scaling-stroke" fill="currentColor" fillOpacity=".12" />
+        <text x={annotation.box.x * 1000 + 3 * 1000 / Math.max(imageWidth, 1)} y={annotation.box.y * 1000 + 13 * 1000 / Math.max(imageHeight, 1)}
+          fontSize={12 * 1000 / Math.max(imageHeight, 1)} fill="currentColor" stroke="var(--gate-card)" strokeWidth="2" paintOrder="stroke" vectorEffect="non-scaling-stroke">{index + 1}</text>
+      </g>)}
       {box && <>
         <path d={`M0,0H1000V1000H0Z M${box.x * 1000},${box.y * 1000}v${box.height * 1000}h${box.width * 1000}v${-box.height * 1000}Z`} fill="rgba(0,0,0,.4)" fillRule="evenodd" pointerEvents="none" />
         <rect data-handle="move" x={box.x * 1000} y={box.y * 1000} width={box.width * 1000} height={box.height * 1000}
-          fill="transparent" stroke="var(--gate-accent)" strokeWidth="2" vectorEffect="non-scaling-stroke" style={{ cursor: 'move' }} />
+          fill="transparent" stroke="var(--selection-stroke, var(--gate-accent))" strokeWidth="2" vectorEffect="non-scaling-stroke" style={{ cursor: 'move' }} />
         {(['nw', 'ne', 'se', 'sw'] as const).map(handle => <rect key={handle} data-handle={handle}
           x={(box.x + (handle.includes('e') ? box.width : 0)) * 1000 - 6 * 1000 / Math.max(imageWidth, 1)}
           y={(box.y + (handle.includes('s') ? box.height : 0)) * 1000 - 6 * 1000 / Math.max(imageHeight, 1)}
           width={12 * 1000 / Math.max(imageWidth, 1)} height={12 * 1000 / Math.max(imageHeight, 1)}
-          fill="var(--gate-accent)" style={{ cursor: `${handle}-resize` }} />)}
+          fill="var(--selection-stroke, var(--gate-accent))" style={{ cursor: `${handle}-resize` }} />)}
       </>}
     </svg>}
     <div className="image-layering-dialog__source-stage-meta"><span>{selecting ? '拖动框选 · 拖框移动 · 拖角缩放' : '源图预览'}</span><small>原图保留</small></div>

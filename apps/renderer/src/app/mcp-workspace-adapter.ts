@@ -28,6 +28,9 @@ import {
   type PaidJobConfirmationSubject,
 } from './mcp-confirmation-store';
 import { mcpUiConfirmationStore } from './mcp-ui-confirmation-store';
+import { isShadowOnlyLayer } from './shadow-layer-role';
+import { invalidateLayeringProof } from './layering-proof';
+import { createMcpLayeringOperations, type McpLayeringCallbacks } from './mcp-layering-operations';
 
 export interface McpWorkspaceJobSummary {
   readonly id: string;
@@ -57,9 +60,13 @@ export interface McpPaidJobRoute {
 export interface McpPaidJobExecutionRoute extends McpPaidJobRoute {
   readonly projectId: string;
   readonly expectedRevision: number;
+  readonly projectSnapshotHash?: string;
+  /** Internal callback only; never included in a tool response or persisted job. */
+  readonly isExecutionAuthorized?: () => boolean;
 }
 
 export interface McpWorkspaceSource {
+  readonly layering?: McpLayeringCallbacks;
   getProject(): CanvasProject;
   getRevision(): number;
   getSelection(): { readonly nodeIds: readonly string[]; readonly edgeIds: readonly string[] };
@@ -108,6 +115,7 @@ export function createMcpWorkspaceAdapter(
 ): McpWorkspaceAdapter {
   const pendingPlans = new Map<string, PendingPlan>();
   const pendingPaidJobs = new Map<string, PendingPaidJob>();
+  const layeringOperations = createMcpLayeringOperations(source, confirmations);
 
   const permissionDenied = (tool: CanvasMcpRequest['tool'], required: keyof McpPermissionFlags): CanvasMcpResponse | null => {
     let permissions: McpPermissionFlags;
@@ -140,6 +148,11 @@ export function createMcpWorkspaceAdapter(
           if (denied !== null) return denied;
           return success({
             toolCount: CANVAS_MCP_TOOL_DEFINITIONS.length,
+            runOperations: source.layering ? [
+              { operation: 'analyze_layering', node: 'owned image_input/upload_image or single current image_generation/result_output result; batches require explicit image input', permissions: ['readCanvas', 'executeAiGeneration'], confirmation: 'separate_once_ttl', returns: 'managed job with reviewed plan' },
+              { operation: 'start_layering', node: 'same analyzed image', permissions: ['readCanvas', 'editCanvas', 'executeAiGeneration'], confirmation: 'separate_once_ttl', returns: 'dispatcher receipt only; poll result.jobIds for generation, then inspect layer quality' },
+              { operation: 'export_layered_psd', node: 'formal source-pixel image_layering group', permissions: ['readCanvas', 'exportFiles'], confirmation: 'separate_once_ttl', returns: 'saved/opened/cancelled receipt without paths' },
+            ] : [],
             modules: listCanvasModuleDefinitions().map((definition) => ({
               type: definition.type,
               primaryName: definition.primaryName,
@@ -151,7 +164,7 @@ export function createMcpWorkspaceAdapter(
               limitations: definition.limitations,
               recommendedDownstreamModuleTypes: [...definition.recommendedDownstreamModuleTypes],
               defaultConfig: definition.createDefaultConfig(),
-              mcpRunnable: paidJobKind(definition.type) !== null,
+              mcpRunnable: paidJobKind(definition.type) !== null || (source.layering !== undefined && ['image_input', 'upload_image', 'result_output', 'image_layering'].includes(definition.type)),
               capabilities: [...definition.capabilities],
               ports: definition.ports.map((port) => ({
                 id: port.id,
@@ -178,6 +191,8 @@ export function createMcpWorkspaceAdapter(
         case 'canvas_get_job_status': {
           const denied = permissionDenied(request.tool, 'readCanvas');
           if (denied !== null) return denied;
+          const layeringJob = layeringOperations.getJob(request.jobId);
+          if (layeringJob) return layeringJob;
           const job = source.getJobs().find((candidate) => candidate.id === request.jobId);
           return job ? success(publicJob(job)) : error('JOB_NOT_FOUND', 'Managed Canvas Atelier job was not found.');
         }
@@ -246,6 +261,12 @@ export function createMcpWorkspaceAdapter(
           return planWorkflow(request.expectedRevision, 'Delete the current Canvas Atelier selection', mutations);
         }
         case 'canvas_run_node': {
+          if (request.operation !== undefined) {
+            let permissions: McpPermissionFlags;
+            try { permissions = options.getPermissions?.() ?? DEFAULT_MCP_PERMISSION_FLAGS; } catch { permissions = DEFAULT_MCP_PERMISSION_FLAGS; }
+            return layeringOperations.handle(request, permissions);
+          }
+          if (request.analysis || request.layering || request.openPhotoshop !== undefined) return error('MCP_INVALID_REQUEST', 'Layering options require an explicit typed operation.');
           const denied = permissionDenied(request.tool, 'executeAiGeneration');
           if (denied !== null) return denied;
           return await runNode(request.expectedRevision, request.nodeId, request.confirmationToken);
@@ -253,6 +274,8 @@ export function createMcpWorkspaceAdapter(
         case 'canvas_cancel_job': {
           const denied = permissionDenied(request.tool, 'executeAiGeneration');
           if (denied !== null) return denied;
+          const layeringCancellation = layeringOperations.cancel(request.jobId);
+          if (layeringCancellation) return layeringCancellation;
           const job = source.getJobs().find((candidate) => candidate.id === request.jobId);
           if (!job) return error('JOB_NOT_FOUND', 'Managed Canvas Atelier job was not found.');
           await source.cancelJob(request.jobId);
@@ -418,7 +441,9 @@ function planWorkflow(
     try {
       resolvedRoute = await source.resolvePaidJobRoute?.(node);
     } catch (cause) {
-      return error('MODEL_ROUTE_UNAVAILABLE', stableMessage(cause));
+      const code = cause instanceof Error && 'code' in cause && cause.code === 'REFERENCE_MENTION_INVALID'
+        ? 'REFERENCE_MENTION_INVALID' : 'MODEL_ROUTE_UNAVAILABLE';
+      return error(code, stableMessage(cause));
     }
     const currentProject = source.getProject();
     if (currentProject.id !== expectedProjectId
@@ -442,11 +467,15 @@ function planWorkflow(
       mcpUiConfirmationStore.dismiss(requestId);
     }
     const executeResolvedRun = async (projectId: string): Promise<CanvasMcpResponse> => {
+      const denied = permissionDenied('canvas_run_node', 'executeAiGeneration');
+      if (denied !== null) return denied;
       const run = resolvedRoute === undefined
         ? await source.runNode(nodeId)
         : await source.runNode(nodeId, {
           projectId,
           expectedRevision,
+          projectSnapshotHash: expectedProjectHash,
+          isExecutionAuthorized: () => permissionDenied('canvas_run_node', 'executeAiGeneration') === null,
           provider: resolvedRoute.provider,
           modelRoute: resolvedRoute.modelRoute,
         });
@@ -598,6 +627,7 @@ function confirmPlan(planId: string): McpConfirmationGrant {
     confirmPaidJob,
     rejectPaidJob,
     invalidateProject(projectId) {
+      layeringOperations.invalidateProject(projectId);
       confirmations.invalidateProject(projectId);
       for (const [planId, plan] of pendingPlans) {
         if (plan.projectId !== projectId) continue;
@@ -661,7 +691,7 @@ function publicConfig(config: Readonly<Record<string, unknown>>): Record<string,
   }));
 }
 
-function hashPublicProjectExecutionState(project: CanvasProject): string {
+export function hashPublicProjectExecutionState(project: CanvasProject): string {
   return hashMcpValue({
     projectId: project.id,
     version: project.version,
@@ -730,7 +760,10 @@ function applyMcpMutations(project: CanvasProject, mutations: readonly CanvasWor
     if (mutation.kind === 'create_node') {
       if (nodes.some((node) => node.id === mutation.nodeId)) throw new Error(`Node already exists: ${mutation.nodeId}`);
       const node = createCanvasModuleNode(mutation.nodeId, mutation.moduleType, mutation.position);
-      if (mutation.config) node.data.config = { ...node.data.config, ...cloneJson(mutation.config) };
+      if (mutation.config) {
+        assertMcpLayerConfigChange(node, mutation.config);
+        node.data.config = { ...node.data.config, ...cloneJson(mutation.config) };
+      }
       nodes.push(node);
       continue;
     }
@@ -738,7 +771,25 @@ function applyMcpMutations(project: CanvasProject, mutations: readonly CanvasWor
       const index = nodes.findIndex((node) => node.id === mutation.nodeId);
       const node = nodes[index];
       if (!node || node.type !== 'module') throw new Error(`Unknown module node: ${mutation.nodeId}`);
+      assertMcpLayerConfigChange(node, mutation.config);
       nodes[index] = { ...node, data: { ...node.data, config: { ...node.data.config, ...cloneJson(mutation.config) } } };
+      if (mcpLayerPlanChanged(node, mutation.config)) {
+        const groupId = node.data.config.groupId;
+        const planPatch = Object.fromEntries(Object.entries(mutation.config).filter(([key]) => MCP_LAYER_PLAN_FIELDS.has(key)));
+        nodes = nodes.map(candidate => {
+          if (candidate.type !== 'module'
+            || (candidate.data.moduleType !== 'image_layer' && candidate.data.moduleType !== 'image_layering')
+            || (candidate.id !== node.id && (typeof groupId !== 'string' || !groupId || candidate.data.config.groupId !== groupId))) return candidate;
+          const config = invalidateLayeringProof(candidate.data.config);
+          if (candidate.data.moduleType === 'image_layering' && Array.isArray(config.planLayers)) {
+            config.planLayers = config.planLayers.map(plan => (
+              plan && typeof plan === 'object' && !Array.isArray(plan) && plan.layerId === node.data.config.layerId
+                ? { ...plan, ...cloneJson(planPatch) } : plan
+            ));
+          }
+          return { ...candidate, data: { ...candidate.data, config: { ...config, status: 'validating' } } };
+        });
+      }
       continue;
     }
     if (mutation.kind === 'connect_nodes') {
@@ -779,6 +830,49 @@ function applyMcpMutations(project: CanvasProject, mutations: readonly CanvasWor
   const graphIssues = validateCanvasModuleGraph(nextProject);
   if (graphIssues.length > 0) throw new Error(graphIssues.map((issue) => issue.message).join('; '));
   return nextProject;
+}
+
+const MCP_LAYER_PROTECTED_FIELDS = new Set([
+  'jobId', 'lastJobId', 'pixelMode', 'maskSpace', 'pixelColorSpace', 'preparedRgb', 'layerPrepared',
+  'refinedFromAssetId', 'mattingRegions', 'sourceAssetId', 'sourceNodeId', 'groupId', 'layerId', 'layerKind',
+  'canvasWidth', 'canvasHeight', 'layerSelection', 'planLayers', 'planOwnershipLayers', 'planElements', 'elementIds', 'layers', 'elements', 'confirmationDigest',
+  'layeringOutputContract', 'foregroundOutputContract', 'layeringConfirmationDigest', 'resultRepresentation',
+  'needsReconfirm', 'semanticReviewAccepted', 'semanticReviewDigest', 'assemblyConfirmationDigest',
+  'formatQualityStatus', 'qualityFormatCheckedAssetId', 'foregroundProvenance', 'foregroundValidation',
+  'analysisId', 'planVersion', 'status', 'requestCount',
+]);
+
+// Identity, selection, and provider contracts remain protected above. These
+// editable fields must update the visible plan and invalidate its old proof.
+const MCP_LAYER_PLAN_FIELDS = new Set(['name', 'description', 'order', 'sourceBounds']);
+
+function mcpLayerPlanChanged(node: CanvasModuleNode, patch: Readonly<Record<string, unknown>>): boolean {
+  return node.data.moduleType === 'image_layer' && Object.entries(patch).some(([key, value]) => (
+    MCP_LAYER_PLAN_FIELDS.has(key) && !sameMcpValue(node.data.config[key], value)
+  ));
+}
+
+function assertMcpLayerConfigChange(node: CanvasModuleNode, patch: Readonly<Record<string, unknown>>): void {
+  if (node.data.moduleType !== 'image_layer' && node.data.moduleType !== 'image_layering') return;
+  for (const [key, value] of Object.entries(patch)) {
+    if ((MCP_LAYER_PROTECTED_FIELDS.has(key) || /^(?:quality|result|previous)/u.test(key))
+      && (!Object.prototype.hasOwnProperty.call(node.data.config, key) || !sameMcpValue(node.data.config[key], value))) {
+      throw new Error(`图层“${node.id}”的受保护字段 ${key} 只能由真实分层任务、质量检查或本地精修更新；MCP 可编辑名称、可见性、透明度、顺序和原图范围。`);
+    }
+  }
+  if (node.data.moduleType === 'image_layer'
+    && isShadowOnlyLayer(node.data.config) !== isShadowOnlyLayer({ ...node.data.config, ...patch })) {
+    throw new Error(`图层“${node.id}”的 name/description 变更会改变受保护的阴影层身份，请通过分层方案重新确认。`);
+  }
+}
+
+function sameMcpValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) && Array.isArray(right)) return left.length === right.length && left.every((value, index) => sameMcpValue(value, right[index]));
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object' || Array.isArray(left) || Array.isArray(right)) return false;
+  const a = left as Record<string, unknown>, b = right as Record<string, unknown>;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every(key => Object.prototype.hasOwnProperty.call(b, key) && sameMcpValue(a[key], b[key]));
 }
 
 async function commitReplacement(source: McpWorkspaceSource, nextProject: CanvasProject, label: string): Promise<boolean> {

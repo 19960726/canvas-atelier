@@ -8,10 +8,12 @@ import { LayerScopePreview } from './LayerScopePreview';
 import { SourceForegroundPreview } from './SourceForegroundPreview';
 import { useSourceLayerPreview, type SourceLayerInput } from './source-layer-preview';
 import { decodeImageWithTimeout } from '../app/decode-image-timeout';
+import { getLayerPixelRepresentation } from '../app/layer-pixel-representation';
 
-type ManagedImage = Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'mediaType' | 'width' | 'height'>;
+type ManagedImage = Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'mediaType' | 'width' | 'height'>
+  & Partial<Pick<ProjectImageAssetSummary, 'sha256'>>;
 
-export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, job, onQualityResult, onVisibilityChange, onRefreshAsset, validatePixels = true, sourceDocumentInput = null }: {
+export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, job, onQualityResult, onVisibilityChange, onRefreshAsset, onReplaceAsset, validatePixels = true, sourceDocumentInput = null }: {
   nodeId: string;
   config: Readonly<Record<string, unknown>>;
   asset?: ManagedImage;
@@ -22,13 +24,21 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
   onQualityResult: (assetId: string, verdict: LayerQualityVerdict) => void | Promise<void>;
   onVisibilityChange: (visible: boolean) => void | Promise<void>;
   onRefreshAsset?: () => void | Promise<void>;
+  onReplaceAsset?: (file: File) => Promise<void>;
 }) {
   const [validation, setValidation] = useState<'idle' | 'checking' | 'complete'>('idle');
   const [assetLoadFailed, setAssetLoadFailed] = useState(false);
   const [validationSaveFailed, setValidationSaveFailed] = useState(false);
   const [retryValidation, setRetryValidation] = useState(0);
+  const [replacingAsset, setReplacingAsset] = useState(false);
+  const [replaceError, setReplaceError] = useState<string | null>(null);
+  const replacementInput = useRef<HTMLInputElement>(null);
   const [extractionFailure, setExtractionFailure] = useState<{ key: string; error: string | null } | null>(null);
-  const extractionKey = JSON.stringify([asset?.displayUrl, sourceAsset?.displayUrl, config.sourceBounds, config.layerSelection, config.maskSpace]);
+  const representation = getLayerPixelRepresentation(config, sourceAsset, asset);
+  const independentRgbaCandidate = representation.independentRgbaCandidate;
+  const extractSourceColors = !representation.preparedRgb && !independentRgbaCandidate && !representation.error;
+  const extractionKey = JSON.stringify([asset?.displayUrl, sourceAsset?.displayUrl, config.sourceBounds, config.layerSelection,
+    config.maskSpace, independentRgbaCandidate, config.foregroundProvenance, asset?.sha256, sourceAsset?.sha256]);
   const validatingAsset = useRef<string | null>(null);
   const onQualityResultRef = useRef(onQualityResult);
   onQualityResultRef.current = onQualityResult;
@@ -54,8 +64,7 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
   }, [asset, onRefreshAsset, resultAssetId]);
 
   useEffect(() => {
-    const oldResolutionFailure = qualityStatus === 'failed' && config.qualityReason === 'dimensions' && config.qualityValidationVersion !== 2;
-    if (!validatePixels || !asset || resultAssetId !== asset.assetId || (qualityStatus !== 'pending' && !oldResolutionFailure) || validatingAsset.current === asset.assetId) return;
+    if (!validatePixels || !asset || resultAssetId !== asset.assetId || !needsLayerPixelValidation(config) || validatingAsset.current === asset.assetId) return;
     validatingAsset.current = asset.assetId;
     let cancelled = false;
     setValidationSaveFailed(false);
@@ -70,17 +79,19 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
       cancelled = true;
       if (validatingAsset.current === asset.assetId) validatingAsset.current = null;
     };
-  }, [validatePixels, asset, sourceAsset, config.canvasHeight, config.canvasWidth, config.pixelMode, config.layerSelection, config.qualityReason, config.qualityValidationVersion, layerKind, qualityStatus, resultAssetId, retryValidation]);
+  }, [validatePixels, asset, sourceAsset, config.canvasHeight, config.canvasWidth, config.pixelMode, config.layerSelection, config.qualityReason,
+    config.qualityValidationVersion, config.formatQualityStatus, config.qualityFormatCheckedAssetId, config.status, layerKind, qualityStatus, resultAssetId, retryValidation]);
 
-  const extractionError = !sourceDocumentInput && config.pixelMode === 'source' && config.pixelColorSpace !== 'foreground'
+  const extractionError = (!sourceDocumentInput || backgroundPreview.error) && config.pixelMode === 'source' && extractSourceColors
     && extractionFailure?.key === extractionKey ? extractionFailure.error : null;
-  const status = backgroundPreview.error || extractionError ? 'blocked' : job?.status === 'failed' || job?.status === 'cancelled' ? job.status
+  const contentOverlap = typeof backgroundPreview.error === 'string' && backgroundPreview.error.includes('内容重叠');
+  const status = representation.error || backgroundPreview.error || extractionError ? 'blocked' : job?.status === 'failed' || job?.status === 'cancelled' ? job.status
     : qualityStatus === 'failed' ? 'failed'
       : qualityStatus === 'passed' ? 'completed'
         : job?.status === 'submitting' || job?.status === 'running' ? 'running'
           : job?.status === 'queued' || config.status === 'queued' ? 'queued'
             : job?.status === 'completed' || config.status === 'validating' ? 'validating' : 'planned';
-  const statusText = status === 'blocked' ? '合成受阻 · 图片已返回' : status === 'planned' ? '等待任务' : status === 'queued' ? '排队中' : status === 'running' ? '生成中'
+  const statusText = status === 'blocked' ? contentOverlap ? '内容重叠 · 图片已返回' : '合成受阻 · 图片已返回' : status === 'planned' ? '等待任务' : status === 'queued' ? '排队中' : status === 'running' ? '生成中'
     : status === 'validating' ? !asset && resultAssetId ? assetLoadFailed ? '图片读取失败' : '图片已返回，正在读取'
       : validationSaveFailed ? '验证结果保存失败' : validation === 'checking' ? '检查透明像素…' : '检查透明像素'
       : status === 'completed' ? '格式检查通过 · 待检查边缘' : status === 'cancelled' ? '任务已取消' : '需要检查';
@@ -93,18 +104,27 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
     <div className="image-layer-node__preview">
       {asset && resultAssetId === asset.assetId && scope
         ? config.pixelMode === 'source' && sourceDocumentInput
-          ? preparedLayer ? <div style={{ position: 'relative', width: '100%', aspectRatio: `${sourceDocumentInput.width}/${sourceDocumentInput.height}` }}>
+          ? preparedLayer ? <div className="image-layer-node__source-frame" style={{ aspectRatio: `${sourceDocumentInput.width}/${sourceDocumentInput.height}`,
+              maxWidth: 170 * sourceDocumentInput.width / sourceDocumentInput.height }}>
               <img src={preparedLayer.asset.displayUrl} alt={`${layerName}图层预览`} draggable={false} style={{ position: 'absolute',
                 left: `${preparedLayer.record.x / sourceDocumentInput.width * 100}%`, top: `${preparedLayer.record.y / sourceDocumentInput.height * 100}%`,
                 width: `${preparedLayer.record.width / sourceDocumentInput.width * 100}%`, height: `${preparedLayer.record.height / sourceDocumentInput.height * 100}%` }} />
-            </div> : backgroundPreview.error ? <img src={asset.displayUrl} alt={`${layerName}已返回原始图片，尚未合成`} draggable={false} /> : <span role="status">正在处理图层像素…</span>
+            </div> : backgroundPreview.error
+              ? layerKind === 'transparent' && extractSourceColors && sourceAsset
+                ? <SourceForegroundPreview sourceUrl={sourceAsset.displayUrl} maskUrl={asset.displayUrl} bounds={config.sourceBounds} selection={scope}
+                    onError={error => setExtractionFailure({ key: extractionKey, error })}
+                    maskSpace={config.maskSpace === 'source' ? 'source' : 'bounds'}
+                    width={sourceAsset.width ?? Number(config.canvasWidth)} height={sourceAsset.height ?? Number(config.canvasHeight)} label={`${layerName}图层预览`} />
+                : <img src={asset.displayUrl} alt={`${layerName}已返回原始图片，尚未合成`} draggable={false} />
+              : <span role="status">正在处理图层像素…</span>
           : config.pixelMode === 'source' && layerKind === 'background'
           ? backgroundPreview.preview ? <img src={backgroundPreview.preview.layers[0]!.asset.displayUrl} alt={`${layerName}图层预览`} draggable={false} />
             : <span role="status">{backgroundPreview.error ?? (sourceDocumentInput ? '正在保留原图背景像素…' : '等待前景蒙版完成背景补全')}</span>
-          : config.pixelMode === 'source' && config.pixelColorSpace !== 'foreground' && layerKind === 'transparent' && sourceAsset
+          : config.pixelMode === 'source' && extractSourceColors && layerKind === 'transparent' && sourceAsset
           ? <SourceForegroundPreview sourceUrl={sourceAsset.displayUrl} maskUrl={asset.displayUrl} bounds={config.sourceBounds} selection={scope}
             onError={error => setExtractionFailure({ key: extractionKey, error })}
             maskSpace={config.maskSpace === 'source' ? 'source' : 'bounds'}
+            independentRgba={independentRgbaCandidate}
             width={sourceAsset.width ?? Number(config.canvasWidth)} height={sourceAsset.height ?? Number(config.canvasHeight)} label={`${layerName}图层预览`} />
           : <LayerScopePreview url={asset.displayUrl} sourceUrl={sourceAsset?.displayUrl} selection={scope} background={layerKind === 'background'}
           width={asset.width ?? 1} height={asset.height ?? 1} label={`${layerName}图层预览`} />
@@ -112,20 +132,45 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, sourceAsset, jo
       <span className="image-layer-node__kind">{layerKind === 'background' ? '背景' : '透明层'}</span>
     </div>
     <div className="image-layer-node__body">
-      {backgroundPreview.error && <details className="image-layer-node__error"><summary>查看合成问题</summary><p>{backgroundPreview.error}</p><p>本层返图已保留。请在分层工作台检查提示中的图层和背景。</p></details>}
+      {backgroundPreview.error && <details className="image-layer-node__error"><summary>{contentOverlap ? '查看图层内容重叠原因' : '查看图层失败原因'}</summary><p>{backgroundPreview.error}</p><p>本层返图已保留。请在分层工作台检查提示中的图层和背景。</p></details>}
       <div className="image-layer-node__heading"><strong title={layerName}>{layerName}</strong><span aria-live="polite" data-status={status} title={status === 'completed' ? '图片格式、画幅及透明通道已检查；提取范围和边缘请对照原图确认。' : undefined}>{statusText}</span></div>
       {status === 'running' && job?.progress !== undefined && <div className="image-layer-node__progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(job.progress * 100)}><span style={{ width: `${Math.round(job.progress * 100)}%` }} /></div>}
       {(jobError || qualityReason) && <p className="image-layer-node__error" role="status">{qualityReason ?? jobError}</p>}
       {!scope && <p role="alert">保存的分层范围无效，请重新选择。</p>}
+      {representation.error && <p className="image-layer-node__error" role="alert">{representation.error}</p>}
       {assetLoadFailed && !asset && resultAssetId && <button type="button" onClick={() => { setAssetLoadFailed(false); void onRefreshAsset?.(); }}>重新读取图片</button>}
       {validationSaveFailed && <button type="button" onClick={() => { validatingAsset.current = null; setRetryValidation((value) => value + 1); }}>重试本地验证</button>}
-      <button className="image-layer-node__visibility" type="button" aria-pressed={visible} aria-label={`${visible ? '隐藏' : '显示'}图层 ${layerName}`} title={visible ? '隐藏图层' : '显示图层'} onClick={() => { void onVisibilityChange(!visible); }}><span>{visible ? <Eye size={14} /> : <EyeOff size={14} />}</span>{visible ? '可见' : '隐藏'}</button>
+      <div className="image-layer-node__actions">
+        <button className="image-layer-node__visibility" type="button" aria-pressed={visible} aria-label={`${visible ? '隐藏' : '显示'}图层 ${layerName}`} title={visible ? '隐藏图层' : '显示图层'} onClick={() => { void onVisibilityChange(!visible); }}><span>{visible ? <Eye size={14} /> : <EyeOff size={14} />}</span>{visible ? '可见' : '隐藏'}</button>
+        {onReplaceAsset && <>
+          <input ref={replacementInput} type="file" accept="image/png" aria-label="选择替换图层 PNG" hidden
+            disabled={replacingAsset || job?.status === 'queued' || job?.status === 'submitting' || job?.status === 'running'}
+            onChange={event => {
+              const file = event.target.files?.[0]; event.currentTarget.value = '';
+              if (!file || replacingAsset) return;
+              setReplacingAsset(true); setReplaceError(null);
+              void Promise.resolve().then(() => onReplaceAsset(file)).catch(error => {
+                setReplaceError(error instanceof Error ? error.message : '图层素材替换失败');
+              }).finally(() => setReplacingAsset(false));
+            }} />
+          <button className="image-layer-node__visibility" type="button"
+            title="导入按原图完整尺寸保存的 PNG 图层，替换后重新检查"
+            disabled={replacingAsset || job?.status === 'queued' || job?.status === 'submitting' || job?.status === 'running'}
+            onClick={() => replacementInput.current?.click()}>{replacingAsset ? '正在替换…' : '替换图层素材'}</button>
+        </>}
+      </div>
+      {replaceError && <p className="image-layer-node__error" role="alert">{replaceError}</p>}
     </div>
   </section>;
 }
 
 export function needsLayerPixelValidation(config: Readonly<Record<string, unknown>>): boolean {
+  // Current format results release the serial queue, including explicit failures.
+  // Semantic review remains separate from this asset-bound pixel check.
+  if (typeof config.resultAssetId === 'string' && (config.formatQualityStatus === 'passed' || config.formatQualityStatus === 'failed')
+    && config.qualityFormatCheckedAssetId === config.resultAssetId && config.qualityValidationVersion === 2) return false;
   return typeof config.resultAssetId === 'string' && (config.qualityStatus === 'pending' || config.qualityStatus === undefined
+    || (config.qualityStatus === 'passed' && !['queued', 'submitting', 'running'].includes(String(config.status)))
     || (config.qualityStatus === 'failed' && config.qualityReason === 'dimensions' && config.qualityValidationVersion !== 2));
 }
 

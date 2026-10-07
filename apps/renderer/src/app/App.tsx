@@ -1,13 +1,14 @@
 import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
-import { normalizeImageOutputFormat, normalizeImageBackground, type CanvasModuleNode } from '@agent-canvas/domain';
+import { applyProjectTransaction, normalizeImageOutputFormat, normalizeImageBackground, type CanvasModuleNode } from '@agent-canvas/domain';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import { CanvasWorkspace } from '../canvas/CanvasWorkspace';
 import { preloadGenerationHistoryFirstPage } from '../history/history-first-page-cache';
-import { useAppStore } from './app-store';
+import { assertVideoKeyframeRoute, captureLayeringOperationOwner, resolveConnectedVideoGenerationMedia, resolveMcpNodeExecutionInputs, useAppStore } from './app-store';
 import { getActiveProjectSessionId } from './desktop-persistence';
 import { getMcpCanvasSelection, resetMcpCanvasSelection } from './mcp-canvas-selection';
 import {
   createMcpWorkspaceAdapter,
+  hashPublicProjectExecutionState,
   type McpPaidJobExecutionRoute,
   type McpWorkspaceAdapter,
   type McpWorkspaceJobSummary,
@@ -19,6 +20,14 @@ import { readMcpPermissions } from '../settings/mcp-permissions';
 import { filterModelJobsForProject } from '../jobs/project-model-jobs';
 import { normalizeImageQuality } from './image-generation-quality';
 import { listRunnableProviderProfiles, selectGenerationProviderProfile, selectReverseProviderProfile } from './provider-profiles';
+import { analyzeImageLayering } from './layering-analysis';
+import { confirmLayeringPlan } from './layering-plan';
+import { readLayeringSelection } from './layering-selection';
+import { exportMcpLayeredPsd } from './mcp-layered-psd';
+import { eligibleForLayeringRoute, PRODUCTION_LAYERING_ROUTE_EVIDENCE } from './layering-route-evidence';
+import type { McpLayeringCallbacks } from './mcp-layering-operations';
+import { buildLayeringGraphTransaction } from './layering-graph';
+import { resolveMcpLayeringSource } from './mcp-layering-source';
 
 let hydrationStarted = false;
 let hydrationReady: Promise<void> | null = null;
@@ -256,11 +265,94 @@ function getMcpWorkspaceAdapter(): McpWorkspaceAdapter {
     runNode: runMcpCanvasNode,
     cancelJob: cancelMcpCanvasJob,
     requestMediaImport: requestMcpMediaImport,
+    layering: mcpLayeringCallbacks,
   }, undefined, { getPermissions: readMcpPermissions });
   return mcpWorkspaceAdapter;
 }
 
+function mcpManagedSource(nodeId: string) {
+  const state = useAppStore.getState();
+  const source = resolveMcpLayeringSource(state.project, state.projectImages, nodeId);
+  return { state, ...source, revision: state.desktopRevision, snapshot: JSON.stringify(state.project) };
+}
+
+const mcpLayeringCallbacks: McpLayeringCallbacks = {
+  validateSource: nodeId => { mcpManagedSource(nodeId); },
+  async analyze(nodeId, options, isCurrentOperation) {
+    const original = mcpManagedSource(nodeId), bridge = window.novusDesktop?.provider;
+    if (!bridge) throw new Error('Provider image-analysis bridge is unavailable.');
+    const isCurrentOwner = captureLayeringOperationOwner(() => useAppStore.getState(), original.asset.assetId);
+    const assertCurrent = () => {
+      const current = mcpManagedSource(nodeId), permissions = readMcpPermissions();
+      if (isCurrentOperation?.() === false || !isCurrentOwner() || !permissions.readCanvas || !permissions.executeAiGeneration
+        || current.snapshot !== original.snapshot || current.revision !== original.revision
+        || current.asset.assetId !== original.asset.assetId) throw new Error('Source or authorization changed during analysis.');
+      return current;
+    };
+    assertCurrent();
+    const profiles = await listRunnableProviderProfiles(bridge);
+    const profile = profiles.find(candidate => candidate.provider === options.provider && candidate.modelRoute === options.modelRoute && candidate.capabilities.includes('vision'));
+    const current = assertCurrent();
+    if (!profile) throw new Error('Source or route changed before analysis.');
+    const plan = await analyzeImageLayering({ sourceAssetId: current.asset.assetId, width: current.asset.width!, height: current.asset.height!, profile,
+      ...(options.mode ? { mode: options.mode } : {}), ...(options.targetLayerCount ? { targetLayerCount: options.targetLayerCount } : {}),
+      ...(options.selection ? { selection: readLayeringSelection(options.selection) } : {}),
+    }, request => useAppStore.getState().chatSkill(request, assertCurrent));
+    assertCurrent();
+    return plan;
+  },
+  async start(nodeId, plan, options) {
+    const original = mcpManagedSource(nodeId), bridge = window.novusDesktop?.provider;
+    if (!bridge || original.asset.assetId !== plan.sourceAssetId) throw new Error('The analyzed source is no longer available.');
+    const isCurrentOwner = captureLayeringOperationOwner(() => useAppStore.getState(), original.asset.assetId);
+    const ownerAuthorized = () => {
+      const permissions = readMcpPermissions();
+      return isCurrentOwner() && permissions.readCanvas && permissions.editCanvas && permissions.executeAiGeneration;
+    };
+    const assertOriginal = () => {
+      const current = mcpManagedSource(nodeId);
+      if (!ownerAuthorized() || current.snapshot !== original.snapshot || current.revision !== original.revision
+        || current.asset.assetId !== plan.sourceAssetId) throw new Error('Canvas or authorization changed before layer creation.');
+      return current;
+    };
+    assertOriginal();
+    const profiles = await listRunnableProviderProfiles(bridge);
+    assertOriginal();
+    const profile = profiles.find(candidate => candidate.provider === options.provider && candidate.modelRoute === options.modelRoute);
+    if (!profile || !eligibleForLayeringRoute(profile, PRODUCTION_LAYERING_ROUTE_EVIDENCE)) throw new Error('The selected route does not support transparent layering.');
+    const confirmation = await confirmLayeringPlan(plan, options.provider, options.modelRoute, options.resolution, new Date().toISOString());
+    const current = assertOriginal();
+    const groupId = `mcp-${crypto.randomUUID()}`;
+    const beforeCreateGuard = () => {
+      const state = useAppStore.getState();
+      return ownerAuthorized() && state.desktopRevision === original.revision && JSON.stringify(state.project) === original.snapshot;
+    };
+    const expectedCreated = applyProjectTransaction(current.state.project, buildLayeringGraphTransaction(current.state.project, plan, confirmation, groupId, original.sourceNodeId));
+    if (!await useAppStore.getState().createConfirmedLayeringGroup({ plan, confirmation, groupId, sourceNodeId: original.sourceNodeId, executionGuard: beforeCreateGuard })) throw new Error('Layer group could not be saved.');
+    const created = useAppStore.getState(), createdSnapshot = JSON.stringify(created.project), createdRevision = created.desktopRevision;
+    if (!ownerAuthorized() || createdRevision !== original.revision + 1 || createdSnapshot !== JSON.stringify(expectedCreated)) throw new Error('Canvas changed during layer group creation.');
+    // Only the exact durable binding written by startConfirmedLayering may advance this authorization.
+    const executionGuard = (binding?: { readonly project: typeof created.project; readonly revision: number }) => {
+      const state = useAppStore.getState();
+      if (!ownerAuthorized() || state.project.id !== original.state.project.id || !state.projectImages.some(asset => asset.assetId === plan.sourceAssetId)) return false;
+      return binding ? binding.revision === createdRevision + 1 && state.desktopRevision === binding.revision && JSON.stringify(state.project) === JSON.stringify(binding.project)
+        : state.desktopRevision === createdRevision && JSON.stringify(state.project) === createdSnapshot;
+    };
+    const dispatchGuard = () => {
+      const permissions = readMcpPermissions();
+      return permissions.readCanvas && permissions.editCanvas && permissions.executeAiGeneration;
+    };
+    if (!await useAppStore.getState().startConfirmedLayering({ plan, confirmation, groupId, executionGuard, dispatchGuard })) throw new Error('The confirmed layering batch could not be started.');
+    const jobs = useAppStore.getState().modelJobs.filter(job => job.layeringGroupId === groupId);
+    if (jobs.length !== confirmation.layerIds.length) throw new Error('Layer jobs are not fully tracked.');
+    return { groupNodeId: `image-layering-${groupId}`, jobIds: jobs.map(job => job.id) };
+  },
+  exportPsd: (nodeId, openPhotoshop) => exportMcpLayeredPsd({ nodeId, openPhotoshop, getProject: () => useAppStore.getState().project,
+    getRevision: () => useAppStore.getState().desktopRevision, getAssets: () => useAppStore.getState().projectImages, bridge: window.novusDesktop?.projectImages }),
+};
+
 export async function resolveMcpPaidJobRoute(node: CanvasModuleNode): Promise<McpPaidJobRoute | undefined> {
+  resolveMcpNodeExecutionInputs(useAppStore.getState().project, node.id);
   const bridge = window.novusDesktop?.provider;
   if (bridge === undefined) return undefined;
   const profiles = await listRunnableProviderProfiles(bridge);
@@ -276,6 +368,9 @@ export async function resolveMcpPaidJobRoute(node: CanvasModuleNode): Promise<Mc
       modelRoute,
       modelDisplayName,
     }, node.data.moduleType);
+    if (profile !== undefined && node.data.moduleType === 'video_generation') {
+      assertVideoKeyframeRoute(profile, resolveConnectedVideoGenerationMedia(useAppStore.getState().project, node.id));
+    }
     return profile === undefined ? undefined : { provider: profile.provider, modelRoute: profile.modelRoute };
   }
   if (node.data.moduleType !== 'reverse_agent') return undefined;
@@ -333,18 +428,23 @@ export async function runMcpCanvasNode(
   executionRoute?: McpPaidJobExecutionRoute,
 ): Promise<McpWorkspaceRunResult> {
   const state = useAppStore.getState();
+  if (executionRoute?.isExecutionAuthorized !== undefined && !executionRoute.isExecutionAuthorized()) {
+    throw Object.assign(new Error('AI generation permission is no longer enabled in Canvas Atelier settings.'), { code: 'MCP_PERMISSION_DENIED' });
+  }
   if (executionRoute !== undefined && (
     state.project.id !== executionRoute.projectId
     || state.desktopRevision !== executionRoute.expectedRevision
+    || (executionRoute.projectSnapshotHash !== undefined
+      && hashPublicProjectExecutionState(state.project) !== executionRoute.projectSnapshotHash)
   )) {
     throw new Error('Canvas changed after the paid model route was confirmed');
   }
   const node = state.project.nodes.find((candidate) => candidate.id === nodeId && candidate.type === 'module');
   if (node?.type !== 'module') return { started: false, jobIds: [] };
   const config = node.data.config;
+  const inputs = resolveMcpNodeExecutionInputs(state.project, nodeId);
   if (node.data.moduleType === 'image_generation') {
-    const prompt = readConfigString(config, 'prompt');
-    if (!prompt) return { started: false, jobIds: [] };
+    const prompt = inputs.prompt;
     const before = new Set(state.modelJobs.map((job) => job.id));
     const started = await state.runImageGenerationNode(nodeId, {
       prompt,
@@ -357,7 +457,7 @@ export async function runMcpCanvasNode(
       imageOutputFormat: normalizeImageOutputFormat(config.imageOutputFormat),
       imageBackground: normalizeImageBackground(config.imageBackground),
       outputCount: config.outputCount === 9 ? 9 : readOutputCount(config.outputCount),
-      referenceAssetIds: readStringList(config.referenceAssetIds),
+      referenceAssetIds: inputs.referenceAssetIds,
       ...(executionRoute === undefined ? {} : { executionRoute }),
     });
     return started
@@ -365,12 +465,11 @@ export async function runMcpCanvasNode(
       : { started: false, jobIds: [] };
   }
   if (node.data.moduleType === 'video_generation') {
-    const prompt = readConfigString(config, 'prompt');
-    if (!prompt) return { started: false, jobIds: [] };
+    const prompt = inputs.prompt;
     const before = new Set(state.modelJobs.map((job) => job.id));
     const started = await state.runVideoPreviewNode(nodeId, {
       prompt,
-      referenceAssetIds: readStringList(config.referenceAssetIds),
+      referenceAssetIds: inputs.referenceAssetIds,
       modelRoute: executionRoute?.modelRoute ?? (readConfigString(config, 'modelRoute') || undefined),
       aspectRatio: readConfigString(config, 'aspectRatio') || '16:9',
       keyframe: readConfigString(config, 'keyframe') || 'first-frame',
@@ -388,7 +487,8 @@ export async function runMcpCanvasNode(
     const startingProjectId = state.project.id;
     const previousRunId = readConfigString(config, 'reverseAgentRunId');
     let rejected = false;
-    void state.runReverseAgentNode(nodeId, undefined, executionRoute).catch(() => { rejected = true; });
+    let executionStarted = false;
+    void state.runReverseAgentNode(nodeId, undefined, executionRoute, () => { executionStarted = true; }).catch(() => { rejected = true; });
     for (let attempt = 0; attempt < 200; attempt += 1) {
       const currentState = useAppStore.getState();
       if (currentState.project.id !== startingProjectId) {
@@ -397,7 +497,7 @@ export async function runMcpCanvasNode(
       const current = currentState.project.nodes.find((candidate) => candidate.id === nodeId && candidate.type === 'module');
       const runId = current?.type === 'module' ? readConfigString(current.data.config, 'reverseAgentRunId') : '';
       const runState = current?.type === 'module' ? readConfigString(current.data.config, 'reverseAgentRunState') : '';
-      if (current?.type === 'module'
+      if (executionStarted && current?.type === 'module'
         && current.data.moduleType === 'reverse_agent'
         && runId
         && runId !== previousRunId
@@ -476,10 +576,6 @@ async function waitForInteractiveDocument(timeoutMs: number): Promise<boolean> {
 function readConfigString(config: Readonly<Record<string, unknown>>, key: string): string {
   const value = config[key];
   return typeof value === 'string' ? value.trim() : '';
-}
-
-function readStringList(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0).slice(0, 20) : [];
 }
 
 function readOutputCount(value: unknown): 1 | 2 | 3 | 4 | undefined {

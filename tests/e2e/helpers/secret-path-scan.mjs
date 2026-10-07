@@ -114,6 +114,79 @@ const privatePathFixtureFiles = new Set([
 ]);
 const allowedFindings = [
   {
+    file: 'apps/renderer/src/app/shadow-layer-role.ts',
+    name: 'private absolute path',
+    evidence: [String.raw`\\]/gu,'\\$&`],
+  },
+  // Synthetic rejection tests and UNC-detector syntax, exact evidence only.
+  {
+    "file": "apps/renderer/src/agent/creative-task-context.test.ts",
+    "name": "Authorization header",
+    "evidence": [
+      "Authorization: private-value',"
+    ]
+  },
+  {
+    "file": "apps/renderer/src/agent/creative-task-context.test.ts",
+    "name": "API key",
+    "evidence": [
+      "sk-fakecredential123"
+    ]
+  },
+  {
+    "file": "apps/renderer/src/agent/creative-task-context.ts",
+    "name": "private absolute path",
+    "evidence": [
+      "\\\\[^\\s",
+      "\\\\\\\\[^\\\\\\s]+\\\\[^\\s",
+      "\\\\\\\\[^\\\\\\s]+\\\\/u.test(value) || /data:[^,\\s;]+(?:;[^,\\s;]+)*;base64,/iu.test(value);"
+    ]
+  },
+  {
+    "file": "apps/renderer/src/agent/skill-chat-session-store.test.ts",
+    "name": "Authorization header",
+    "evidence": [
+      "Authorization: Bearer fakecredential123'"
+    ]
+  },
+  {
+    "file": "apps/renderer/src/agent/skill-chat-session-store.test.ts",
+    "name": "private absolute path",
+    "evidence": [
+      "C:\\\\private\\\\image.png",
+      "C:\\\\private\\\\source.png"
+    ]
+  },
+  {
+    "file": "apps/renderer/src/app/App.canvas-execution.test.ts",
+    "name": "Authorization header",
+    "evidence": [
+      "Authorization: Bearer sk-fixture-private-key';"
+    ]
+  },
+  {
+    "file": "apps/renderer/src/app/App.canvas-execution.test.ts",
+    "name": "API key",
+    "evidence": [
+      "sk-fixture-private-key"
+    ]
+  },
+  {
+    "file": "apps/renderer/src/app/mcp-layering-operations.test.ts",
+    "name": "private absolute path",
+    "evidence": [
+      "C:\\\\private\\\\layers.psd",
+      "C:\\\\private\\\\token.json",
+      "C:\\\\private\\\\token.json Bearer private-token-value"
+    ]
+  },
+  {
+    // Exact mdast-util-gfm-autolink-literal character class in this bundle.
+    file: 'apps/renderer/dist/assets/index-Ct-Bkuye.js',
+    name: 'private absolute path',
+    evidence: [String.raw`\\-.\\w]`],
+  },
+  {
     file: "tests/e2e/helpers/secret-path-scan.mjs",
     name: "scanner implementation hash",
     hash: "d921f807311bb751ab0733818d1faca35d6b022f0cb02c01ce23cd20aa99517c",

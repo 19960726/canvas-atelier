@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReactFlowProvider, useStoreApi } from '@xyflow/react';
-import { createCanvasModuleNode } from '@agent-canvas/domain';
+import { createCanvasModuleNode, getCanvasModuleDefinition } from '@agent-canvas/domain';
 import { ModuleNodeCard, persistImageLayerQuality, promptContainsImageMention, resolveAutomaticVideoAspectRatio } from './ModuleNodeCard';
 import { canonicalJson } from '../../../../packages/desktop-core/src/canonical-json';
 import { replaceProjectPersistenceClientForTests, resetAppStoreForTests, useAppStore } from '../app/app-store';
@@ -231,6 +231,20 @@ describe('ModuleNodeCard', () => {
     view.rerender(<ReactFlowProvider><FlowZoom zoom={0.7}><ModuleNodeCard id={node.id} data={node.data} selected={false} /></FlowZoom></ReactFlowProvider>);
     await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'full'));
     expect(screen.getByRole('button', { name: '锁定位置 / Lock position' })).toBeInTheDocument();
+  });
+
+  it.each(['image_input', 'upload_image', 'image_generation', 'image_layer'] as const)('retains the managed image preview for %s at low zoom', async moduleType => {
+    const node = createCanvasModuleNode('overview-managed-image', moduleType, { x: 0, y: 0 });
+    node.data.config = moduleType === 'image_generation' ? { resultAssetIds: [projectImage.assetId] }
+      : moduleType === 'image_layer' ? { resultAssetId: projectImage.assetId } : { assetId: projectImage.assetId };
+    useAppStore.setState(state => ({ project: { ...state.project, assets: [projectImage], nodes: [node] }, projectImages: [projectImage] }));
+    render(<ReactFlowProvider><FlowZoom zoom={0.2}>
+      <ModuleNodeCard id={node.id} data={node.data} selected={false} />
+    </FlowZoom></ReactFlowProvider>);
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'overview'));
+    expect(screen.getByRole('img', { name: projectImage.label })).toHaveAttribute('src', projectImage.displayUrl);
+    expect(screen.queryByRole('button', { name: '更换图像 / Replace image' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open image generation editor' })).not.toBeInTheDocument();
   });
 
   it('uses the lightweight overview earlier on large canvases while preserving selected node controls', async () => {
@@ -609,7 +623,7 @@ describe('ModuleNodeCard', () => {
     expect(summary).toHaveAttribute('data-editor-expanded', 'true');
     expect(summary).toHaveAttribute('data-has-result', 'false');
     expect(container.querySelector('.module-node__generation-editor-preview--empty')).not.toBeNull();
-    expect(screen.getByText('图片生成 V2')).toBeInTheDocument();
+    expect(screen.getByText('图片预览')).toBeInTheDocument();
 
     const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     const contract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
@@ -2000,9 +2014,9 @@ describe('ModuleNodeCard', () => {
 
     expect(screen.getAllByText('图片生成')[0]).toBeVisible();
     expect(screen.getByText('Image Generation')).toBeVisible();
-    expect(document.querySelectorAll('[data-module-type="image_generation"] [data-port-direction="input"] .react-flow__handle')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-module-type="image_generation"] [data-port-direction="input"] .react-flow__handle:not([data-visual-alias])')).toHaveLength(1);
     expect(document.querySelector('[data-port-id="references"][data-port-direction="input"]')).not.toBeNull();
-    expect(document.querySelector('[data-port-id="prompt"][data-port-direction="input"]')).toBeNull();
+    expect(document.querySelector('.react-flow__handle[data-port-id="prompt"][data-port-direction="input"]')).toHaveAttribute('data-visual-alias', 'true');
     expect(document.querySelector('[data-port-id="result"][data-port-direction="output"]')).not.toBeNull();
     expect(screen.getByTitle('参考图 / References')).toBeVisible();
     expect(screen.queryByText('References')).not.toBeInTheDocument();
@@ -2013,6 +2027,58 @@ describe('ModuleNodeCard', () => {
     expect(document.querySelector('.module-node__summary')).not.toHaveStyle({ overflow: 'auto' });
     expect(document.querySelector('.module-node__icon')).toHaveAttribute('data-icon-category', 'generation');
     expect(document.querySelector('.module-node__icon svg')).toHaveAttribute('width', '18');
+  });
+
+  it.each(['image_generation', 'video_generation', 'reverse_agent', 'image_layering'] as const)('retains every defined endpoint of %s through the full and overview layouts', async moduleType => {
+    const node = createCanvasModuleNode('all-typed-endpoints', moduleType, { x: 0, y: 0 });
+    const view = render(<ReactFlowProvider><FlowZoom zoom={1}><ModuleNodeCard id={node.id} data={node.data} selected={false} /></FlowZoom></ReactFlowProvider>);
+    const checkEndpoints = () => {
+      for (const port of getCanvasModuleDefinition(moduleType).ports) {
+        expect(document.querySelector(`.react-flow__handle[data-port-id="${port.id}"][data-port-direction="${port.direction}"]`), `${moduleType}.${port.direction}:${port.id}`).not.toBeNull();
+      }
+    };
+    checkEndpoints();
+    view.rerender(<ReactFlowProvider><FlowZoom zoom={0.2}><ModuleNodeCard id={node.id} data={node.data} selected={false} /></FlowZoom></ReactFlowProvider>);
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'overview'));
+    checkEndpoints();
+  });
+
+  it.each(['image_generation', 'video_generation'] as const)('keeps the wired prompt endpoint of %s available through expanded and overview layouts', async moduleType => {
+    const node = createCanvasModuleNode('wired-prompt', moduleType, { x: 0, y: 0 });
+    const data = { ...node.data, connectedPortKeys: ['input:prompt'] };
+    const view = render(<ReactFlowProvider><FlowZoom zoom={1}><ModuleNodeCard id={node.id} data={data} selected={false} /></FlowZoom></ReactFlowProvider>);
+    const checkPrompt = () => {
+      const handle = document.querySelector('.react-flow__handle[data-port-id="prompt"][data-port-direction="input"]');
+      expect(handle).not.toBeNull();
+      expect(handle).toHaveAttribute('data-visual-alias', 'true');
+      expect(document.querySelector(`.react-flow__handle[data-port-id="${moduleType === 'image_generation' ? 'references' : 'media'}"]`)).toHaveAttribute('data-port-connected', 'true');
+    };
+    checkPrompt();
+    moduleType === 'image_generation' ? openImageGenerationEditor() : openVideoGenerationEditor();
+    checkPrompt();
+    view.rerender(<ReactFlowProvider><FlowZoom zoom={0.2}><ModuleNodeCard id={node.id} data={data} selected={false} /></FlowZoom></ReactFlowProvider>);
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'overview'));
+    checkPrompt();
+  });
+
+  it.each([
+    ['image_generation', 'input', 'mask', 'references'],
+    ['image_generation', 'input', 'pose', 'references'],
+    ['video_generation', 'input', 'sourceVideo', 'media'],
+    ['video_generation', 'input', 'firstFrame', 'media'],
+    ['video_generation', 'input', 'lastFrame', 'media'],
+    ['reverse_agent', 'input', 'task', 'references'],
+    ['reverse_agent', 'input', 'video', 'references'],
+    ['reverse_agent', 'input', 'line_art', 'references'],
+    ['reverse_agent', 'output', 'timeline', 'analysis'],
+  ] as const)('retains %s %s:%s and reflects its connection on %s', (moduleType, direction, aliasId, visibleId) => {
+    const node = createCanvasModuleNode('connected-typed-endpoint', moduleType, { x: 0, y: 0 });
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={{ ...node.data, connectedPortKeys: [`${direction}:${aliasId}`] }} selected={false} /></ReactFlowProvider>);
+    const alias = document.querySelector(`.react-flow__handle[data-port-id="${aliasId}"][data-port-direction="${direction}"]`);
+    const definition = getCanvasModuleDefinition(moduleType).ports.find(port => port.id === aliasId && port.direction === direction)!;
+    expect(alias).toHaveAttribute('data-port-type', definition.dataType);
+    expect(alias).toHaveAttribute('data-visual-alias', 'true');
+    expect(document.querySelector(`.react-flow__handle[data-port-id="${visibleId}"][data-port-direction="${direction}"]`)).toHaveAttribute('data-port-connected', 'true');
   });
 
   it('exposes the reference, result, and image endpoints for image generation and layering', () => {
@@ -2027,10 +2093,13 @@ describe('ModuleNodeCard', () => {
     const handles = [...document.querySelectorAll('.react-flow__handle[data-port-id]')];
     expect(handles.map((port) => `${port.getAttribute('data-port-direction')}:${port.getAttribute('data-port-id')}`)).toEqual([
       'input:references',
+      'input:prompt',
+      'input:mask',
+      'input:pose',
       'output:result',
       'output:image',
     ]);
-    expect(handles.every((port) => port.getAttribute('data-port-shape') === 'circle')).toBe(true);
+    expect(handles.filter(port => !port.hasAttribute('data-visual-alias')).every((port) => port.getAttribute('data-port-shape') === 'circle')).toBe(true);
   });
 
   it('shows the Canvas video workflow as one visible media input and one visible result output', () => {
@@ -2038,7 +2107,7 @@ describe('ModuleNodeCard', () => {
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
 
-    expect(document.querySelectorAll('[data-module-type="video_generation"] [data-port-direction="input"] .react-flow__handle')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-module-type="video_generation"] [data-port-direction="input"] .react-flow__handle:not([data-visual-alias])')).toHaveLength(1);
     expect(document.querySelector('[data-module-type="video_generation"] [data-port-id="media"] .react-flow__handle')).not.toBeNull();
     expect(document.querySelectorAll('[data-module-type="video_generation"] [data-port-direction="output"] .react-flow__handle')).toHaveLength(1);
   });
@@ -2048,9 +2117,9 @@ describe('ModuleNodeCard', () => {
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
 
-    expect(document.querySelectorAll('[data-module-type="reverse_agent"] [data-port-direction="input"] .react-flow__handle')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-module-type="reverse_agent"] [data-port-direction="input"] .react-flow__handle:not([data-visual-alias])')).toHaveLength(1);
     expect(document.querySelector('[data-module-type="reverse_agent"] [data-port-id="references"] .react-flow__handle')).not.toBeNull();
-    expect(document.querySelectorAll('[data-module-type="reverse_agent"] [data-port-direction="output"] .react-flow__handle')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-module-type="reverse_agent"] [data-port-direction="output"] .react-flow__handle:not([data-visual-alias])')).toHaveLength(1);
     expect(document.querySelector('[data-module-type="reverse_agent"] [data-port-id="analysis"] .react-flow__handle')).not.toBeNull();
   });
 
@@ -2062,6 +2131,7 @@ describe('ModuleNodeCard', () => {
     const rail = screen.getByLabelText('Reverse media workspace');
     expect(rail).toHaveClass('module-node__agent-media-empty-hint');
     expect(rail).toHaveTextContent('未连接素材');
+    expect(rail.textContent?.match(/0 \/ 20/gu)).toHaveLength(1);
     expect(rail.querySelector('img')).toBeNull();
     expect(within(rail).queryByRole('button', { name: '添加反推素材' })).not.toBeInTheDocument();
   });
@@ -2217,7 +2287,8 @@ describe('ModuleNodeCard', () => {
     openImageGenerationEditor();
     expect(screen.getByLabelText('Image generation prompt workspace').closest('.module-node__summary')).toHaveClass('is-reference-empty');
     expect(screen.getByLabelText('Image generation reference slots')).toHaveTextContent('0 / 20');
-    expect(screen.getByLabelText('Image generation reference slot pending')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Image generation reference slot pending')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '添加参考图片 / Add reference image' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Generate image' })).toHaveTextContent('生成');
   });
 
@@ -2401,7 +2472,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.queryByRole('button', { name: accessibleName })).not.toBeInTheDocument();
     if (moduleType === 'image_generation') {
       expect(screen.getByLabelText('Image generation preview')).toBeVisible();
-      expect(screen.getByText('图片生成 V2')).toBeVisible();
+      expect(screen.getByText('图片预览')).toBeVisible();
     } else {
       expect(screen.queryByLabelText('Video generation preview')).not.toBeInTheDocument();
     }
@@ -3317,7 +3388,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.queryByRole('button', { name: 'Add image reference' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Image generation control bar')).toBeVisible();
     expect(screen.getByLabelText('Image generation preview')).toBeVisible();
-    expect(screen.getByText('图片生成 V2')).toBeVisible();
+    expect(screen.getByText('图片预览')).toBeVisible();
     expect(screen.queryByRole('button', { name: '引用图片' })).not.toBeInTheDocument();
 
     expect(screen.queryByLabelText('图片生成 节点结果')).not.toBeInTheDocument();
@@ -4373,7 +4444,7 @@ describe('ModuleNodeCard', () => {
     openImageGenerationEditor();
     expect(screen.getByLabelText('Image generation preview')).toHaveClass('module-node__generation-editor-preview--empty');
     expect(document.querySelector('.module-node__generation-preview-gallery')).toBeNull();
-    expect(screen.getByText('图片生成 V2')).toBeVisible();
+    expect(screen.getByText('图片预览')).toBeVisible();
     expect(screen.getByLabelText('Image generation prompt workspace')).toBeVisible();
   });
 
@@ -5464,6 +5535,39 @@ describe('ModuleNodeCard', () => {
     expect(cancelModelJob).not.toHaveBeenCalledWith('other-job');
   });
 
+  it.each(['keyboard focus', 'pointer down'] as const)('defers unopened project image choices and restores selection on %s', async (activation) => {
+    const node = createCanvasModuleNode('deferred-image-picker', 'image_input', { x: 0, y: 0 });
+    node.data.config = { assetId: projectImage.assetId };
+    const readUnrelatedLabel = vi.fn((index: number) => `Managed material ${index}`);
+    const assets = [projectImage, ...Array.from({ length: 79 }, (_, index) => ({
+      ...projectImage,
+      assetId: (index + 1).toString(16).padStart(16, '0'),
+      get label() { return readUnrelatedLabel(index + 1); },
+    }))];
+    const assetDtos = assets.map(({ displayUrl: _displayUrl, usageCount: _usageCount, ...asset }) => ({ ...asset, sha256: asset.assetId.repeat(4) }));
+    useAppStore.setState((state) => ({ project: { ...state.project, nodes: [node], edges: [], assets: assetDtos }, projectImages: assets }));
+    readUnrelatedLabel.mockClear();
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    const picker = screen.getByLabelText('选择项目图像 / Choose project image');
+    expect(picker).toHaveValue(projectImage.assetId);
+    expect(readUnrelatedLabel).not.toHaveBeenCalled();
+    expect(within(picker).getAllByRole('option')).toHaveLength(2);
+
+    if (activation === 'keyboard focus') fireEvent.focus(picker);
+    else fireEvent.pointerDown(picker);
+    expect(within(picker).getAllByRole('option')).toHaveLength(81);
+    const lastMaterial = assets[79]!;
+    expect(within(picker).getByRole('option', { name: 'Managed material 79' })).toHaveValue(lastMaterial.assetId);
+    fireEvent.change(picker, { target: { value: lastMaterial.assetId } });
+    await waitFor(() => expect(useAppStore.getState().project.nodes[0]!.data).toMatchObject({ config: { assetId: lastMaterial.assetId } }));
+
+    const importedImage = { ...projectImage, assetId: '0000000000000099', label: 'Newly imported material', sha256: '0000000000000099'.repeat(4) };
+    const { displayUrl: _displayUrl, usageCount: _usageCount, ...importedAsset } = importedImage;
+    act(() => useAppStore.setState((state) => ({ project: { ...state.project, assets: [...state.project.assets!, importedAsset] }, projectImages: [...assets, importedImage] })));
+    expect(within(picker).getByRole('option', { name: importedImage.label })).toHaveValue(importedImage.assetId);
+    fireEvent.change(picker, { target: { value: importedImage.assetId } });
+    await waitFor(() => expect(useAppStore.getState().project.nodes[0]!.data).toMatchObject({ config: { assetId: importedImage.assetId } }));
+  });
   it('reuses project image options across position commits and refreshes imported choices', async () => {
     const persistence = createProjectPersistenceClient();
     replaceProjectPersistenceClientForTests({
@@ -5485,6 +5589,7 @@ describe('ModuleNodeCard', () => {
         projectImages: assets,
       });
       render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+      fireEvent.focus(screen.getByLabelText('选择项目图像 / Choose project image'));
       expect(screen.getByRole('option', { name: 'Side material' })).toHaveValue(sideImage.assetId);
       readOptionLabel.mockClear();
 
@@ -5685,7 +5790,7 @@ describe('ModuleNodeCard', () => {
     source.data.config = {
       resultState: 'fresh',
       videoResults: [{
-        assetId: 'generated-video-result-1',
+        assetId: projectVideo.assetId,
         mediaType: 'video/mp4',
         durationMs: 5000,
         posterAssetId: projectImage.assetId,
@@ -5700,7 +5805,7 @@ describe('ModuleNodeCard', () => {
           { id: 'video-result-input-edge', source: input.id, sourcePortId: 'image', target: source.id, targetPortId: 'media', order: 0 },
           { id: 'video-result-edge', source: source.id, sourcePortId: 'result', target: result.id, targetPortId: 'video', order: 1 },
         ],
-        assets: [{
+        assets: [{ ...projectVideo }, {
           assetId: projectImage.assetId,
           sha256: projectImage.sha256,
           byteSize: projectImage.byteSize,
@@ -5715,8 +5820,8 @@ describe('ModuleNodeCard', () => {
       projectImages: [projectImage],
       projectVideos: [{
         ...projectVideo,
-        assetId: 'generated-video-result-1',
-        displayUrl: 'novus-asset://project/session/generated-video-result-1',
+        assetId: projectVideo.assetId,
+        displayUrl: projectVideo.displayUrl,
         durationMs: 5000,
       }],
     });
@@ -5725,12 +5830,12 @@ describe('ModuleNodeCard', () => {
 
     expect(screen.getByLabelText('Generated video playback')).toBeVisible();
     const playback = screen.getByLabelText('Generated video playback video');
-    expect(playback).toHaveAttribute('src', 'novus-asset://project/session/generated-video-result-1');
+    expect(playback).toHaveAttribute('src', projectVideo.displayUrl);
     expect(playback).toHaveAttribute('poster', projectImage.displayUrl);
     expect(playback).toHaveAttribute('controls');
     expect(screen.getByText('生成结果')).toBeVisible();
     expect(screen.getByText('已完成')).toBeVisible();
-    expect(screen.getByLabelText('Generated video playback')).toHaveTextContent('00:00 / 00:05 · 1080p');
+    expect(screen.getByLabelText('Generated video playback')).toHaveTextContent('00:05 · 分辨率未知');
   });
 
   it('renders a dedicated reverse result as the same foundation output surface', () => {
@@ -5997,6 +6102,84 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('button', { name: '深度反推' })).toHaveAttribute('aria-pressed', 'true');
     view.rerender(<ReactFlowProvider><ModuleNodeCard id={node.id} data={{ ...data, config: { ...data.config, analysisDepth: 'standard' } }} selected={false} /></ReactFlowProvider>);
     expect(screen.getByRole('button', { name: '深度反推' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('keeps a newly selected reverse model while an older default draft arrives', () => {
+    const node = createCanvasModuleNode('reverse-route-stale', 'reverse_agent', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, modelRoute: '' };
+    const data = {
+      ...node.data,
+      reverseAgentRoutes: [
+        { provider: 'comfly', modelRoute: 'old-route', displayName: 'Old', modelId: 'old-route', capabilities: ['reverse_prompt', 'gemini_native'] },
+        { provider: 'comfly', modelRoute: 'selected-route', displayName: 'Selected', modelId: 'selected-route', capabilities: ['reverse_prompt', 'gemini_native'] },
+      ],
+    } as typeof node.data;
+    const view = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    fireEvent.change(screen.getByLabelText('Agent model route'), { target: { value: 'selected-route' } });
+    view.rerender(<ReactFlowProvider><ModuleNodeCard id={node.id} data={{ ...data, config: { ...data.config, modelRoute: 'old-route' } }} selected={false} /></ReactFlowProvider>);
+    expect(screen.getByLabelText('Agent model route')).toHaveValue('selected-route');
+  });
+
+  it('adopts a later external reverse route after the selected draft is acknowledged', () => {
+    const node = createCanvasModuleNode('reverse-route-acknowledged', 'reverse_agent', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, modelRoute: 'initial-route' };
+    const data = {
+      ...node.data,
+      reverseAgentRoutes: ['initial-route', 'selected-route', 'external-route'].map(modelRoute => ({
+        provider: 'comfly', modelRoute, displayName: modelRoute, modelId: modelRoute, capabilities: ['reverse_prompt', 'gemini_native'],
+      })),
+    } as typeof node.data;
+    const view = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    fireEvent.change(screen.getByLabelText('Agent model route'), { target: { value: 'selected-route' } });
+    view.rerender(<ReactFlowProvider><ModuleNodeCard id={node.id} data={{ ...data, config: { ...data.config, modelRoute: 'selected-route' } }} selected={false} /></ReactFlowProvider>);
+    view.rerender(<ReactFlowProvider><ModuleNodeCard id={node.id} data={{ ...data, config: { ...data.config, modelRoute: 'external-route' } }} selected={false} /></ReactFlowProvider>);
+    expect(screen.getByLabelText('Agent model route')).toHaveValue('external-route');
+  });
+
+  it('resets the local reverse route after the same project is durably reloaded', () => {
+    const node = createCanvasModuleNode('reverse-route-durable-reset', 'reverse_agent', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, modelRoute: 'saved-route' };
+    const data = {
+      ...node.data,
+      reverseAgentRoutes: ['saved-route', 'selected-route'].map(modelRoute => ({
+        provider: 'comfly', modelRoute, displayName: modelRoute, modelId: modelRoute, capabilities: ['reverse_prompt', 'gemini_native'],
+      })),
+    } as typeof node.data;
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    fireEvent.change(screen.getByLabelText('Agent model route'), { target: { value: 'selected-route' } });
+    act(() => useAppStore.setState(state => ({ canvasDraftResetKey: state.canvasDraftResetKey + 1 })));
+    expect(screen.getByLabelText('Agent model route')).toHaveValue('saved-route');
+  });
+
+  it('accepts a later external route after a quick selection returns to the saved route', () => {
+    const node = createCanvasModuleNode('reverse-route-return-to-saved', 'reverse_agent', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, modelRoute: 'saved-route' };
+    const data = {
+      ...node.data,
+      reverseAgentRoutes: ['saved-route', 'temporary-route', 'external-route'].map(modelRoute => ({
+        provider: 'comfly', modelRoute, displayName: modelRoute, modelId: modelRoute, capabilities: ['reverse_prompt', 'gemini_native'],
+      })),
+    } as typeof node.data;
+    const view = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    fireEvent.change(screen.getByLabelText('Agent model route'), { target: { value: 'temporary-route' } });
+    fireEvent.change(screen.getByLabelText('Agent model route'), { target: { value: 'saved-route' } });
+    view.rerender(<ReactFlowProvider><ModuleNodeCard id={node.id} data={{ ...data, config: { ...data.config, modelRoute: 'external-route' } }} selected={false} /></ReactFlowProvider>);
+    expect(screen.getByLabelText('Agent model route')).toHaveValue('external-route');
+  });
+
+  it('hydrates the external reverse model before the user selects a route', () => {
+    const node = createCanvasModuleNode('reverse-route-hydrate', 'reverse_agent', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, modelRoute: '' };
+    const data = {
+      ...node.data,
+      reverseAgentRoutes: [
+        { provider: 'comfly', modelRoute: 'old-route', displayName: 'Old', modelId: 'old-route', capabilities: ['reverse_prompt', 'gemini_native'] },
+        { provider: 'comfly', modelRoute: 'loaded-route', displayName: 'Loaded', modelId: 'loaded-route', capabilities: ['reverse_prompt', 'gemini_native'] },
+      ],
+    } as typeof node.data;
+    const view = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    view.rerender(<ReactFlowProvider><ModuleNodeCard id={node.id} data={{ ...data, config: { ...data.config, modelRoute: 'loaded-route' } }} selected={false} /></ReactFlowProvider>);
+    expect(screen.getByLabelText('Agent model route')).toHaveValue('loaded-route');
   });
 
   it('sends edited reverse fields to the autosave draft before Start is pressed', async () => {
@@ -6576,7 +6759,8 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Reverse knowledge context')).toBeInTheDocument();
     expect(screen.getByLabelText('Reverse task actions')).toContainElement(screen.getByRole('button', { name: 'Copy reverse result' }));
     expect(screen.getByLabelText('Reverse task actions')).toContainElement(screen.getByRole('button', { name: 'Start reverse analysis' }));
-    expect(screen.getByText('反推结果 / Reverse result')).toBeVisible();
+    expect(screen.getByText('反推结果', { exact: true })).toBeVisible();
+    expect(screen.queryByText('反推结果 / Reverse result')).not.toBeInTheDocument();
     expect(screen.getByText('运行完成后，反推提示词与分析要点会保留在这里。')).toBeVisible();
   });
 

@@ -11,6 +11,7 @@ import {
   resolveImageColorCorrection,
   resolveImageColorAnalysis,
   renderImageColorCorrectionBlob,
+  type ImageColorCorrection,
 } from './image-color-correction';
 
 function pixels(colors: readonly (readonly number[])[], repetitions = 64) {
@@ -200,6 +201,35 @@ describe('image color correction', () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn(), getImageData: () => ({ data: new Uint8ClampedArray([180, 180, 180, 255]) }), putImageData: vi.fn() } as never);
     vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback, type) => callback(new Blob(['png'], { type })));
     expect((await renderImageColorCorrectionBlob('novus-asset://analysis/neutral-jpeg', AUTO_IMAGE_COLOR_CORRECTION)).type).toBe('image/png');
+  });
+
+  it('moves full-size corrected export off the renderer thread and releases the worker', async () => {
+    const output = new Blob(['corrected'], { type: 'image/png' });
+    const terminate = vi.fn();
+    const postMessage = vi.fn();
+    class TestWorker {
+      onmessage: ((event: MessageEvent<{ ok: true; blob: Blob }>) => void) | null = null;
+      onerror: ((event: ErrorEvent) => void) | null = null;
+      constructor(_url: URL, _options: WorkerOptions) {}
+      postMessage(request: { source: Blob; correction: ImageColorCorrection }) {
+        postMessage(request);
+        queueMicrotask(() => this.onmessage?.({ data: { ok: true, blob: output } } as MessageEvent<{ ok: true; blob: Blob }>));
+      }
+      terminate() { terminate(); }
+    }
+    vi.stubGlobal('Worker', TestWorker);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(['jpeg'], { type: 'image/jpeg' }))));
+    vi.stubGlobal('createImageBitmap', vi.fn(() => { throw new Error('Main-thread decode is forbidden'); }));
+
+    const result = await renderImageColorCorrectionBlob('novus-asset://analysis/worker-jpeg', {
+      ...AUTO_IMAGE_COLOR_CORRECTION,
+      mode: 'custom',
+      brightness: 105,
+    });
+    expect(result).toBe(output);
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ correction: expect.objectContaining({ brightness: 105 }) }));
+    expect(terminate).toHaveBeenCalledOnce();
+    expect(createImageBitmap).not.toHaveBeenCalled();
   });
 
   it('reports an unreadable automatic analysis and retries instead of caching a false success', async () => {

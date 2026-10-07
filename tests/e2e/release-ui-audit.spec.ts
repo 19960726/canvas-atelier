@@ -23,8 +23,8 @@ async function assertReversePortCentersOnCardEdges(
   const reverse = page.locator('[data-module-type="reverse_agent"]');
   const [nodeBox, inputBox, outputBox, zoom] = await Promise.all([
     reverse.boundingBox(),
-    reverse.locator('[data-port-id="references"][data-port-direction="input"] .react-flow__handle').boundingBox(),
-    reverse.locator('[data-port-id="analysis"][data-port-direction="output"] .react-flow__handle').boundingBox(),
+    reverse.locator('[data-port-id="references"][data-port-direction="input"] .react-flow__handle:not([data-visual-alias="true"])').boundingBox(),
+    reverse.locator('[data-port-id="analysis"][data-port-direction="output"] .react-flow__handle:not([data-visual-alias="true"])').boundingBox(),
     page.locator('.react-flow__viewport').evaluate((element) => {
       const transform = getComputedStyle(element).transform;
       return transform === 'none' ? 1 : new DOMMatrixReadOnly(transform).a;
@@ -33,6 +33,26 @@ async function assertReversePortCentersOnCardEdges(
   expect(nodeBox, `${context}: reverse card must be measurable`).not.toBeNull();
   expect(inputBox, `${context}: reverse input must be measurable`).not.toBeNull();
   expect(outputBox, `${context}: reverse output must be measurable`).not.toBeNull();
+  const aliases = await reverse.locator('.react-flow__handle[data-visual-alias="true"]').evaluateAll(elements => elements.map(element => {
+    const main = element.closest('.module-node__port-row')?.querySelector('.react-flow__handle:not([data-visual-alias="true"])');
+    const box = element.getBoundingClientRect(), mainBox = main?.getBoundingClientRect(), style = getComputedStyle(element);
+    return { key: `${element.getAttribute('data-port-direction')}:${element.getAttribute('data-port-id')}`,
+      opacity: style.opacity, pointerEvents: style.pointerEvents, ariaHidden: element.getAttribute('aria-hidden'),
+      width: box.width, height: box.height, mainPresent: Boolean(mainBox),
+      dx: mainBox ? Math.abs(box.x + box.width / 2 - mainBox.x - mainBox.width / 2) : null,
+      dy: mainBox ? Math.abs(box.y + box.height / 2 - mainBox.y - mainBox.height / 2) : null };
+  }));
+  expect(aliases.map(alias => alias.key).sort(), `${context}: all real aliases remain mounted`).toEqual(['input:line_art', 'input:task', 'input:video', 'output:timeline']);
+  for (const alias of aliases) {
+    expect(alias.opacity, alias.key).toBe('0'); expect(alias.pointerEvents, alias.key).toBe('none');
+    expect(alias.ariaHidden, alias.key).toBe('true'); expect(alias.mainPresent, alias.key).toBe(true);
+    expect(alias.width, alias.key).toBeGreaterThan(0); expect(alias.height, alias.key).toBeGreaterThan(0);
+    expect(alias.dx, `${context}: ${alias.key} shared x`).toBeLessThanOrEqual(1);
+    expect(alias.dy, `${context}: ${alias.key} shared y`).toBeLessThanOrEqual(1);
+  }
+  const path = page.locator('.react-flow__edge .react-flow__edge-path');
+  await expect(path).toHaveCount(1); await expect(path).toBeVisible(); await expect(path).toHaveAttribute('d', /^M/u);
+  expect(await path.evaluate(element => (element as SVGPathElement).getTotalLength())).toBeGreaterThan(0);
   const roundingAllowance = Math.max(2, zoom * 1.5);
   expect(
     Math.abs((inputBox!.x + inputBox!.width / 2) - nodeBox!.x),
@@ -48,8 +68,8 @@ async function assertReversePortCentersOnCardEdges(
   expect(outputBox!.x + outputBox!.width, `${context}: the output socket must retain its outer half`).toBeGreaterThan(nodeBox!.x + nodeBox!.width);
   const outerHitEvidence = await page.evaluate(({ inputPoint, outputPoint }) => {
     const reverseNode = document.querySelector('[data-module-type="reverse_agent"]');
-    const input = reverseNode?.querySelector('[data-port-id="references"][data-port-direction="input"] .react-flow__handle');
-    const output = reverseNode?.querySelector('[data-port-id="analysis"][data-port-direction="output"] .react-flow__handle');
+    const input = reverseNode?.querySelector('[data-port-id="references"][data-port-direction="input"] .react-flow__handle:not([data-visual-alias="true"])');
+    const output = reverseNode?.querySelector('[data-port-id="analysis"][data-port-direction="output"] .react-flow__handle:not([data-visual-alias="true"])');
     const hits = (element: Element | null | undefined, point: { x: number; y: number }) => (
       element !== null
       && element !== undefined

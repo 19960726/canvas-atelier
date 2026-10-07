@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { ComflyFetchResponse } from '@agent-canvas/provider-comfly';
 import { createAgentKnowledgeLease, createReversePromptRun } from '@agent-canvas/domain';
 
 import type { NewApiFetch, NewApiFetchInit } from './newapi-client';
 import { deriveGenerationHistoryId } from './generation-history-provider-sink';
+import { NodeFileSystem } from './file-system';
 import type { NewApiModelProfile } from './newapi-model-catalog';
 import type { ProviderTaskMappingRecord, ProviderTaskMappingStore } from './provider-task-ledger';
 import type { ProviderBridgeProfile } from './provider-contracts';
@@ -118,8 +122,8 @@ describe('secure New API provider service', () => {
     const mp4 = Uint8Array.from([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
     const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
     const fetch = sequenceFetch(calls, [
-      jsonResponse({ object: 'list', data: [{ id: 'sora-2' }] }),
-      jsonResponse({ success: true, data: [{ model_name: 'sora-2', supported_endpoint_types: ['openai-video'] }] }),
+      jsonResponse({ object: 'list', data: [{ id: 'minimax_h3' }] }),
+      jsonResponse({ success: true, data: [{ model_name: 'minimax_h3', supported_endpoint_types: ['openai-video'] }] }),
       jsonResponse({ id: rawTaskId, status: 'queued' }),
       jsonResponse({ id: rawTaskId, status: 'completed', progress: 100 }),
       binaryResponse(mp4),
@@ -140,16 +144,18 @@ describe('secure New API provider service', () => {
 
     await expect(service.refreshCatalog()).resolves.toEqual([
       expect.objectContaining({
-        provider: 'julun', modelId: 'sora-2', capabilities: ['video_generation', 'async_tasks'],
+        provider: 'julun', modelId: 'minimax_h3', capabilities: ['video_generation', 'async_tasks'],
         constraints: { video: {
-          aspectRatios: ['16:9'], resolutions: ['720p'],
-          duration: { mode: 'options', defaultValue: 10, options: [5, 10] }, outputCounts: [1],
+          aspectRatios: ['16:9', '9:16'], resolutions: ['480p', '768p'],
+          duration: { mode: 'range', defaultValue: 10, min: 5, max: 15, step: 1 }, outputCounts: [1],
         } },
       }),
     ]);
+    const verifiedVideoRoute = (await service.listProfiles()).find(profile => profile.modelId === 'minimax_h3')!;
+    await service.updateProfiles!({ provider: 'julun', profiles: [verifiedVideoRoute] });
     const submitted = await service.submitVideoJob({
-      provider: 'julun', modelRoute: 'julun-sora-2', prompt: 'orbit', sessionId: 'session-1',
-      aspectRatio: '16:9', resolution: '720p', durationSeconds: 5, referenceAssetIds: [], outputCount: 1,
+      provider: 'julun', modelRoute: 'julun-minimax-h3', prompt: 'orbit', sessionId: 'session-1',
+      aspectRatio: '16:9', resolution: '768p', durationSeconds: 5, referenceAssetIds: [], outputCount: 1,
     });
     expect(submitted.providerTaskId).toMatch(/^provider-job-[a-f0-9]{32}$/u);
     expect(JSON.stringify(submitted)).not.toContain(rawTaskId);
@@ -165,10 +171,10 @@ describe('secure New API provider service', () => {
       `https://julun.cc/v1/videos/${rawTaskId}/content`,
     ]);
     const multipart = Buffer.from(calls[2]!.init!.body as Uint8Array).toString('utf8');
-    expect(multipart).toContain('name="model"\r\n\r\nsora-2');
+    expect(multipart).toContain('name="model"\r\n\r\nminimax_h3');
     expect(multipart).toContain('name="duration"\r\n\r\n5');
-    expect(multipart).toContain('name="width"\r\n\r\n1280');
-    expect(multipart).toContain('name="height"\r\n\r\n720');
+    expect(multipart).toContain('name="width"\r\n\r\n1365');
+    expect(multipart).toContain('name="height"\r\n\r\n768');
     expect(multipart).not.toContain('name="audio');
   });
 
@@ -466,13 +472,13 @@ describe('secure New API provider service', () => {
     const options = {
       provider: 'julun' as const, credentialStore: configuredCredentialStore(),
       configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
-        provider: 'julun', modelRoute: 'julun-sora', displayName: 'sora', modelId: 'sora',
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
         capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
       }]),
       providerTaskMappings: ledger.adapter, historySink,
     };
     const request = {
-      jobId: 'model-job-v2-history-running', provider: 'julun' as const, modelRoute: 'julun-sora', prompt: 'orbit',
+      jobId: 'model-job-v2-history-running', provider: 'julun' as const, modelRoute: 'julun-minimax-h3', prompt: 'orbit',
       sessionId: 'session-history-running', referenceAssetIds: [] as string[], outputCount: 1 as const,
     };
     const first = createNewApiProviderService({
@@ -488,7 +494,7 @@ describe('secure New API provider service', () => {
     expect(restartedFetch).not.toHaveBeenCalled();
   });
 
-  it('returns a stored 4D image when the history success callback throws', async () => {
+  it('keeps a stored 4D image retryable when the history success callback throws', async () => {
     const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const baseHistory = durableHistorySink();
     const service = createNewApiProviderService({
@@ -507,16 +513,16 @@ describe('secure New API provider service', () => {
       sessionId: 'session-history-success', referenceAssetIds: [], outputCount: 1,
     });
     await expect(service.pollImageJob({ provider: '4dai', providerTaskId: submitted.providerTaskId }))
-      .resolves.toMatchObject({ status: 'completed' });
+      .resolves.toMatchObject({ status: 'running' });
   });
 
-  it('keeps terminal failure and cancellation visible when history callbacks throw', async () => {
+  it('keeps provider failure retryable until history is durable and leaves cancellation pending when history is unavailable', async () => {
     const failedLedger = providerLedger();
     const baseHistory = durableHistorySink();
     const failedService = createNewApiProviderService({
       provider: 'julun', credentialStore: configuredCredentialStore(),
       configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
-        provider: 'julun', modelRoute: 'julun-sora', displayName: 'sora', modelId: 'sora',
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
         capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
       }]),
       providerTaskMappings: failedLedger.adapter,
@@ -527,18 +533,18 @@ describe('secure New API provider service', () => {
       ]),
     });
     const failed = await failedService.submitVideoJob({
-      jobId: 'model-job-v2-history-failed', provider: 'julun', modelRoute: 'julun-sora', prompt: 'orbit',
+      jobId: 'model-job-v2-history-failed', provider: 'julun', modelRoute: 'julun-minimax-h3', prompt: 'orbit',
       sessionId: 'session-history-failed', referenceAssetIds: [], outputCount: 1,
     });
     await expect(failedService.pollVideoJob({ provider: 'julun', providerTaskId: failed.providerTaskId }))
-      .resolves.toMatchObject({ status: 'failed' });
-    expect(failedLedger.records.get(failed.providerTaskId)).toMatchObject({ state: 'failed' });
+      .resolves.toMatchObject({ status: 'running' });
+    expect(failedLedger.records.get(failed.providerTaskId)).toMatchObject({ state: 'running' });
 
     const cancelledLedger = providerLedger();
     const cancelledService = createNewApiProviderService({
       provider: 'julun', credentialStore: configuredCredentialStore(),
       configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
-        provider: 'julun', modelRoute: 'julun-sora', displayName: 'sora', modelId: 'sora',
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
         capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
       }]),
       providerTaskMappings: cancelledLedger.adapter,
@@ -546,12 +552,71 @@ describe('secure New API provider service', () => {
       fetch: sequenceFetch([], [jsonResponse({ id: 'raw-cancelled', status: 'queued' })]),
     });
     const cancelled = await cancelledService.submitVideoJob({
-      jobId: 'model-job-v2-history-cancelled', provider: 'julun', modelRoute: 'julun-sora', prompt: 'orbit',
+      jobId: 'model-job-v2-history-cancelled', provider: 'julun', modelRoute: 'julun-minimax-h3', prompt: 'orbit',
       sessionId: 'session-history-cancelled', referenceAssetIds: [], outputCount: 1,
     });
     await expect(cancelledService.cancelVideoJob({ provider: 'julun', providerTaskId: cancelled.providerTaskId }))
+      .rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true,
+        message: expect.stringContaining('提交状态不确定') });
+    expect(cancelledLedger.records.get(cancelled.providerTaskId)).toMatchObject({ state: 'running' });
+  });
+
+  it('does not cancel a 4D image whose durable history already succeeded', async () => {
+    const ledger = providerLedger();
+    const history = durableHistorySink();
+    const cancelled = vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 }));
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const service = createNewApiProviderService({
+      provider: '4dai', credentialStore: configuredCredentialStore(),
+      configurationStore: memoryConfigurationStore('https://api.4dai.cc/v1', [{
+        provider: '4dai', modelRoute: '4dai-gpt-image-2', displayName: 'gpt-image-2', modelId: 'gpt-image-2',
+        capabilities: ['image_generation'], capabilityStatus: 'complete',
+      }]),
+      providerTaskMappings: ledger.adapter, historySink: { ...history, cancelled },
+      fetch: sequenceFetch([], [jsonResponse({ data: [{ url: 'https://cdn.example.test/image.png' }] })]),
+      storeGeneratedImage: async () => ({ assetId: '0123456789abcdef' }),
+    });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-history-won-image', provider: '4dai', modelRoute: '4dai-gpt-image-2',
+      prompt: 'poster', sessionId: 'session-history-won', referenceAssetIds: [], outputCount: 1,
+    });
+    await expect(service.cancelImageJob({ provider: '4dai', providerTaskId: submitted.providerTaskId }))
+      .rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true,
+        message: expect.stringContaining('提交状态不确定') });
+    expect(cancelled).toHaveBeenCalledOnce();
+    expect(ledger.records.get(submitted.providerTaskId)).toMatchObject({ state: 'running' });
+  });
+
+  it('reconciles an ambiguous Julun cancellation from durable history on poll without a provider request', async () => {
+    const ledger = providerLedger();
+    const history = durableHistorySink();
+    let durableCancelled = false;
+    const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+    const service = createNewApiProviderService({
+      provider: 'julun', credentialStore: configuredCredentialStore(),
+      configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
+        capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
+      }]),
+      providerTaskMappings: ledger.adapter,
+      historySink: {
+        ...history,
+        cancelled: async () => { durableCancelled = true; throw new Error('history post-write verification failed'); },
+        getTerminal: async () => durableCancelled ? { status: 'cancelled' as const } : null,
+      },
+      fetch: sequenceFetch(calls, [jsonResponse({ id: 'one-paid-video', status: 'queued' })]),
+    });
+    const submitted = await service.submitVideoJob({
+      jobId: 'model-job-v2-ambiguous-cancel-julun', provider: 'julun', modelRoute: 'julun-minimax-h3',
+      prompt: 'orbit', sessionId: 'session-ambiguous-cancel', referenceAssetIds: [], outputCount: 1,
+    });
+    await expect(service.cancelVideoJob({ provider: 'julun', providerTaskId: submitted.providerTaskId }))
+      .rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true });
+    expect(ledger.records.get(submitted.providerTaskId)).toMatchObject({ state: 'running' });
+    await expect(service.pollVideoJob({ provider: 'julun', providerTaskId: submitted.providerTaskId }))
       .resolves.toEqual({ status: 'cancelled' });
-    expect(cancelledLedger.records.get(cancelled.providerTaskId)).toMatchObject({ state: 'cancelled' });
+    expect(ledger.records.get(submitted.providerTaskId)).toMatchObject({ state: 'cancelled' });
+    expect(calls).toHaveLength(1);
   });
 
   it('maps a remotely cancelled Julun task to cancelled even when history is unavailable', async () => {
@@ -561,7 +626,7 @@ describe('secure New API provider service', () => {
     const service = createNewApiProviderService({
       provider: 'julun', credentialStore: configuredCredentialStore(),
       configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
-        provider: 'julun', modelRoute: 'julun-sora', displayName: 'sora', modelId: 'sora',
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
         capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
       }]),
       providerTaskMappings: ledger.adapter,
@@ -572,7 +637,7 @@ describe('secure New API provider service', () => {
       ]),
     });
     const submitted = await service.submitVideoJob({
-      jobId: 'model-job-v2-remote-cancelled', provider: 'julun', modelRoute: 'julun-sora', prompt: 'orbit',
+      jobId: 'model-job-v2-remote-cancelled', provider: 'julun', modelRoute: 'julun-minimax-h3', prompt: 'orbit',
       sessionId: 'session-remote-cancelled', referenceAssetIds: [], outputCount: 1,
     });
 
@@ -620,19 +685,23 @@ describe('secure New API provider service', () => {
     const service = createNewApiProviderService({
       provider: 'julun', credentialStore: configuredCredentialStore(),
       configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
-        provider: 'julun', modelRoute: 'julun-sora', displayName: 'sora', modelId: 'sora',
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
         capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
       }]),
       fetch: sequenceFetch(calls, [jsonResponse({ id: 'raw-task', status: 'queued' })]),
       providerTaskMappings: ledger.adapter,
     });
     const request = {
-      jobId: 'model-job-v2-ledger-failure', provider: 'julun' as const, modelRoute: 'julun-sora', prompt: 'orbit',
+      jobId: 'model-job-v2-ledger-failure', provider: 'julun' as const, modelRoute: 'julun-minimax-h3', prompt: 'orbit',
       sessionId: 'session-ledger', referenceAssetIds: [] as string[], outputCount: 1 as const,
     };
 
-    await expect(service.submitVideoJob(request)).rejects.toThrow('disk unavailable');
-    await expect(service.submitVideoJob(request)).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    await expect(service.submitVideoJob(request)).rejects.toMatchObject({
+      code: 'PROVIDER_UNAVAILABLE', message: expect.stringContaining('提交状态不确定'),
+    });
+    await expect(service.submitVideoJob(request)).rejects.toMatchObject({
+      code: 'PROVIDER_UNAVAILABLE', message: expect.stringContaining('提交状态不确定'),
+    });
     expect(calls).toHaveLength(1);
   });
 
@@ -641,7 +710,7 @@ describe('secure New API provider service', () => {
     const service = createNewApiProviderService({
       provider: 'julun', credentialStore: configuredCredentialStore(),
       configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
-        provider: 'julun', modelRoute: 'julun-sora', displayName: 'sora', modelId: 'sora',
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
         capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
       }]),
       fetch: sequenceFetch(calls, [
@@ -652,7 +721,7 @@ describe('secure New API provider service', () => {
       storeGeneratedVideo: async () => ({ assetId: '0123456789abcdef' }),
     });
     const submitted = await service.submitVideoJob({
-      provider: 'julun', modelRoute: 'julun-sora', prompt: 'orbit', sessionId: 'session-invalid', referenceAssetIds: [], outputCount: 1,
+      provider: 'julun', modelRoute: 'julun-minimax-h3', prompt: 'orbit', sessionId: 'session-invalid', referenceAssetIds: [], outputCount: 1,
     });
 
     await expect(service.pollVideoJob({ provider: 'julun', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({
@@ -662,13 +731,13 @@ describe('secure New API provider service', () => {
     expect(calls).toHaveLength(3);
   });
 
-  it('persists a completed video storage failure instead of downloading the result again', async () => {
+  it('keeps a completed video retryable when managed storage is temporarily unavailable', async () => {
     const mp4 = Uint8Array.from([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70]);
     const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
     const service = createNewApiProviderService({
       provider: 'julun', credentialStore: configuredCredentialStore(),
       configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
-        provider: 'julun', modelRoute: 'julun-sora', displayName: 'sora', modelId: 'sora',
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
         capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
       }]),
       fetch: sequenceFetch(calls, [
@@ -676,17 +745,592 @@ describe('secure New API provider service', () => {
         jsonResponse({ id: 'raw-task', status: 'completed' }),
         binaryResponse(mp4),
       ]),
-      storeGeneratedVideo: async () => { throw new Error('managed asset store failed'); },
+      storeGeneratedVideo: vi.fn()
+        .mockRejectedValueOnce(new Error('managed asset store failed'))
+        .mockResolvedValue({ assetId: '0123456789abcdef' }),
     });
     const submitted = await service.submitVideoJob({
-      provider: 'julun', modelRoute: 'julun-sora', prompt: 'orbit', sessionId: 'session-store', referenceAssetIds: [], outputCount: 1,
+      provider: 'julun', modelRoute: 'julun-minimax-h3', prompt: 'orbit', sessionId: 'session-store', referenceAssetIds: [], outputCount: 1,
     });
 
-    await expect(service.pollVideoJob({ provider: 'julun', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({
-      status: 'failed', error: { code: 'PROVIDER_ERROR', retryable: false },
-    });
-    await expect(service.pollVideoJob({ provider: 'julun', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({ status: 'failed' });
+    await expect(service.pollVideoJob({ provider: 'julun', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({ status: 'running' });
+    await expect(service.pollVideoJob({ provider: 'julun', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({ status: 'completed' });
     expect(calls).toHaveLength(3);
+  });
+
+  it('closes a missing paid Julun video outbox as uncertain without another provider request', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'newapi-video-missing-'));
+    try {
+      const mp4 = Uint8Array.from([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70]);
+      const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+      const ledger = providerLedger();
+      const service = createNewApiProviderService({
+        provider: 'julun', appDataRoot, credentialStore: configuredCredentialStore(),
+        configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
+          provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
+          capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
+        }]),
+        providerTaskMappings: ledger.adapter,
+        bindGenerationProject: async () => ({ projectId: 'video-project', rootFingerprint: 'a'.repeat(64) }),
+        storeGeneratedVideoForProject: vi.fn(async () => { throw new Error('project temporarily busy'); }),
+        fetch: sequenceFetch(calls, [
+          jsonResponse({ id: 'raw-task', status: 'queued' }),
+          jsonResponse({ id: 'raw-task', status: 'completed' }), binaryResponse(mp4),
+        ]),
+      });
+      const submitted = await service.submitVideoJob({
+        jobId: 'model-job-v2-video-outbox-missing', projectId: 'video-project', provider: 'julun',
+        modelRoute: 'julun-minimax-h3', prompt: 'orbit', sessionId: 'video-session', referenceAssetIds: [], outputCount: 1,
+      });
+      await expect(service.pollVideoJob({ provider: 'julun', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'running' });
+      await rm(join(appDataRoot, `newapi-pending-${submitted.providerTaskId}.bin`));
+      await expect(service.pollVideoJob({ provider: 'julun', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'failed', error: { code: 'PROVIDER_INVALID_RESPONSE',
+          message: expect.stringContaining('提交状态不确定'), retryable: false } });
+      expect(calls).toHaveLength(3);
+    } finally {
+      await rm(appDataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('stages a paid inline 4D result before project storage and repairs history after restart without a second POST', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'newapi-pending-'));
+    try {
+      const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const binding = { projectId: 'project-a', rootFingerprint: 'a'.repeat(64) };
+      const ledger = providerLedger();
+      const history = durableHistorySink();
+      const succeeded = vi.fn().mockRejectedValueOnce(new Error('history busy'))
+        .mockResolvedValue({ status: 'succeeded', width: 1, height: 1 });
+      const bindGenerationProject = vi.fn(async (_sessionId: string, projectId?: string) => {
+        if (projectId !== binding.projectId) throw new Error('wrong project');
+        return binding;
+      });
+      const common = {
+        provider: '4dai' as const, appDataRoot,
+        credentialStore: configuredCredentialStore(),
+        configurationStore: memoryConfigurationStore('https://api.4dai.cc/v1', [{
+          provider: '4dai', modelRoute: '4dai-gpt-image-2', displayName: 'gpt-image-2', modelId: 'gpt-image-2',
+          capabilities: ['image_generation' as const], capabilityStatus: 'complete' as const,
+        }]),
+        providerTaskMappings: ledger.adapter, historySink: { ...history, succeeded },
+        bindGenerationProject,
+      };
+      const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+      const first = createNewApiProviderService({
+        ...common,
+        fetch: sequenceFetch(calls, [jsonResponse({ data: [{ b64_json: Buffer.from(png).toString('base64') }] })]),
+        storeGeneratedImageForProject: vi.fn(async () => { throw new Error('project temporarily unavailable'); }),
+      });
+      const request = {
+        jobId: 'model-job-v2-inline-recovery', projectId: 'project-a', provider: '4dai' as const,
+        modelRoute: '4dai-gpt-image-2', prompt: 'poster', sessionId: 'old-session',
+        referenceAssetIds: [] as string[], outputCount: 1 as const,
+      };
+      const submitted = await first.submitImageJob(request);
+      expect(ledger.records.get(submitted.providerTaskId)).toMatchObject({
+        state: 'running', projectBinding: binding,
+      });
+      await expect(first.pollImageJob({ provider: '4dai', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'running' });
+
+      const boundStore = vi.fn(async (_binding: typeof binding, _bytes: Uint8Array, _mediaType: string) => ({ assetId: 'fedcba9876543210' }));
+      const noSecondPost = vi.fn(async () => { throw new Error('paid POST must not repeat'); });
+      const restarted = createNewApiProviderService({
+        ...common, fetch: noSecondPost, storeGeneratedImageForProject: boundStore,
+      });
+      await expect(restarted.submitImageJob(request)).resolves.toEqual(submitted);
+      await expect(restarted.pollImageJob({ provider: '4dai', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'running' });
+      await expect(restarted.pollImageJob({ provider: '4dai', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'completed', result: { assetId: 'fedcba9876543210' } });
+      expect(boundStore).toHaveBeenCalledTimes(1);
+      expect(boundStore.mock.calls[0]?.[0]).toEqual(binding);
+      expect(Array.from(boundStore.mock.calls[0]?.[1] as Uint8Array)).toEqual(Array.from(png));
+      expect(boundStore.mock.calls[0]?.[2]).toBe('image/png');
+      expect(succeeded).toHaveBeenCalledTimes(2);
+      expect(noSecondPost).not.toHaveBeenCalled();
+      expect(calls).toHaveLength(1);
+      await restarted.ackImageJobTerminal({ provider: '4dai', providerTaskId: submitted.providerTaskId });
+      await expect(access(join(appDataRoot, `newapi-pending-${submitted.providerTaskId}.bin`))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(appDataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('binds a Julun destination before paid POST and resumes a completed video in that project after restart', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'newapi-video-pending-'));
+    try {
+      const mp4 = Uint8Array.from([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70]);
+      const binding = { projectId: 'project-a', rootFingerprint: 'a'.repeat(64) };
+      const ledger = providerLedger();
+      const bindGenerationProject = vi.fn(async (_sessionId: string, projectId?: string) => {
+        if (projectId !== binding.projectId) throw new Error('wrong project');
+        return binding;
+      });
+      const common = {
+        provider: 'julun' as const, appDataRoot,
+        credentialStore: configuredCredentialStore(),
+        configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
+          provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
+          capabilities: ['video_generation' as const, 'async_tasks' as const], capabilityStatus: 'complete' as const,
+        }]),
+        providerTaskMappings: ledger.adapter, bindGenerationProject,
+      };
+      const firstCalls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+      const first = createNewApiProviderService({
+        ...common, fetch: sequenceFetch(firstCalls, [jsonResponse({ id: 'raw-task', status: 'queued' })]),
+      });
+      const request = {
+        jobId: 'model-job-v2-bound-video', projectId: 'project-a', provider: 'julun' as const,
+        modelRoute: 'julun-minimax-h3', prompt: 'orbit', sessionId: 'old-session',
+        referenceAssetIds: [] as string[], outputCount: 1 as const,
+      };
+      await expect(first.submitVideoJob({ ...request, projectId: 'project-b' })).rejects.toThrow('wrong project');
+      expect(firstCalls).toHaveLength(0);
+      const submitted = await first.submitVideoJob(request);
+      expect(ledger.records.get(submitted.providerTaskId)).toMatchObject({ projectBinding: binding });
+      const wrongProject = createNewApiProviderService({
+        ...common,
+        bindGenerationProject: async () => ({ projectId: 'project-b', rootFingerprint: 'b'.repeat(64) }),
+        fetch: vi.fn(async () => { throw new Error('paid POST must not repeat'); }),
+      });
+      await expect(wrongProject.submitVideoJob({ ...request, projectId: 'project-b' }))
+        .rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+      const storeGeneratedVideoForProject = vi.fn()
+        .mockRejectedValueOnce(new Error('project temporarily unavailable'))
+        .mockResolvedValue({ assetId: '0123456789abcdef' });
+      const restartCalls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+      const restarted = createNewApiProviderService({
+        ...common,
+        fetch: sequenceFetch(restartCalls, [
+          jsonResponse({ id: 'raw-task', status: 'completed' }), binaryResponse(mp4),
+        ]),
+        storeGeneratedVideoForProject,
+      });
+      await expect(restarted.pollVideoJob({ provider: 'julun', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'running' });
+      await expect(restarted.pollVideoJob({ provider: 'julun', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'completed', result: { assetId: '0123456789abcdef' } });
+      expect(storeGeneratedVideoForProject).toHaveBeenCalledTimes(2);
+      expect(storeGeneratedVideoForProject.mock.lastCall?.[0]).toEqual(binding);
+      expect(Array.from(storeGeneratedVideoForProject.mock.lastCall?.[1] as Uint8Array)).toEqual(Array.from(mp4));
+      expect(storeGeneratedVideoForProject.mock.lastCall?.[2]).toBe('video/mp4');
+      expect(restartCalls).toHaveLength(2);
+      expect(firstCalls).toHaveLength(1);
+    } finally {
+      await rm(appDataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not write a legacy unbound 4D result into a newly opened same-id project', async () => {
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const taskId = `provider-job-${'a'.repeat(32)}`;
+    const ledger = providerLedger();
+    ledger.records.set(taskId, {
+      provider: '4dai', publicTaskId: taskId, rawTaskId: 'https://cdn.example.test/legacy.png',
+      kind: 'image', state: 'running', sessionId: 'legacy-session',
+      createdAt: '2026-09-28T00:00:00.000Z', updatedAt: '2026-09-28T00:00:00.000Z',
+    });
+    const storeGeneratedImage = vi.fn(async () => ({ assetId: 'fedcba9876543210' }));
+    const storeGeneratedImageForProject = vi.fn(async () => ({ assetId: 'fedcba9876543210' }));
+    const service = createNewApiProviderService({
+      provider: '4dai', credentialStore: configuredCredentialStore(),
+      configurationStore: memoryConfigurationStore('https://api.4dai.cc/v1'),
+      providerTaskMappings: ledger.adapter,
+      bindGenerationProject: async () => ({ projectId: 'same-id', rootFingerprint: 'b'.repeat(64) }),
+      storeGeneratedImage, storeGeneratedImageForProject,
+      resolveResultHost: async () => ['93.184.216.34'],
+      fetch: sequenceFetch([], [binaryResponse(png)]),
+    });
+
+    await expect(service.pollImageJob({ provider: '4dai', providerTaskId: taskId }))
+      .resolves.toMatchObject({ status: 'failed', error: { code: 'PROVIDER_UNAVAILABLE', retryable: false } });
+    expect(storeGeneratedImage).not.toHaveBeenCalled();
+    expect(storeGeneratedImageForProject).not.toHaveBeenCalled();
+    expect(ledger.records.get(taskId)).toMatchObject({ state: 'failed', sessionId: 'legacy-session' });
+  });
+
+  it.each(['corrupt', 'missing', 'symlink'] as const)('shows an uncertain terminal failure for a %s staged 4D result', async (damage) => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'newapi-corrupt-'));
+    try {
+      const fileSystem = new NodeFileSystem();
+      const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const ledger = providerLedger();
+      const storeGeneratedImageForProject = vi.fn(async () => { throw new Error('temporary project lock'); });
+      const service = createNewApiProviderService({
+        provider: '4dai', appDataRoot, fileSystem, credentialStore: configuredCredentialStore(),
+        configurationStore: memoryConfigurationStore('https://api.4dai.cc/v1', [{
+          provider: '4dai', modelRoute: '4dai-gpt-image-2', displayName: 'gpt-image-2', modelId: 'gpt-image-2',
+          capabilities: ['image_generation'], capabilityStatus: 'complete',
+        }]),
+        providerTaskMappings: ledger.adapter, historySink: durableHistorySink(),
+        bindGenerationProject: async () => ({ projectId: 'project-a', rootFingerprint: 'a'.repeat(64) }),
+        storeGeneratedImageForProject,
+        fetch: sequenceFetch([], [jsonResponse({ data: [{ b64_json: Buffer.from(png).toString('base64') }] })]),
+      });
+      const submitted = await service.submitImageJob({
+        jobId: 'model-job-v2-corrupt-inline', projectId: 'project-a', provider: '4dai',
+        modelRoute: '4dai-gpt-image-2', prompt: 'poster', sessionId: 'session-a', referenceAssetIds: [], outputCount: 1,
+      });
+      const pendingPath = join(appDataRoot, `newapi-pending-${submitted.providerTaskId}.bin`);
+      if (damage === 'corrupt') await writeFile(pendingPath, Uint8Array.from([1, 2, 3]));
+      else if (damage === 'missing') await rm(pendingPath);
+      else {
+        const originalLstat = fileSystem.lstat.bind(fileSystem);
+        vi.spyOn(fileSystem, 'lstat').mockImplementation(async (path) => {
+          const stat = await originalLstat(path);
+          return path === pendingPath ? Object.assign(stat, { isSymbolicLink: () => true }) : stat;
+        });
+      }
+      await expect(service.pollImageJob({ provider: '4dai', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'failed', error: { code: 'PROVIDER_INVALID_RESPONSE',
+          message: expect.stringContaining('提交状态不确定'), retryable: false } });
+      expect(storeGeneratedImageForProject).toHaveBeenCalledTimes(1);
+      expect(ledger.records.get(submitted.providerTaskId)).toMatchObject({ state: 'failed' });
+    } finally {
+      await rm(appDataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('retries an accepted Julun task mapping write without sending another paid POST', async () => {
+    const ledger = providerLedger();
+    const originalSet = ledger.adapter.set.bind(ledger.adapter);
+    const set = vi.spyOn(ledger.adapter, 'set')
+      .mockRejectedValueOnce(new Error('temporary mapping lock'))
+      .mockImplementation(originalSet);
+    const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+    const service = createNewApiProviderService({
+      provider: 'julun', credentialStore: configuredCredentialStore(),
+      configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
+        capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
+      }]),
+      providerTaskMappings: ledger.adapter,
+      fetch: sequenceFetch(calls, [jsonResponse({ id: 'raw-task', status: 'queued' })]),
+    });
+    const submitted = await service.submitVideoJob({
+      jobId: 'model-job-v2-mapping-retry', provider: 'julun', modelRoute: 'julun-minimax-h3',
+      prompt: 'orbit', sessionId: 'session-retry', referenceAssetIds: [], outputCount: 1,
+    });
+    expect(set).toHaveBeenCalledTimes(2);
+    expect(ledger.records.get(submitted.providerTaskId)).toMatchObject({ state: 'running', rawTaskId: 'raw-task' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('retries a 4D image after a pre-POST history reservation failure with the same job ID', async () => {
+    const ledger = providerLedger();
+    const history = durableHistorySink();
+    let attempts = 0;
+    const reserveSubmission = vi.fn(async (input: { jobId: string }) => {
+      if (++attempts === 1) throw new Error('history index temporarily locked');
+      return { created: true, historyId: deriveGenerationHistoryId(input.jobId), status: 'queued' as const, terminal: null };
+    });
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+    const service = createNewApiProviderService({
+      provider: '4dai', credentialStore: configuredCredentialStore(),
+      configurationStore: memoryConfigurationStore('https://api.4dai.cc/v1', [{
+        provider: '4dai', modelRoute: '4dai-gpt-image-2', displayName: 'gpt-image-2', modelId: 'gpt-image-2',
+        capabilities: ['image_generation'], capabilityStatus: 'complete',
+      }]),
+      providerTaskMappings: ledger.adapter, historySink: { ...history, reserveSubmission },
+      fetch: sequenceFetch(calls, [jsonResponse({ data: [{ b64_json: Buffer.from(png).toString('base64') }] })]),
+      storeGeneratedImage: async () => ({ assetId: '0123456789abcdef' }),
+    });
+    const request = { jobId: 'model-job-v2-prepost-history-4d', provider: '4dai' as const,
+      modelRoute: '4dai-gpt-image-2', prompt: 'poster', sessionId: 'session-prepost-4d',
+      referenceAssetIds: [] as string[], outputCount: 1 as const };
+    await expect(service.submitImageJob(request)).rejects.toThrow('history index temporarily locked');
+    expect(calls).toHaveLength(0);
+    const submitted = await service.submitImageJob(request);
+    await expect(service.submitImageJob(request)).resolves.toEqual(submitted);
+    expect(calls).toHaveLength(1);
+    await expect(service.pollImageJob({ provider: '4dai', providerTaskId: submitted.providerTaskId }))
+      .resolves.toMatchObject({ status: 'completed' });
+  });
+
+  it('claims a queued Julun history after a pre-POST ledger write failure without duplicating POST', async () => {
+    const ledger = providerLedger();
+    const originalReserve = ledger.adapter.reserveSubmission.bind(ledger.adapter);
+    vi.spyOn(ledger.adapter, 'reserveSubmission')
+      .mockRejectedValueOnce(new Error('ledger temporarily locked'))
+      .mockImplementation(originalReserve);
+    let historyReservations = 0;
+    const history = {
+      ...durableHistorySink(),
+      reserveSubmission: vi.fn(async (input: { jobId: string }) => ({
+        created: ++historyReservations === 1, historyId: deriveGenerationHistoryId(input.jobId),
+        status: 'queued' as const, terminal: null,
+      })),
+    };
+    const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+    const service = createNewApiProviderService({
+      provider: 'julun', credentialStore: configuredCredentialStore(),
+      configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
+        capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
+      }]),
+      providerTaskMappings: ledger.adapter, historySink: history,
+      fetch: sequenceFetch(calls, [jsonResponse({ id: 'one-paid-video', status: 'queued' })]),
+    });
+    const request = { jobId: 'model-job-v2-prepost-ledger-julun', provider: 'julun' as const,
+      modelRoute: 'julun-minimax-h3', prompt: 'orbit', sessionId: 'session-prepost-julun',
+      referenceAssetIds: [] as string[], outputCount: 1 as const };
+    await expect(service.submitVideoJob(request)).rejects.toThrow('ledger temporarily locked');
+    expect(calls).toHaveLength(0);
+    const submitted = await service.submitVideoJob(request);
+    await expect(service.submitVideoJob(request)).resolves.toEqual(submitted);
+    expect(calls).toHaveLength(1);
+    expect(history.reserveSubmission).toHaveBeenCalledTimes(2);
+    expect(ledger.records.get(submitted.providerTaskId)).toMatchObject({ state: 'running', rawTaskId: 'one-paid-video' });
+  });
+
+  it('marks an accepted Julun task with an unavailable local mapping as uncertain without another paid POST', async () => {
+    const ledger = providerLedger();
+    const originalSet = ledger.adapter.set.bind(ledger.adapter);
+    let failures = 3;
+    vi.spyOn(ledger.adapter, 'set').mockImplementation(async (record) => {
+      if (failures-- > 0) throw new Error('temporary mapping lock');
+      return originalSet(record);
+    });
+    const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+    const service = createNewApiProviderService({
+      provider: 'julun', credentialStore: configuredCredentialStore(),
+      configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
+        capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
+      }]),
+      providerTaskMappings: ledger.adapter,
+      fetch: sequenceFetch(calls, [jsonResponse({ id: 'raw-task', status: 'queued' })]),
+    });
+    const request = {
+      jobId: 'model-job-v2-mapping-uncertain', provider: 'julun' as const, modelRoute: 'julun-minimax-h3',
+      prompt: 'orbit', sessionId: 'session-retry', referenceAssetIds: [] as string[], outputCount: 1 as const,
+    };
+    await expect(service.submitVideoJob(request)).rejects.toMatchObject({
+      code: 'PROVIDER_UNAVAILABLE', message: expect.stringContaining('提交状态不确定'),
+    });
+    const submitted = await service.submitVideoJob(request);
+    expect(ledger.records.get(submitted.providerTaskId)).toMatchObject({ state: 'running', rawTaskId: 'raw-task' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([
+    [0, 'minimax_h3'], [3, 'minimax_h3'], [0, 'sd2.5'], [3, 'sd2.5'],
+  ] as const)('restores an accepted Julun task before new-request gates after %i ledger failures and reclassification to %s', async (writeFailures, changedModelId) => {
+    const ledger = providerLedger();
+    const originalSet = ledger.adapter.set.bind(ledger.adapter);
+    let remainingFailures = writeFailures;
+    let originalPublicTaskId = '';
+    vi.spyOn(ledger.adapter, 'set').mockImplementation(async record => {
+      originalPublicTaskId ||= record.publicTaskId;
+      if (remainingFailures-- > 0) throw new Error('temporary mapping lock');
+      return originalSet(record);
+    });
+    const selected = {
+      provider: 'julun' as const, modelRoute: 'julun-restoration-fixture', displayName: 'MiniMax H3', modelId: 'minimax_h3',
+      capabilities: ['video_generation' as const, 'async_tasks' as const], capabilityStatus: 'complete' as const,
+    };
+    const configurationStore = memoryConfigurationStore('https://julun.cc/v1', [selected]);
+    const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+    const getPrimaryToken = vi.fn(async () => 'fixture-token');
+    const readReferenceImage = vi.fn(async () => { throw new Error('an existing task must not read new references'); });
+    const binding = { projectId: 'project-restoration', rootFingerprint: 'a'.repeat(64) };
+    const service = createNewApiProviderService({
+      provider: 'julun', configurationStore, providerTaskMappings: ledger.adapter,
+      credentialStore: { ...configuredCredentialStore(), getPrimaryToken },
+      bindGenerationProject: async () => binding,
+      fetch: sequenceFetch(calls, [jsonResponse({ id: 'one-accepted-task', status: 'queued' })]), readReferenceImage,
+    });
+    const request = {
+      jobId: `model-job-v2-restoration-${writeFailures}-${changedModelId}`, provider: 'julun' as const,
+      modelRoute: selected.modelRoute, projectId: binding.projectId, prompt: 'orbit', sessionId: 'session-restoration',
+      referenceAssetIds: [] as string[],
+    };
+    if (writeFailures === 0) await service.submitVideoJob(request);
+    else await expect(service.submitVideoJob(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(originalPublicTaskId).toMatch(/^provider-job-[a-f0-9]{32}$/u);
+    await configurationStore.write({ baseUrl: 'https://julun.cc/v1', profiles: [{
+      ...selected, modelId: changedModelId, capabilityStatus: 'incomplete', enabled: false,
+      constraints: { video: { resolutions: ['4K'], duration: { mode: 'options', options: [999] } } },
+    }] });
+    await expect(service.submitVideoJob({ ...request, resolution: '4K', durationSeconds: 999,
+      referenceAssetIds: ['0123456789abcdef'] })).resolves.toEqual({ providerTaskId: originalPublicTaskId });
+    expect(calls).toHaveLength(1);
+    expect(getPrimaryToken).toHaveBeenCalledTimes(1);
+    expect(readReferenceImage).not.toHaveBeenCalled();
+    expect(ledger.records.get(originalPublicTaskId)).toMatchObject({ kind: 'video', state: 'running', rawTaskId: 'one-accepted-task', projectBinding: binding });
+  });
+
+  it.each(['provider', 'history', 'kind', 'session', 'project'] as const)(
+    'rejects an existing Julun mapping with mismatched %s identity without returning it or submitting', async mismatch => {
+    const ledger = providerLedger();
+    const jobId = `model-job-v2-existing-${mismatch}`;
+    const historyId = deriveGenerationHistoryId(jobId);
+    const existing: ProviderTaskMappingRecord = {
+      provider: mismatch === 'provider' ? '4dai' : 'julun',
+      historyId: mismatch === 'history' ? 'wrong-history' : historyId,
+      kind: mismatch === 'kind' ? 'image' : 'video', sessionId: mismatch === 'session' ? 'other-session' : 'session-existing',
+      publicTaskId: `provider-job-${'c'.repeat(32)}`, rawTaskId: 'already-accepted', state: 'running',
+      createdAt: '2026-10-03T00:00:00.000Z', updatedAt: '2026-10-03T00:00:00.000Z',
+      ...(mismatch === 'project' ? { projectBinding: { projectId: 'project-old', rootFingerprint: 'a'.repeat(64) } } : {}),
+    };
+    vi.spyOn(ledger.adapter, 'findByHistoryId').mockResolvedValue(existing);
+    const reservation = vi.spyOn(ledger.adapter, 'reserveSubmission');
+    const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+    const service = createNewApiProviderService({
+      provider: 'julun', credentialStore: configuredCredentialStore(), providerTaskMappings: ledger.adapter,
+      configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'MiniMax', modelId: 'minimax_h3',
+        capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
+      }]),
+      fetch: sequenceFetch(calls, []),
+      ...(mismatch === 'project' ? { bindGenerationProject: async () => ({ projectId: 'project-new', rootFingerprint: 'b'.repeat(64) }) } : {}),
+    });
+    await expect(service.submitVideoJob({
+      provider: 'julun', jobId, modelRoute: 'julun-minimax-h3', prompt: 'orbit', sessionId: 'session-existing', referenceAssetIds: [],
+    })).rejects.toMatchObject({ code: mismatch === 'session' || mismatch === 'project' ? 'INVALID_REQUEST' : 'PROVIDER_INVALID_RESPONSE' });
+    expect(calls).toEqual([]);
+    expect(reservation).not.toHaveBeenCalled();
+  });
+
+  it('rejects an image mapping that appears during the video pre-POST lookup race', async () => {
+    const ledger = providerLedger();
+    const jobId = 'model-job-v2-kind-race';
+    vi.spyOn(ledger.adapter, 'findByHistoryId').mockResolvedValueOnce(undefined).mockResolvedValue({
+      provider: 'julun', historyId: deriveGenerationHistoryId(jobId), kind: 'image', sessionId: 'session-race',
+      publicTaskId: `provider-job-${'d'.repeat(32)}`, rawTaskId: 'image-task', state: 'running',
+      createdAt: '2026-10-03T00:00:00.000Z', updatedAt: '2026-10-03T00:00:00.000Z',
+    });
+    const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+    const service = createNewApiProviderService({
+      provider: 'julun', credentialStore: configuredCredentialStore(), providerTaskMappings: ledger.adapter,
+      configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'MiniMax', modelId: 'minimax_h3',
+        capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
+      }]), fetch: sequenceFetch(calls, []),
+    });
+    await expect(service.submitVideoJob({ provider: 'julun', jobId, modelRoute: 'julun-minimax-h3', prompt: 'orbit',
+      sessionId: 'session-race', referenceAssetIds: [] })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    expect(calls).toEqual([]);
+  });
+
+  it('recovers accepted inline bytes in the same process after three temporary staging failures', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'newapi-stage-retry-'));
+    try {
+      const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const fileSystem = new NodeFileSystem();
+      const originalOpen = fileSystem.open.bind(fileSystem);
+      let failures = 3;
+      vi.spyOn(fileSystem, 'open').mockImplementation(async (path, flags) => {
+        if (path.includes('newapi-pending-') && failures-- > 0) throw new Error('temporary disk lock');
+        return originalOpen(path, flags);
+      });
+      const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
+      const ledger = providerLedger();
+      const service = createNewApiProviderService({
+        provider: '4dai', appDataRoot, fileSystem, credentialStore: configuredCredentialStore(),
+        configurationStore: memoryConfigurationStore('https://api.4dai.cc/v1', [{
+          provider: '4dai', modelRoute: '4dai-gpt-image-2', displayName: 'gpt-image-2', modelId: 'gpt-image-2',
+          capabilities: ['image_generation'], capabilityStatus: 'complete',
+        }]),
+        providerTaskMappings: ledger.adapter,
+        bindGenerationProject: async () => ({ projectId: 'project-a', rootFingerprint: 'a'.repeat(64) }),
+        storeGeneratedImageForProject: async () => ({ assetId: 'fedcba9876543210' }),
+        fetch: sequenceFetch(calls, [jsonResponse({ data: [{ b64_json: Buffer.from(png).toString('base64') }] })]),
+      });
+      const request = {
+        jobId: 'model-job-v2-stage-retry', projectId: 'project-a', provider: '4dai' as const,
+        modelRoute: '4dai-gpt-image-2', prompt: 'poster', sessionId: 'session-a',
+        referenceAssetIds: [] as string[], outputCount: 1 as const,
+      };
+      await expect(service.submitImageJob(request)).rejects.toMatchObject({
+        code: 'PROVIDER_UNAVAILABLE', message: expect.stringContaining('提交状态不确定'),
+      });
+      const submitted = await service.submitImageJob(request);
+      await expect(service.pollImageJob({ provider: '4dai', providerTaskId: submitted.providerTaskId }))
+        .resolves.toMatchObject({ status: 'completed' });
+      expect(calls).toHaveLength(1);
+    } finally {
+      await rm(appDataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not resurrect a cancelled 4D task when a deferred project write finishes', async () => {
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const ledger = providerLedger();
+    let beginStore!: () => void;
+    let resolveStore!: (value: { assetId: string }) => void;
+    const storing = new Promise<void>((resolve) => { beginStore = resolve; });
+    const storeGeneratedImageForProject = vi.fn(async () => {
+      beginStore();
+      return new Promise<{ assetId: string }>((resolve) => { resolveStore = resolve; });
+    });
+    const service = createNewApiProviderService({
+      provider: '4dai', credentialStore: configuredCredentialStore(),
+      configurationStore: memoryConfigurationStore('https://api.4dai.cc/v1', [{
+        provider: '4dai', modelRoute: '4dai-gpt-image-2', displayName: 'gpt-image-2', modelId: 'gpt-image-2',
+        capabilities: ['image_generation'], capabilityStatus: 'complete',
+      }]),
+      providerTaskMappings: ledger.adapter,
+      bindGenerationProject: async () => ({ projectId: 'project-a', rootFingerprint: 'a'.repeat(64) }),
+      storeGeneratedImageForProject,
+      resolveResultHost: async () => ['93.184.216.34'],
+      fetch: sequenceFetch([], [
+        jsonResponse({ data: [{ url: 'https://cdn.example.test/deferred.png' }] }), binaryResponse(png),
+      ]),
+    });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-cancel-race', projectId: 'project-a', provider: '4dai',
+      modelRoute: '4dai-gpt-image-2', prompt: 'poster', sessionId: 'session-a', referenceAssetIds: [], outputCount: 1,
+    });
+    const polling = service.pollImageJob({ provider: '4dai', providerTaskId: submitted.providerTaskId });
+    await storing;
+    await expect(service.cancelImageJob({ provider: '4dai', providerTaskId: submitted.providerTaskId }))
+      .resolves.toEqual({ status: 'cancelled' });
+    resolveStore({ assetId: 'fedcba9876543210' });
+    await expect(polling).resolves.toEqual({ status: 'cancelled' });
+    expect(ledger.records.get(submitted.providerTaskId)).toMatchObject({ state: 'cancelled' });
+  });
+
+  it('does not recreate an acknowledged 4D task when an older result download finishes', async () => {
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const ledger = providerLedger();
+    let beginDownload!: () => void;
+    let resolveDownload!: (response: ComflyFetchResponse) => void;
+    const downloading = new Promise<void>((resolve) => { beginDownload = resolve; });
+    let calls = 0;
+    const fetch: NewApiFetch = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) return jsonResponse({ data: [{ url: 'https://cdn.example.test/late.png' }] });
+      beginDownload();
+      return new Promise<ComflyFetchResponse>((resolve) => { resolveDownload = resolve; });
+    });
+    const storeGeneratedImageForProject = vi.fn(async () => ({ assetId: 'fedcba9876543210' }));
+    const service = createNewApiProviderService({
+      provider: '4dai', credentialStore: configuredCredentialStore(),
+      configurationStore: memoryConfigurationStore('https://api.4dai.cc/v1', [{
+        provider: '4dai', modelRoute: '4dai-gpt-image-2', displayName: 'gpt-image-2', modelId: 'gpt-image-2',
+        capabilities: ['image_generation'], capabilityStatus: 'complete',
+      }]),
+      providerTaskMappings: ledger.adapter,
+      bindGenerationProject: async () => ({ projectId: 'project-a', rootFingerprint: 'a'.repeat(64) }),
+      storeGeneratedImageForProject, resolveResultHost: async () => ['93.184.216.34'], fetch,
+    });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-ack-race', projectId: 'project-a', provider: '4dai',
+      modelRoute: '4dai-gpt-image-2', prompt: 'poster', sessionId: 'session-a', referenceAssetIds: [], outputCount: 1,
+    });
+    const polling = service.pollImageJob({ provider: '4dai', providerTaskId: submitted.providerTaskId });
+    await downloading;
+    await service.cancelImageJob({ provider: '4dai', providerTaskId: submitted.providerTaskId });
+    await service.ackImageJobTerminal({ provider: '4dai', providerTaskId: submitted.providerTaskId });
+    resolveDownload(binaryResponse(png));
+    await expect(polling).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    expect(ledger.records.has(submitted.providerTaskId)).toBe(false);
+    expect(storeGeneratedImageForProject).not.toHaveBeenCalled();
   });
 
   it('keeps a completed video remote when content download fails transiently, then retries', async () => {
@@ -694,7 +1338,7 @@ describe('secure New API provider service', () => {
     const service = createNewApiProviderService({
       provider: 'julun', credentialStore: configuredCredentialStore(),
       configurationStore: memoryConfigurationStore('https://julun.cc/v1', [{
-        provider: 'julun', modelRoute: 'julun-sora', displayName: 'sora', modelId: 'sora',
+        provider: 'julun', modelRoute: 'julun-minimax-h3', displayName: 'minimax_h3', modelId: 'minimax_h3',
         capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
       }]),
       fetch: sequenceFetch([], [
@@ -707,7 +1351,7 @@ describe('secure New API provider service', () => {
       storeGeneratedVideo: async () => ({ assetId: '0123456789abcdef' }),
     });
     const submitted = await service.submitVideoJob({
-      provider: 'julun', modelRoute: 'julun-sora', prompt: 'orbit', sessionId: 'session-retry', referenceAssetIds: [], outputCount: 1,
+      provider: 'julun', modelRoute: 'julun-minimax-h3', prompt: 'orbit', sessionId: 'session-retry', referenceAssetIds: [], outputCount: 1,
     });
 
     await expect(service.pollVideoJob({ provider: 'julun', providerTaskId: submitted.providerTaskId }))
@@ -1122,8 +1766,30 @@ function providerLedger() {
   const records = new Map<string, ProviderTaskMappingRecord>();
   const reservations = new Set<string>();
   const adapter: ProviderTaskMappingStore = {
+    updateRunning: async (id, update, now) => {
+      const record = records.get(id);
+      if (record === undefined || record.state !== 'running'
+        || (update.expectedRawTaskId !== undefined && record.rawTaskId !== update.expectedRawTaskId)) return record;
+      const next = { ...record, updatedAt: now, rawTaskId: update.rawTaskId ?? record.rawTaskId,
+        result: record.result ?? update.result };
+      records.set(id, next);
+      return next;
+    },
+    attachStoredImageResult: async (id, result, now) => {
+      const record = records.get(id);
+      if (record === undefined || record.state !== 'running' || record.result !== undefined) return record;
+      const updated = { ...record, result, updatedAt: now };
+      records.set(id, updated);
+      return updated;
+    },
     get: async (id) => records.get(id),
     set: async (record) => { records.set(record.publicTaskId, record); },
+    setIfAbsent: async (record) => {
+      const existing = records.get(record.publicTaskId);
+      if (existing !== undefined) return existing;
+      records.set(record.publicTaskId, record);
+      return record;
+    },
     ackTerminal: async (id) => { records.delete(id); },
     findByHistoryId: async (id) => [...records.values()].find((record) => record.historyId === id),
     gcTerminalTombstones: async () => undefined,

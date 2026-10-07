@@ -23,14 +23,14 @@ test('keeps the Agent header aligned and lets a referenced long-form composer gr
   await openAgentPanel(page);
 
   const panel = page.getByTestId('agent-panel');
-  await expect(panel.getByRole('combobox', { name: 'Codex 任务' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: '历史对话', exact: true })).toBeVisible();
   await expect(panel.getByRole('button', { name: '新建任务' })).toBeVisible();
   await expect(panel.getByRole('button', { name: '关闭 Novus Agent' })).toBeVisible();
 
   const initialMetrics = await panel.evaluate((element) => {
     const footer = element.querySelector('.skill-chat-workbench__composer-footer');
     const composer = element.querySelector('.skill-chat-workbench__composer');
-    const taskSelect = element.querySelector<HTMLElement>('.skill-chat-workbench__header-actions select');
+    const taskSelect = element.querySelector<HTMLElement>('[data-agent-history-trigger]');
     const newTask = element.querySelector<HTMLElement>('.skill-chat-workbench__new-chat');
     const visible = (control: HTMLElement) => getComputedStyle(control).display !== 'none';
     const controls = footer === null ? [] : [...footer.querySelectorAll<HTMLElement>('button, select')]
@@ -190,9 +190,9 @@ test('keeps reverse depth readable above reasoning, generation preferences, know
   const input = panel.getByTestId('agent-composer-input');
   await input.fill('@');
   await panel.getByRole('menuitem', { name: 'Mention Reverse layout reference' }).click();
-  await expect(panel.getByRole('button', { name: '反推强度：标准反推' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: '分析深度：标准分析' })).toBeVisible();
   await panel.getByTestId('agent-model-trigger').click();
-  await expect(panel.getByRole('dialog', { name: '模型与反推强度设置' }).getByRole('group', { name: '反推强度' })).toBeVisible();
+  await expect(panel.getByRole('dialog', { name: '模型与分析深度设置' }).getByRole('group', { name: '分析深度' })).toBeVisible();
   await expect(panel.getByRole('dialog', { name: '选择聊天模型' })).toBeVisible();
   const controls = await panel.evaluate((element) => {
     const rect = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect().toJSON();
@@ -219,7 +219,7 @@ test('keeps reverse depth readable above reasoning, generation preferences, know
   expect(controls.newChat.x - (controls.knowledge.x + controls.knowledge.width)).toBeLessThanOrEqual(10);
   expect(controls.send.x - (controls.newChat.x + controls.newChat.width)).toBeLessThanOrEqual(10);
   expect(controls.reverseDepth).toHaveLength(3);
-  expect(controls.reverseDepth.map((button) => button.text)).toEqual(['快速反推', '标准反推', '深度反推']);
+  expect(controls.reverseDepth.map((button) => button.text)).toEqual(['快速分析', '标准分析', '深度分析']);
   expect(Math.abs(controls.modeSelector.y - controls.reasoning.y)).toBeLessThanOrEqual(2);
   expect(controls.reverseDepthGroup.y + controls.reverseDepthGroup.height).toBeLessThanOrEqual(controls.reasoning.y);
   for (const button of controls.reverseDepth) {

@@ -112,7 +112,7 @@ describe('Comfly capability regressions', () => {
     expect(storeGeneratedImage).toHaveBeenCalledOnce();
   });
 
-  it('submits managed reference images with Seedance-native parameter names', async () => {
+  it.each(['Animate the product naturally.', '首帧使用 @图片1，尾帧使用 @图片2，保持主体。'])('submits managed reference images with Seedance-native parameter names: %s', async prompt => {
     const appDataRoot = await makeTempRoot();
     const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string | Uint8Array }) => jsonResponse({ task_id: 'seedance-task-1' }));
     const readManagedGenerationImages = vi.fn(async () => [
@@ -130,7 +130,7 @@ describe('Comfly capability regressions', () => {
       jobId: 'model-job-v2-comfly-seedance-i2v',
       provider: 'comfly',
       modelRoute: 'doubao-seedance-2.5',
-      prompt: 'Animate the product naturally.',
+      prompt,
       conversationId: 'conversation-seedance-i2v',
       sessionId: 'desktop-session-seedance-i2v',
       referenceAssetIds: ['a'.repeat(16), 'b'.repeat(16)],
@@ -147,7 +147,7 @@ describe('Comfly capability regressions', () => {
     );
     expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
       model: 'doubao-seedance-2.5',
-      prompt: 'Animate the product naturally.',
+      prompt,
       images: ['data:image/png;base64,AQID', 'data:image/jpeg;base64,BAUG'],
       ratio: '16:9',
       resolution: '1080p',

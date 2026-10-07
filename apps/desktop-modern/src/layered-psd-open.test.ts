@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { saveAndOpenLayeredPsdInPhotoshop } from './layered-psd-open';
+import * as psdBoundary from './layered-psd-open';
 
 function validPsd(): Uint8Array {
   const bytes = new Uint8Array(64);
@@ -7,6 +8,39 @@ function validPsd(): Uint8Array {
   bytes.set([0, 3, 0, 0, 0, 2, 0, 0, 0, 2, 0, 8, 0, 3], 12); // RGB, 2×2, 8-bit
   return bytes;
 }
+
+describe('trusted PSD save without Photoshop', () => {
+  type SaveDependencies = { chooseDestination(): Promise<string | null>; writePsd(path: string, bytes: Uint8Array): Promise<void> };
+  const save = (bytes: unknown, dependencies: SaveDependencies) =>
+    (psdBoundary as unknown as { saveLayeredPsd(bytes: unknown, dependencies: SaveDependencies): Promise<unknown> }).saveLayeredPsd(bytes, dependencies);
+  it('saves exact validated bytes to the native-dialog destination without needing Photoshop', async () => {
+    const bytes = validPsd(); const writePsd = vi.fn(async () => undefined);
+    await expect(save(bytes, { chooseDestination: async () => 'C:\\chosen\\layers', writePsd })).resolves.toEqual({ ok: true, saved: true });
+    expect(writePsd).toHaveBeenCalledWith('C:\\chosen\\layers.psd', bytes);
+  });
+  it('rejects invalid or over-budget PSDs before opening the dialog', async () => {
+    const chooseDestination = vi.fn(async () => 'C:\\chosen\\layers.psd'); const writePsd = vi.fn(async () => undefined);
+    await expect(save(new Uint8Array([1,2,3]), { chooseDestination, writePsd })).resolves.toEqual({ ok: false, code: 'invalid_psd' });
+    const oversizedCanvas = validPsd(); new DataView(oversizedCanvas.buffer).setUint32(18, 8193, false);
+    await expect(save(oversizedCanvas, { chooseDestination, writePsd })).resolves.toEqual({ ok: false, code: 'invalid_psd' });
+    expect(chooseDestination).not.toHaveBeenCalled(); expect(writePsd).not.toHaveBeenCalled();
+  });
+  it('reports cancel and save failures separately with no output path', async () => {
+    const writePsd = vi.fn(async () => { throw new Error('private path'); });
+    await expect(save(validPsd(), { chooseDestination: async () => null, writePsd })).resolves.toEqual({ ok: false, code: 'cancelled' });
+    expect(writePsd).not.toHaveBeenCalled();
+    await expect(save(validPsd(), { chooseDestination: async () => 'C:\\chosen\\layers.psd', writePsd })).resolves.toEqual({ ok: false, code: 'save_failed' });
+  });
+  it('rejects foreign or missing window senders through the actual IPC handler before the dialog', async () => {
+    const trustedSender = {}, foreignSender = {}, chooseDestination = vi.fn(async () => 'C:\\chosen\\layers.psd'), writePsd = vi.fn(async () => undefined);
+    const createHandler = (psdBoundary as unknown as { createLayeredPsdSaveHandler(getSender: () => unknown, deps: SaveDependencies): (event: { sender: unknown }, bytes: unknown) => Promise<unknown> }).createLayeredPsdSaveHandler;
+    const handler = createHandler(() => trustedSender, { chooseDestination, writePsd });
+    await expect(handler({ sender: foreignSender }, validPsd())).resolves.toEqual({ ok: false, code: 'invalid_psd' });
+    await expect(createHandler(() => undefined, { chooseDestination, writePsd })({ sender: undefined }, validPsd())).resolves.toEqual({ ok: false, code: 'invalid_psd' });
+    expect(chooseDestination).not.toHaveBeenCalled(); expect(writePsd).not.toHaveBeenCalled();
+    await expect(handler({ sender: trustedSender }, validPsd())).resolves.toEqual({ ok: true, saved: true });
+  });
+});
 
 describe('layered PSD desktop open boundary', () => {
   it('rejects invalid bytes before asking for a file or launching Photoshop', async () => {

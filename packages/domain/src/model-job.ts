@@ -12,6 +12,25 @@ export const imageResolutionTierSchema = z.enum(['1K', '2K', '4K']);
 export const imageQualitySchema = z.enum(['auto', 'low', 'medium', 'high']);
 export const imageOutputFormatSchema = z.enum(['png', 'jpeg', 'webp']);
 export const imageBackgroundSchema = z.enum(['auto', 'opaque', 'transparent']);
+/**
+ * The output contract is part of the confirmed layering request.  It is not a
+ * provider claim and it never promotes a result to a trusted foreground by
+ * itself.  Legacy jobs intentionally omit this field and continue to use the
+ * alpha-matte/source reconstruction path.
+ */
+export const layeringOutputContractSchema = z.enum([
+  'source-alpha-matte-v1',
+  'source-independent-rgba-v2',
+  'opaque-background-v2',
+]);
+export type LayeringOutputContract = z.infer<typeof layeringOutputContractSchema>;
+export const layeringResultRepresentationSchema = z.enum([
+  'alpha-matte',
+  'independent-rgba-candidate',
+  'opaque-background-candidate',
+]);
+export type LayeringResultRepresentation = z.infer<typeof layeringResultRepresentationSchema>;
+const layeringConfirmationDigestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 export const videoResolutionTierSchema = z.enum(['360p', '480p', '512p', '540p', '720p', '768p', '1080p', '2K', '4K']);
 export type ImageAspectRatio = z.infer<typeof imageAspectRatioSchema>;
 export type ImageResolutionTier = z.infer<typeof imageResolutionTierSchema>;
@@ -131,9 +150,20 @@ export const modelJobSchema = z.object({
   terminalStatus: modelJobTerminalStatusSchema.optional(),
   layeringGroupId: idSchema.optional(),
   layeringLayerId: idSchema.optional(),
+  layeringOutputContract: layeringOutputContractSchema.optional(),
+  layeringConfirmationDigest: layeringConfirmationDigestSchema.optional(),
 }).strict().superRefine((job, context) => {
   if ((job.layeringGroupId === undefined) !== (job.layeringLayerId === undefined)) {
     context.addIssue({ code: 'custom', path: ['layeringGroupId'], message: 'Layering group and layer identifiers must be stored together.' });
+  }
+  const hasLayerOwnership = job.layeringGroupId !== undefined && job.layeringLayerId !== undefined;
+  const hasContract = job.layeringOutputContract !== undefined;
+  const hasDigest = job.layeringConfirmationDigest !== undefined;
+  if (hasContract !== hasDigest) {
+    context.addIssue({ code: 'custom', path: ['layeringConfirmationDigest'], message: 'Layering output contract and confirmation digest must be stored together.' });
+  }
+  if ((hasContract || hasDigest) && (!hasLayerOwnership || job.kind !== 'image')) {
+    context.addIssue({ code: 'custom', path: ['layeringOutputContract'], message: 'Layering output contracts are only valid for image jobs with group and layer ownership.' });
   }
 });
 
@@ -169,6 +199,8 @@ export interface ConfirmedModelJobInput {
   queueIndex?: number;
   layeringGroupId?: string;
   layeringLayerId?: string;
+  layeringOutputContract?: LayeringOutputContract;
+  layeringConfirmationDigest?: string;
 }
 
 const legalTransitions: Record<ModelJobStatus, readonly ModelJobStatus[]> = {
@@ -206,6 +238,7 @@ export function transitionModelJob(
   if (!legalTransitions[job.status].includes(nextStatus)) {
     throw new Error(`illegal model job transition: ${job.status} -> ${nextStatus}`);
   }
+  assertImmutableLayeringBinding(job, patch);
   const retryCount = job.status === 'failed' && nextStatus === 'queued'
     ? (job.retryCount ?? 0) + 1
     : (job.retryCount ?? 0);
@@ -218,6 +251,27 @@ export function transitionModelJob(
     error,
     ...(nextStatus === 'queued' ? { providerAckPending: undefined, terminalStatus: undefined } : {}),
   });
+}
+
+/**
+ * A queued layer job is a promise to the user about the source, owner and
+ * representation.  A status transition may update provider/runtime fields,
+ * but it must never silently change that promise while the provider is
+ * running.  Retries create a new confirmed job and copy the binding instead.
+ */
+function assertImmutableLayeringBinding(job: ModelJob, patch: Partial<ModelJob>): void {
+  const fields: Array<keyof ModelJob> = [
+    'layeringGroupId',
+    'layeringLayerId',
+    'layeringOutputContract',
+    'layeringConfirmationDigest',
+  ];
+  for (const field of fields) {
+    if (Object.prototype.hasOwnProperty.call(patch, field)
+      && patch[field] !== job[field]) {
+      throw new Error(`model job layering binding is immutable: ${String(field)}`);
+    }
+  }
 }
 
 export function sanitizeModelJobError(error: unknown): string {

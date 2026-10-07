@@ -243,6 +243,21 @@ const runNodeRequestSchema = z.object({
   expectedRevision: revisionSchema,
   nodeId: idSchema,
   confirmationToken: idSchema.optional(),
+  operation: z.enum(['analyze_layering', 'start_layering', 'export_layered_psd']).optional(),
+  analysis: z.object({
+    provider: z.enum(['comfly', 'relayme', 'julun', '4dai']), modelRoute: idSchema,
+    mode: z.enum(['auto', 'custom']).optional(), targetLayerCount: z.number().int().min(2).max(12).optional(),
+    selection: z.object({ mode: z.enum(['whole', 'objects', 'region']), target: z.string().max(500).optional(),
+      box: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), width: z.number().positive().max(1), height: z.number().positive().max(1) }).strict().optional(),
+    }).strict().optional(),
+  }).strict().optional(),
+  layering: z.object({
+    analysisJobId: idSchema, provider: z.enum(['comfly', 'relayme', 'julun', '4dai']), modelRoute: idSchema, resolution: z.enum(['1K', '2K', '4K']),
+    layerEdits: z.array(z.object({ layerId: z.string().min(1).max(64), included: z.boolean().optional(), name: z.string().trim().min(1).max(80).optional(), description: z.string().trim().min(1).max(1000).optional(),
+      sourceBounds: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), width: z.number().positive().max(1), height: z.number().positive().max(1) }).strict().optional(),
+    }).strict()).max(12).optional(),
+  }).strict().optional(),
+  openPhotoshop: z.boolean().optional(),
 }).strict();
 const cancelJobRequestSchema = z.object({ tool: z.literal('canvas_cancel_job'), jobId: idSchema }).strict();
 const importMediaRequestSchema = z.object({
@@ -311,7 +326,7 @@ export const CANVAS_MCP_TOOL_DEFINITIONS: readonly CanvasMcpToolDefinition[] = O
   tool('canvas_describe_nodes', 'Describe canvas nodes', 'List supported node types, ports, and public capabilities.', describeNodesRequestSchema),
   tool('canvas_read_workflow', 'Read workflow', 'Read the current public workflow snapshot.', readWorkflowRequestSchema),
   tool('canvas_get_selection', 'Get selection', 'Read selected canvas node and edge identifiers.', getSelectionRequestSchema),
-  tool('canvas_get_job_status', 'Get job status', 'Read a managed job status without provider secrets.', getJobStatusRequestSchema),
+  tool('canvas_get_job_status', 'Get job status', 'Read a managed job status without provider secrets. start_layering completed means its dispatcher returned phase=dispatched, generationCompleted=false; poll result.jobIds for actual image generation and inspect the group quality before export. Analysis plans are runtime-owned and expire after restart, project/revision drift or bounded 30-minute retention.', getJobStatusRequestSchema),
   tool('canvas_plan_workflow', 'Plan workflow', 'Validate and preview a workflow change without writing it.', planWorkflowRequestSchema),
   tool('canvas_apply_workflow', 'Apply workflow', 'Apply a confirmed one-time workflow plan.', applyWorkflowRequestSchema),
   tool('canvas_create_node', 'Create node', 'Create one supported canvas node at a position.', createNodeRequestSchema),
@@ -319,7 +334,7 @@ export const CANVAS_MCP_TOOL_DEFINITIONS: readonly CanvasMcpToolDefinition[] = O
   tool('canvas_connect_nodes', 'Connect nodes', 'Connect compatible source and target ports.', connectNodesRequestSchema),
   tool('canvas_move_nodes', 'Move nodes', 'Move one or more nodes in one transaction.', moveNodesRequestSchema),
   tool('canvas_delete_selection', 'Delete selection', 'Delete the current confirmed selection.', deleteSelectionRequestSchema),
-  tool('canvas_run_node', 'Run node', 'Run an image node directly, or a video or reverse node after paid-job confirmation.', runNodeRequestSchema),
+  tool('canvas_run_node', 'Run node or image layering', 'Run image generation directly or confirmed video/reverse jobs. operation=analyze_layering analyzes a managed image using analysis provider/modelRoute after its own Canvas confirmation; poll the returned job for a plan. operation=start_layering confirms and generates that exact analysisJobId plan with bounded layerEdits and layering provider/modelRoute/resolution. operation=export_layered_psd exports a formal source-pixel image_layering group after quality checks and a trusted save dialog; exportFiles required, openPhotoshop defaults false. Every layering operation has a separate one-time Canvas confirmation. Retry the identical request to obtain approvalCode, then pass confirmationToken. Poll returned jobIds; cancellation, saving and Photoshop opening have separate receipts. No client paths, bytes or quality flags.', runNodeRequestSchema),
   tool('canvas_cancel_job', 'Cancel job', 'Cancel one managed Canvas Atelier job.', cancelJobRequestSchema),
   tool('canvas_import_media', 'Import media', 'Ask Canvas Atelier to open its own image or video picker.', importMediaRequestSchema),
 ]);

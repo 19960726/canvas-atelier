@@ -60,13 +60,14 @@ export function modelJobBelongsToProject(
   job: ModelJob,
   project: CanvasProject,
   activeProjectSessionId: string | null,
+  options: { readonly allowDurableLayerOwnership?: boolean } = {},
 ): boolean {
   // New queue records carry a stable project id. It remains authoritative
   // after renderer reload, project reopen, and application restart, when the
   // desktop bridge necessarily replaces its temporary session id.
   if (job.projectId !== undefined) return job.projectId === project.id;
 
-  if (projectDurablyOwnsLegacyJob(project, job)) return true;
+  if (projectDurablyOwnsLegacyJob(project, job, options.allowDurableLayerOwnership === true)) return true;
   return job.projectSessionId !== undefined
     && activeProjectSessionId !== null
     && job.projectSessionId === activeProjectSessionId;
@@ -135,10 +136,22 @@ function sameExplicitBoolean(jobValue: unknown, draftValue: unknown): boolean {
   return typeof jobValue !== 'boolean' || typeof draftValue !== 'boolean' || jobValue === draftValue;
 }
 
-function projectDurablyOwnsLegacyJob(project: CanvasProject, job: ModelJob): boolean {
+function projectDurablyOwnsLegacyJob(project: CanvasProject, job: ModelJob, allowDurableLayerOwnership = false): boolean {
   const sourceNode = project.nodes.find((node) => node.id === job.promptNodeId);
   if (sourceNode?.type !== 'module') return false;
   const kind = job.kind ?? 'image';
+  if (sourceNode.data.moduleType === 'image_layer') {
+    // Local editing guards may recognize a bound legacy task. This opt-in must
+    // not authorize global queue dispatch or recovery of an older layer job.
+    if (!allowDurableLayerOwnership) return false;
+    const config = sourceNode.data.config;
+    const sourceAssetId = config.sourceAssetId;
+    return kind === 'image' && config.jobId === job.id
+      && typeof job.layeringGroupId === 'string' && config.groupId === job.layeringGroupId
+      && typeof job.layeringLayerId === 'string' && config.layerId === job.layeringLayerId
+      && typeof sourceAssetId === 'string' && job.referenceAssetIds.includes(sourceAssetId)
+      && project.assets?.some(asset => asset.assetId === sourceAssetId && asset.mediaType.startsWith('image/')) === true;
+  }
   if (kind === 'video') {
     if (sourceNode.data.moduleType !== 'video_generation') return false;
   } else if (sourceNode.data.moduleType !== 'image_generation') {

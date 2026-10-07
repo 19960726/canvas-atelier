@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { RelayMeClient, loginRelayMeAccount, type RelayMeFetch } from '@agent-canvas/provider-relayme';
 import { parseReverseProviderResponse } from './reverse-provider-response.js';
 import { NodeFileSystem, type FileSystem } from './file-system.js';
-import type { GenerationHistoryProviderSinkContract } from './generation-history-provider-sink.js';
+import { deriveGenerationHistoryId, type GenerationHistoryDurableTerminal, type GenerationHistoryProviderSinkContract, type GenerationHistoryVideoMetadata } from './generation-history-provider-sink.js';
 import {
   createProviderConfigurationStore,
   type PersistedProviderConfigurationState,
@@ -22,7 +22,9 @@ import {
 } from './provider-skill-chat.js';
 import { buildSkillChatSystemInstructions } from './skill-chat-visual-analysis.js';
 import type { ProviderService } from './provider-service-types.js';
-import { createProviderTaskMappingStore, type ProviderTaskMappingRecord } from './provider-task-ledger.js';
+import { assertMatchingProjectBinding, createProviderTaskMappingStore, persistPaidProviderMapping, type ProviderTaskMappingRecord } from './provider-task-ledger.js';
+import type { GenerationProjectBinding } from './generation-project-binding.js';
+import { createProviderPendingMediaStore, pendingMediaTaskMarker, type PendingMediaManifest } from './provider-pending-media.js';
 import {
   PROVIDER_BRIDGE_CHANNELS,
   createProviderBridgeError,
@@ -67,8 +69,8 @@ const RELAYME_RESULT_MAX_BYTES = {
 } as const;
 
 type RelayTask =
-  | { readonly historyId?: string; readonly kind: 'image'; readonly rawTaskId: string; readonly sessionId: string; state: 'running' | 'completed' | 'failed' | 'cancelled'; result?: ProviderImageJobResult; error?: ReturnType<typeof normalizeProviderBridgeError> }
-  | { readonly historyId?: string; readonly kind: 'video'; readonly rawTaskId: string; readonly sessionId: string; state: 'running' | 'completed' | 'failed' | 'cancelled'; result?: ProviderVideoJobResult; error?: ReturnType<typeof normalizeProviderBridgeError> };
+  | { readonly historyId?: string; readonly kind: 'image'; readonly rawTaskId: string; readonly sessionId: string; readonly projectBinding?: GenerationProjectBinding; state: 'running' | 'completed' | 'failed' | 'cancelled'; result?: ProviderImageJobResult; error?: ReturnType<typeof normalizeProviderBridgeError> }
+  | { readonly historyId?: string; readonly kind: 'video'; readonly rawTaskId: string; readonly sessionId: string; readonly projectBinding?: GenerationProjectBinding; state: 'running' | 'completed' | 'failed' | 'cancelled'; result?: ProviderVideoJobResult; error?: ReturnType<typeof normalizeProviderBridgeError> };
 
 interface ConfigurationSnapshot {
   readonly baseUrl: string;
@@ -90,6 +92,9 @@ export interface RelayMeProviderServiceOptions {
   readonly readManagedSkillChatImages?: ManagedSkillChatImageResolver['readManagedSkillChatImages'];
   readonly storeGeneratedImage?: (sessionId: string, bytes: Uint8Array, mediaType: string) => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
   readonly storeGeneratedVideo?: (sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
+  readonly bindGenerationProject?: (sessionId: string, expectedProjectId?: string) => Promise<GenerationProjectBinding>;
+  readonly storeGeneratedImageForProject?: (binding: GenerationProjectBinding, bytes: Uint8Array, mediaType: string) => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
+  readonly storeGeneratedVideoForProject?: (binding: GenerationProjectBinding, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
   readonly loginAccount?: (request: LoginRelayMeBridgeRequest & { readonly baseUrl: string }) => Promise<string>;
   readonly loginWebAccount?: () => Promise<string>;
   readonly projectMemoryContextResolver?: ProjectMemoryContextResolver;
@@ -117,6 +122,10 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
     secretSupplier: () => options.credentialStore.getMappingSecrets(),
   });
   const fileSystem = options.fileSystem ?? new NodeFileSystem();
+  const pendingMedia = createProviderPendingMediaStore({
+    appDataRoot: join(options.appDataRoot, 'providers', 'relayme'), fileSystem,
+    secretSupplier: () => options.credentialStore.getMappingSecrets(),
+  });
 
   return {
     async loginRelayMe(request) {
@@ -387,14 +396,12 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
           `RelayMe 模型“${profile.displayName}”当前只支持文本生图，不支持参考图；RelayMe 已认证生成与任务接口没有可验证的参考图字段，任务未提交、不会消耗生成额度`,
         );
       }
-      const historyId = options.historySink === undefined
-        ? undefined
-        : (await options.historySink.reserveSubmission({
-          jobId: validated.jobId,
-          kind: 'image',
-          modelDisplayName: profile.displayName,
-          provider: 'relayme',
-        })).historyId;
+      const projectBinding = options.bindGenerationProject === undefined ? undefined
+        : await options.bindGenerationProject(validated.sessionId ?? '', validated.projectId);
+      const submission = await prepareSubmission(validated.jobId, 'image', profile.displayName, projectBinding);
+      if (submission.existingPublicTaskId !== undefined) return { providerTaskId: submission.existingPublicTaskId };
+      const { historyId, mappingHistoryId } = submission;
+      let providerAccepted = false;
       try {
         const response = await translateRelayMeCall(
           () => createClientFromCredentials().then((client) => client.generateImage({
@@ -407,11 +414,13 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
           })),
           'RelayMe 生图任务提交失败',
         );
-        const registered = await registerTask('image', response.taskId, validated.sessionId ?? validated.conversationId, historyId);
-        if (historyId !== undefined) await options.historySink!.running(historyId);
+        providerAccepted = true;
+        const registered = await registerTask('image', response.taskId, validated.sessionId ?? validated.conversationId, mappingHistoryId, historyId, projectBinding);
+        await markRegisteredTaskRunning(historyId);
         return registered;
       } catch (error) {
-        await markRelayMeHistoryFailed(historyId, options.historySink);
+        if (providerAccepted) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：RelayMe 已接受图片任务但本地任务记录暂不可用，请保留原任务等待恢复', true);
+        if (!providerAccepted) await markRelayMeHistoryFailed(historyId, options.historySink);
         throw error;
       }
     },
@@ -420,16 +429,29 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
       assertRelayMeProvider(validated.provider);
       const task = await requireTask(validated.providerTaskId, 'image');
       if (task.state !== 'running') return imageTerminalResult(task);
+      if (options.bindGenerationProject !== undefined && task.projectBinding === undefined) {
+        return imageTerminalResult(await failUnboundTask(validated.providerTaskId, task) as Extract<RelayTask, { kind: 'image' }>);
+      }
       try {
-        const response = await pollTask(task.rawTaskId, '图片');
-        const result = await mapTaskState(validated.providerTaskId, response, 'image', (content, item) => persistGeneratedResult(task.sessionId, content, 'image', task.historyId, item));
-        updateTaskFromPoll(task, result);
-        await persistRelayMeHistoryTerminal(task.historyId, options.historySink, result);
-        await persistPolledTask(validated.providerTaskId, result);
-        return result;
+        const result = await pollWithStagedMedia(validated.providerTaskId, task, 'image') as PollImageJobBridgeResult;
+        const historyResult = await persistRelayMeHistoryTerminal(task.historyId, options.historySink, result);
+        const committed = await persistPolledTask(validated.providerTaskId, historyResult);
+        if (committed !== undefined && committed.state !== 'running') {
+          try { await pendingMedia.remove(validated.providerTaskId); } catch { /* ACK retries cleanup. */ }
+          const terminal = relayTaskFromMapping(committed) as Extract<RelayTask, { kind: 'image' }>;
+          tasks.set(validated.providerTaskId, terminal);
+          return imageTerminalResult(terminal);
+        }
+        return historyResult;
       } catch (error) {
         const translated = translateRelayMeError(error, 'RelayMe 图片任务轮询失败');
-        if (!translated.retryable) await markRelayMeHistoryFailed(task.historyId, options.historySink);
+        if (isPaidMediaIntegrityFailure(translated)) {
+          return imageTerminalResult(await failCorruptPendingMedia(validated.providerTaskId, task, translated) as Extract<RelayTask, { kind: 'image' }>);
+        }
+        if (!translated.retryable) {
+          const settled = await settleFatalPoll(validated.providerTaskId, task, translated);
+          if (settled?.state === 'cancelled') return imageTerminalResult(settled as Extract<RelayTask, { kind: 'image' }>);
+        }
         throw translated;
       }
     },
@@ -438,10 +460,12 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
       assertRelayMeProvider(validated.provider);
       const task = await requireTask(validated.providerTaskId, 'image');
       if (task.state !== 'running') return imageCancelTerminalResult(task);
-      await cancelTask(task.rawTaskId);
-      task.state = 'cancelled';
-      await taskMappings.markCancelled(validated.providerTaskId, new Date(now()).toISOString());
-      return { status: 'cancelled' };
+      await cancelTask(await rawTaskIdForCancellation(validated.providerTaskId, task));
+      const terminal = await taskMappings.markCancelled(validated.providerTaskId, new Date(now()).toISOString());
+      if (terminal === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务句柄不可用');
+      const durable = relayTaskFromMapping(terminal) as Extract<RelayTask, { kind: 'image' }>;
+      tasks.set(validated.providerTaskId, durable);
+      return imageCancelTerminalResult(durable);
     },
     async ackImageJobTerminal(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, request) as AckImageJobTerminalBridgeRequest;
@@ -456,14 +480,12 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
         throw createProviderBridgeError('CAPABILITY_UNSUPPORTED', 'RelayMe 当前视频接口尚未公开可验证的素材引用字段');
       }
       const profile = await selectProfile(validated.modelRoute, 'video_generation');
-      const historyId = options.historySink === undefined
-        ? undefined
-        : (await options.historySink.reserveSubmission({
-          jobId: validated.jobId,
-          kind: 'video',
-          modelDisplayName: profile.displayName,
-          provider: 'relayme',
-        })).historyId;
+      const projectBinding = options.bindGenerationProject === undefined ? undefined
+        : await options.bindGenerationProject(validated.sessionId ?? '', validated.projectId);
+      const submission = await prepareSubmission(validated.jobId, 'video', profile.displayName, projectBinding);
+      if (submission.existingPublicTaskId !== undefined) return { providerTaskId: submission.existingPublicTaskId };
+      const { historyId, mappingHistoryId } = submission;
+      let providerAccepted = false;
       try {
         const response = await translateRelayMeCall(
           () => createClientFromCredentials().then((client) => client.generateVideo({
@@ -477,11 +499,13 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
           })),
           'RelayMe 视频任务提交失败',
         );
-        const registered = await registerTask('video', response.taskId, validated.sessionId ?? validated.conversationId, historyId);
-        if (historyId !== undefined) await options.historySink!.running(historyId);
+        providerAccepted = true;
+        const registered = await registerTask('video', response.taskId, validated.sessionId ?? validated.conversationId, mappingHistoryId, historyId, projectBinding);
+        await markRegisteredTaskRunning(historyId);
         return registered;
       } catch (error) {
-        await markRelayMeHistoryFailed(historyId, options.historySink);
+        if (providerAccepted) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：RelayMe 已接受视频任务但本地任务记录暂不可用，请保留原任务等待恢复', true);
+        if (!providerAccepted) await markRelayMeHistoryFailed(historyId, options.historySink);
         throw error;
       }
     },
@@ -490,16 +514,29 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
       assertRelayMeProvider(validated.provider);
       const task = await requireTask(validated.providerTaskId, 'video');
       if (task.state !== 'running') return videoTerminalResult(task);
+      if (options.bindGenerationProject !== undefined && task.projectBinding === undefined) {
+        return videoTerminalResult(await failUnboundTask(validated.providerTaskId, task) as Extract<RelayTask, { kind: 'video' }>);
+      }
       try {
-        const response = await pollTask(task.rawTaskId, '视频');
-        const result = await mapTaskState(validated.providerTaskId, response, 'video', (content, item) => persistGeneratedResult(task.sessionId, content, 'video', task.historyId, item));
-        updateTaskFromPoll(task, result);
-        await persistRelayMeHistoryTerminal(task.historyId, options.historySink, result);
-        await persistPolledTask(validated.providerTaskId, result);
-        return result;
+        const result = await pollWithStagedMedia(validated.providerTaskId, task, 'video') as PollVideoJobBridgeResult;
+        const historyResult = await persistRelayMeHistoryTerminal(task.historyId, options.historySink, result);
+        const committed = await persistPolledTask(validated.providerTaskId, historyResult);
+        if (committed !== undefined && committed.state !== 'running') {
+          try { await pendingMedia.remove(validated.providerTaskId); } catch { /* ACK retries cleanup. */ }
+          const terminal = relayTaskFromMapping(committed) as Extract<RelayTask, { kind: 'video' }>;
+          tasks.set(validated.providerTaskId, terminal);
+          return videoTerminalResult(terminal);
+        }
+        return historyResult;
       } catch (error) {
         const translated = translateRelayMeError(error, 'RelayMe 视频任务轮询失败');
-        if (!translated.retryable) await markRelayMeHistoryFailed(task.historyId, options.historySink);
+        if (isPaidMediaIntegrityFailure(translated)) {
+          return videoTerminalResult(await failCorruptPendingMedia(validated.providerTaskId, task, translated) as Extract<RelayTask, { kind: 'video' }>);
+        }
+        if (!translated.retryable) {
+          const settled = await settleFatalPoll(validated.providerTaskId, task, translated);
+          if (settled?.state === 'cancelled') return videoTerminalResult(settled as Extract<RelayTask, { kind: 'video' }>);
+        }
         throw translated;
       }
     },
@@ -508,10 +545,12 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
       assertRelayMeProvider(validated.provider);
       const task = await requireTask(validated.providerTaskId, 'video');
       if (task.state !== 'running') return videoCancelTerminalResult(task);
-      await cancelTask(task.rawTaskId);
-      task.state = 'cancelled';
-      await taskMappings.markCancelled(validated.providerTaskId, new Date(now()).toISOString());
-      return { status: 'cancelled' };
+      await cancelTask(await rawTaskIdForCancellation(validated.providerTaskId, task));
+      const terminal = await taskMappings.markCancelled(validated.providerTaskId, new Date(now()).toISOString());
+      if (terminal === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务句柄不可用');
+      const durable = relayTaskFromMapping(terminal) as Extract<RelayTask, { kind: 'video' }>;
+      tasks.set(validated.providerTaskId, durable);
+      return videoCancelTerminalResult(durable);
     },
     async ackVideoJobTerminal(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.ackVideoJobTerminal, request) as AckVideoJobTerminalBridgeRequest;
@@ -675,26 +714,73 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
     return run;
   }
 
-  async function registerTask(kind: RelayTask['kind'], rawTaskId: string, sessionId: string, historyId?: string) {
+  async function prepareSubmission(jobId: string, kind: RelayTask['kind'], modelDisplayName: string, projectBinding?: GenerationProjectBinding): Promise<{
+    readonly historyId?: string;
+    readonly mappingHistoryId: string;
+    readonly existingPublicTaskId?: string;
+  }> {
+    const mappingHistoryId = deriveGenerationHistoryId(jobId);
+    const existing = await taskMappings.findByHistoryId(mappingHistoryId);
+    if (existing !== undefined) {
+      if (existing.provider !== 'relayme' || existing.kind !== kind) {
+        throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 生成任务身份不匹配');
+      }
+      assertMatchingProjectBinding(projectBinding, existing);
+      return { mappingHistoryId, existingPublicTaskId: existing.publicTaskId };
+    }
+    const reservation = await options.historySink?.reserveSubmission({ jobId, kind, modelDisplayName, provider: 'relayme' });
+    if (reservation?.created === false) {
+      const raced = await taskMappings.findByHistoryId(mappingHistoryId);
+      if (raced !== undefined && raced.provider === 'relayme' && raced.kind === kind) {
+        assertMatchingProjectBinding(projectBinding, raced);
+        return { mappingHistoryId, existingPublicTaskId: raced.publicTaskId };
+      }
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务已预约但提交结果无法确认，不会重复提交；请创建新任务');
+    }
+    const created = await taskMappings.reserveSubmission({
+      currentIdentity: jobId.startsWith('model-job-v2-'),
+      historyId: mappingHistoryId,
+    });
+    if (!created) {
+      const raced = await taskMappings.findByHistoryId(mappingHistoryId);
+      if (raced !== undefined && raced.provider === 'relayme' && raced.kind === kind) {
+        assertMatchingProjectBinding(projectBinding, raced);
+        return { historyId: reservation?.historyId, mappingHistoryId, existingPublicTaskId: raced.publicTaskId };
+      }
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务已预约但提交结果无法确认，不会重复提交；请创建新任务');
+    }
+    return { historyId: reservation?.historyId, mappingHistoryId };
+  }
+
+  async function registerTask(kind: RelayTask['kind'], rawTaskId: string, sessionId: string, mappingHistoryId: string, historyId?: string, projectBinding?: GenerationProjectBinding) {
     if (typeof rawTaskId !== 'string' || rawTaskId.length === 0) {
       throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 返回了无效的任务标识');
     }
     const providerTaskId = `provider-job-${randomBytes(16).toString('hex')}`;
-    const task = { kind, rawTaskId, sessionId, state: 'running', ...(historyId === undefined ? {} : { historyId }) } as RelayTask;
+    const task = { kind, rawTaskId, sessionId, projectBinding, state: 'running', ...(historyId === undefined ? {} : { historyId }) } as RelayTask;
     const timestamp = new Date(now()).toISOString();
-    await taskMappings.set({
+    await persistPaidProviderMapping(taskMappings, {
       provider: 'relayme', publicTaskId: providerTaskId, rawTaskId, kind, sessionId,
-      ...(historyId === undefined ? {} : { historyId }),
+      historyId: mappingHistoryId, projectBinding,
       state: 'running', createdAt: timestamp, updatedAt: timestamp,
     });
     tasks.set(providerTaskId, task);
     return { providerTaskId };
   }
 
+  async function markRegisteredTaskRunning(historyId: string | undefined): Promise<void> {
+    if (historyId === undefined || options.historySink === undefined) return;
+    try {
+      await options.historySink.running(historyId);
+    } catch {
+      // Keep the registered paid task pollable; completion can still update history.
+    }
+  }
+
   async function requireTask<K extends RelayTask['kind']>(providerTaskId: string, kind: K): Promise<Extract<RelayTask, { kind: K }>> {
     let task = tasks.get(providerTaskId);
     if (task === undefined) {
-      const record = await taskMappings.get(providerTaskId);
+      const record = await readPaidTask(providerTaskId);
       if (record?.provider === 'relayme' && record.kind === kind && record.sessionId !== undefined) {
         task = relayTaskFromMapping(record);
         tasks.set(providerTaskId, task);
@@ -704,16 +790,37 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
     return task as Extract<RelayTask, { kind: K }>;
   }
 
+  async function readPaidTask(providerTaskId: string): Promise<ProviderTaskMappingRecord | undefined> {
+    try { return await taskMappings.get(providerTaskId); }
+    catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：RelayMe 已付费任务记录暂不可用', true); }
+  }
+
   async function persistPolledTask(
     providerTaskId: string,
     result: PollImageJobBridgeResult | PollVideoJobBridgeResult,
-  ): Promise<void> {
+  ): Promise<ProviderTaskMappingRecord | undefined> {
     const timestamp = new Date(now()).toISOString();
-    if (result.status === 'completed' || result.status === 'failed') {
-      await taskMappings.markTerminal(providerTaskId, result, timestamp);
-    } else if (result.status === 'cancelled') {
-      await taskMappings.markCancelled(providerTaskId, timestamp);
+    try {
+      if (result.status === 'completed' || result.status === 'failed') {
+        const committed = await taskMappings.markTerminal(providerTaskId, result, timestamp);
+        if (committed === undefined) {
+          try { await pendingMedia.remove(providerTaskId); } catch { /* Keep ACK authoritative. */ }
+          throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务句柄已确认');
+        }
+        return committed;
+      } else if (result.status === 'cancelled') {
+        const committed = await taskMappings.markCancelled(providerTaskId, timestamp);
+        if (committed === undefined) {
+          try { await pendingMedia.remove(providerTaskId); } catch { /* Keep ACK authoritative. */ }
+          throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务句柄已确认');
+        }
+        return committed;
+      }
+    } catch (error) {
+      if (isProviderBridgeException(error) && error.code !== 'PROVIDER_UNAVAILABLE') throw error;
+      throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'RelayMe 任务记录暂不可用', true);
     }
+    return undefined;
   }
 
   async function pollTask(rawTaskId: string, label: string) {
@@ -723,40 +830,178 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
     );
   }
 
+  async function rawTaskIdForCancellation(providerTaskId: string, task: RelayTask): Promise<string> {
+    if (!task.rawTaskId.startsWith('pending-media:')) return task.rawTaskId;
+    const record = await readPaidTask(providerTaskId);
+    if (record === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务句柄已确认');
+    const manifest = await pendingMedia.read(record);
+    if (manifest === null) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', '提交状态不确定：RelayMe 原任务标识不可恢复');
+    return manifest.rawTaskId;
+  }
+
+  async function pollWithStagedMedia(providerTaskId: string, task: RelayTask, kind: RelayTask['kind']): Promise<PollImageJobBridgeResult | PollVideoJobBridgeResult> {
+    const record = await readPaidTask(providerTaskId);
+    if (record === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务句柄已确认');
+    if (record.state !== 'running') return taskStateFromRecord(record);
+    let manifest = await pendingMedia.read(record);
+    if (manifest === null) {
+      const response = await pollTask(task.rawTaskId, kind === 'image' ? '图片' : '视频');
+      if (!['completed', 'success', 'succeeded'].includes(response.status.toLowerCase())) {
+        return mapTaskState(providerTaskId, response, kind, (content) => persistGeneratedResult(task.sessionId, content, kind, task.projectBinding));
+      }
+      const items = resultItems(response.result ?? ('data' in response ? response.data : undefined) ?? response, kind).slice(0, kind === 'image' ? 4 : 1);
+      const entries = [] as Array<PendingMediaManifest['entries'][number]>;
+      for (const [index, item] of items.entries()) {
+        assertSafeResultItem(item, kind);
+        const bytes = await readRelayMeResultBytes(resultContent(item, kind), kind, options.fetch, options.resolveResultHost);
+        entries.push(await pendingMedia.writeItem(record, index, bytes, {
+          ...(isFinitePositive(item.width) ? { width: item.width } : {}),
+          ...(isFinitePositive(item.height) ? { height: item.height } : {}),
+          ...(isFinitePositive(item.durationSeconds) ? { durationSeconds: item.durationSeconds } : {}),
+        }));
+      }
+      await pendingMedia.seal(record, entries);
+      manifest = await pendingMedia.read(record);
+      if (manifest === null) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：RelayMe 付费结果暂存记录不可用', true);
+    }
+    let current = await readPaidTask(providerTaskId);
+    if (current?.state === 'running') {
+      const marker = pendingMediaTaskMarker(manifest);
+      if (current.rawTaskId !== marker) {
+        try { current = await taskMappings.updateRunning(providerTaskId, {
+          expectedRawTaskId: record.rawTaskId, rawTaskId: marker,
+        }, new Date(now()).toISOString()); }
+        catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：RelayMe 已付费媒体暂存状态暂不可用', true); }
+      }
+      if (current?.state === 'running' && current.rawTaskId !== marker) {
+        throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：RelayMe 已付费媒体暂存状态暂不可用', true);
+      }
+    }
+    if (current === undefined) {
+      try { await pendingMedia.remove(providerTaskId); } catch { /* Keep ACK authoritative. */ }
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务句柄已确认');
+    }
+    if (current.state !== 'running') {
+      try { await pendingMedia.remove(providerTaskId); } catch { /* ACK retries cleanup. */ }
+      return taskStateFromRecord(current);
+    }
+    let itemIndex = 0;
+    let historyPreview: { readonly bytes: Uint8Array; readonly metadata: GenerationHistoryVideoMetadata } | undefined;
+    const mapped = await mapTaskState(providerTaskId, { status: 'COMPLETED', result: manifest.entries.map((entry) => ({ url: 'staged',
+      ...(entry.width === undefined ? {} : { width: entry.width }), ...(entry.height === undefined ? {} : { height: entry.height }),
+      ...(entry.durationSeconds === undefined ? {} : { durationSeconds: entry.durationSeconds }),
+    })) }, kind, async (_content, item) => {
+      const index = itemIndex++;
+      const bytes = await pendingMedia.readItem(manifest, index);
+      const stored = await persistGeneratedBytes(task.sessionId, bytes, kind, task.projectBinding);
+      if (index === 0) historyPreview = { bytes, metadata: {
+        ...(kind === 'video' ? { durationSeconds: isFinitePositive(item.durationSeconds) ? item.durationSeconds : undefined } : {}),
+        height: isFinitePositive(item.height) ? item.height : stored.height ?? undefined,
+        width: isFinitePositive(item.width) ? item.width : stored.width ?? undefined,
+      } };
+      return stored;
+    });
+    if (mapped.status !== 'completed' || historyPreview === undefined) return mapped;
+    const durable = await persistGeneratedHistoryResult(task.historyId, historyPreview.bytes, historyPreview.metadata);
+    return alignRelayMeHistoryTerminal(mapped, durable);
+  }
+
+  function taskStateFromRecord(record: ProviderTaskMappingRecord): PollImageJobBridgeResult | PollVideoJobBridgeResult {
+    if (record.state === 'completed' && record.result !== undefined) return { status: 'completed', progress: 1, result: record.result };
+    if (record.state === 'cancelled') return { status: 'cancelled' };
+    if (record.state === 'failed' && record.error !== undefined) return { status: 'failed', error: record.error };
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务终态记录无效');
+  }
+
+  async function failCorruptPendingMedia(providerTaskId: string, task: RelayTask, error: ProviderBridgeException): Promise<RelayTask> {
+    const current = await readPaidTask(providerTaskId);
+    if (current === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务句柄已确认');
+    if (current.state !== 'running') return relayTaskFromMapping(current);
+    let historyTerminal: GenerationHistoryDurableTerminal | undefined;
+    try { if (task.historyId !== undefined) historyTerminal = await options.historySink?.failed(task.historyId, 'invalid_result'); }
+    catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：RelayMe 已付费媒体历史暂不可用', true); }
+    const result = alignRelayMeHistoryTerminal({ status: 'failed', error: normalizeProviderBridgeError(error) }, historyTerminal);
+    const committed = await persistPolledTask(providerTaskId, result);
+    if (committed === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务句柄已确认');
+    const terminal = relayTaskFromMapping(committed);
+    tasks.set(providerTaskId, terminal);
+    return terminal;
+  }
+
+  async function settleFatalPoll(providerTaskId: string, task: RelayTask, error: ProviderBridgeException): Promise<RelayTask | null> {
+    const historyTerminal = await markRelayMeHistoryFailed(task.historyId, options.historySink);
+    if (historyTerminal === null) return null;
+    const result = alignRelayMeHistoryTerminal({ status: 'failed', error: normalizeProviderBridgeError(error) }, historyTerminal);
+    const committed = await persistPolledTask(providerTaskId, result);
+    if (committed === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务句柄已确认');
+    try { await pendingMedia.remove(providerTaskId); } catch { /* ACK retries cleanup. */ }
+    const terminal = relayTaskFromMapping(committed);
+    tasks.set(providerTaskId, terminal);
+    return terminal;
+  }
+
   async function persistGeneratedResult(
     sessionId: string,
     content: string,
     kind: RelayTask['kind'],
-    historyId: string | undefined,
-    resultItem: Record<string, unknown>,
+    projectBinding?: GenerationProjectBinding,
   ): Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }> {
     if (sessionId.length === 0) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '当前项目会话不可用');
     const bytes = await readRelayMeResultBytes(content, kind, options.fetch, options.resolveResultHost);
+    return persistGeneratedBytes(sessionId, bytes, kind, projectBinding);
+  }
+
+  async function persistGeneratedBytes(
+    sessionId: string, bytes: Uint8Array, kind: RelayTask['kind'], projectBinding?: GenerationProjectBinding,
+  ): Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }> {
     const mediaType = detectRelayMeGeneratedMediaType(bytes);
     if (kind === 'image') {
       if (!mediaType.startsWith('image/')) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 返回的生图结果不是受支持的图片');
-      if (options.storeGeneratedImage === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '生成图片存储不可用');
-      const stored = await options.storeGeneratedImage(sessionId, bytes, mediaType);
-      if (historyId !== undefined) {
-        await options.historySink!.succeeded(historyId, bytes, {
-          height: isFinitePositive(resultItem.height) ? resultItem.height : stored.height ?? undefined,
-          width: isFinitePositive(resultItem.width) ? resultItem.width : stored.width ?? undefined,
-        });
-      }
+      if (projectBinding === undefined && options.storeGeneratedImage === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '生成图片存储不可用', true);
+      if (projectBinding !== undefined && options.storeGeneratedImageForProject === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '绑定项目图片存储不可用', true);
+      const stored = projectBinding === undefined
+        ? await options.storeGeneratedImage!(sessionId, bytes, mediaType)
+        : await options.storeGeneratedImageForProject!(projectBinding, bytes, mediaType);
       return stored;
     }
     if (mediaType !== 'video/mp4') throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 返回的视频结果不是受支持的 MP4');
-    if (options.storeGeneratedVideo === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '生成视频存储不可用');
-    const stored = await options.storeGeneratedVideo(sessionId, bytes, mediaType);
-    if (historyId !== undefined) {
-      await options.historySink!.succeeded(historyId, bytes, {
-        durationSeconds: isFinitePositive(resultItem.durationSeconds) ? resultItem.durationSeconds : undefined,
-        height: isFinitePositive(resultItem.height) ? resultItem.height : stored.height ?? undefined,
-        width: isFinitePositive(resultItem.width) ? resultItem.width : stored.width ?? undefined,
-      });
-    }
+    if (projectBinding === undefined && options.storeGeneratedVideo === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '生成视频存储不可用', true);
+    if (projectBinding !== undefined && options.storeGeneratedVideoForProject === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '绑定项目视频存储不可用', true);
+    const stored = projectBinding === undefined
+      ? await options.storeGeneratedVideo!(sessionId, bytes, mediaType)
+      : await options.storeGeneratedVideoForProject!(projectBinding, bytes, mediaType);
     return stored;
   }
+
+  async function failUnboundTask(providerTaskId: string, task: RelayTask): Promise<RelayTask> {
+    let historyTerminal: GenerationHistoryDurableTerminal | undefined;
+    try { if (task.historyId !== undefined) historyTerminal = await options.historySink?.failed(task.historyId, 'provider_unavailable'); }
+    catch { throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'RelayMe 生成历史暂时不可用', true); }
+    const result = alignRelayMeHistoryTerminal({ status: 'failed',
+      error: createProviderBridgeError('PROVIDER_UNAVAILABLE', '无法验证原项目身份，已保留 RelayMe 任务记录') }, historyTerminal);
+    const committed = await persistPolledTask(providerTaskId, result);
+    if (committed === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务句柄不可用');
+    const terminal = relayTaskFromMapping(committed);
+    tasks.set(providerTaskId, terminal);
+    return terminal;
+  }
+
+  async function persistGeneratedHistoryResult(
+    historyId: string | undefined,
+    bytes: Uint8Array,
+    metadata: GenerationHistoryVideoMetadata,
+  ): Promise<GenerationHistoryDurableTerminal | null> {
+    if (historyId === undefined || options.historySink === undefined) return null;
+    try {
+      return await options.historySink.succeeded(historyId, bytes, metadata);
+    } catch (error) {
+      if (isProviderBridgeException(error) || (error instanceof Error && error.message === 'Generated result was invalid')) {
+        throw error;
+      }
+      throw createProviderBridgeError('PROVIDER_ERROR', 'RelayMe 生成历史写入失败，请稍后重试', true);
+    }
+  }
+
   async function cancelTask(rawTaskId: string): Promise<never> {
     try {
       return await createClientFromCredentials().then((client) => client.cancelTask(rawTaskId));
@@ -771,6 +1016,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
   async function acknowledgeTask(providerTaskId: string, kind: RelayTask['kind'], status: 'completed' | 'failed' | 'cancelled') {
     const task = await requireTask(providerTaskId, kind);
     if (task.state !== status) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 任务终态确认不匹配');
+    await pendingMedia.remove(providerTaskId);
     await taskMappings.ackTerminal(providerTaskId, status);
     tasks.delete(providerTaskId);
   }
@@ -780,6 +1026,7 @@ function relayTaskFromMapping(record: ProviderTaskMappingRecord): RelayTask {
   const shared = {
     rawTaskId: record.rawTaskId,
     sessionId: record.sessionId!,
+    ...(record.projectBinding === undefined ? {} : { projectBinding: record.projectBinding }),
     state: record.state,
     ...(record.historyId === undefined ? {} : { historyId: record.historyId }),
     ...(record.result === undefined ? {} : { result: record.result }),
@@ -857,22 +1104,35 @@ type RelayTaskStateResponse = {
   readonly durationSeconds?: number;
 };
 
-async function markRelayMeHistoryFailed(historyId: string | undefined, sink: GenerationHistoryProviderSinkContract | undefined): Promise<void> {
+async function markRelayMeHistoryFailed(historyId: string | undefined, sink: GenerationHistoryProviderSinkContract | undefined): Promise<GenerationHistoryDurableTerminal | null> {
   // The provider task may already be terminal; the history sink is idempotent and
   // must still be closed when a poll/download error prevents a normal terminal map.
-  if (historyId === undefined) return;
-  if (sink === undefined) return;
-  await sink.failed(historyId, 'provider_failed').catch(() => undefined);
+  if (historyId === undefined || sink === undefined) return null;
+  return sink.failed(historyId, 'provider_failed').catch(() => null);
 }
 
 async function persistRelayMeHistoryTerminal(
   historyId: string | undefined,
   sink: GenerationHistoryProviderSinkContract | undefined,
   result: PollImageJobBridgeResult | PollVideoJobBridgeResult,
-): Promise<void> {
-  if (historyId === undefined || sink === undefined) return;
-  if (result.status === 'failed') await sink.failed(historyId, 'provider_failed');
-  if (result.status === 'cancelled') await sink.cancelled(historyId, 'cancelled_by_system');
+): Promise<PollImageJobBridgeResult | PollVideoJobBridgeResult> {
+  if (historyId === undefined || sink === undefined) return result;
+  if (result.status === 'failed') return alignRelayMeHistoryTerminal(result, await sink.failed(historyId, 'provider_failed'));
+  if (result.status === 'cancelled') return alignRelayMeHistoryTerminal(result, await sink.cancelled(historyId, 'cancelled_by_system'));
+  return result;
+}
+
+function alignRelayMeHistoryTerminal(
+  result: PollImageJobBridgeResult | PollVideoJobBridgeResult,
+  durable: GenerationHistoryDurableTerminal | null | undefined,
+): PollImageJobBridgeResult | PollVideoJobBridgeResult {
+  if (durable === undefined || durable === null || result.status === durable.status
+    || (durable.status === 'succeeded' && result.status === 'completed')) return result;
+  if (durable.status === 'cancelled') return { status: 'cancelled' };
+  if (durable.status === 'failed') return { status: 'failed', error: normalizeProviderBridgeError(createProviderBridgeError(
+    'PROVIDER_INVALID_RESPONSE', '提交状态不确定：RelayMe 生成历史已失败，无法将任务标记为成功',
+  )) };
+  throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '提交状态不确定：RelayMe 历史已成功，任务记录仍在恢复中', true);
 }
 
 async function mapTaskState(
@@ -917,13 +1177,6 @@ async function mapTaskState(
     ...(isFinitePositive(items[0]?.durationSeconds) ? { durationSeconds: items[0]!.durationSeconds } : {}),
   } };
 }
-function updateTaskFromPoll(task: RelayTask, result: PollImageJobBridgeResult | PollVideoJobBridgeResult): void {
-  if (result.status === 'running') return;
-  task.state = result.status;
-  if (result.status === 'completed') task.result = result.result as ProviderImageJobResult & ProviderVideoJobResult;
-  if (result.status === 'failed') task.error = result.error;
-}
-
 function imageTerminalResult(task: Extract<RelayTask, { kind: 'image' }>): PollImageJobBridgeResult {
   if (task.state === 'completed' && task.result !== undefined) return { status: 'completed', progress: 1, result: task.result };
   if (task.state === 'failed' && task.error !== undefined) return { status: 'failed', error: task.error };
@@ -1362,6 +1615,10 @@ function isCapabilityUnsupported(value: unknown): value is { readonly code: 'CAP
 }
 function isProviderBridgeException(value: unknown): value is ProviderBridgeException {
   return value instanceof Error && isRecord(value) && typeof value.code === 'string' && typeof value.retryable === 'boolean';
+}
+
+function isPaidMediaIntegrityFailure(error: ProviderBridgeException): boolean {
+  return error.code === 'PROVIDER_INVALID_RESPONSE' && !error.retryable && error.message.startsWith('提交状态不确定');
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

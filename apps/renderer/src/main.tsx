@@ -13,6 +13,9 @@ import './styles/atelier-dark-theme.css';
 import './styles/settings-atelier-polish.css';
 import './styles/immersive-image-preview.css';
 import './styles/knowledge-library.css';
+import './styles/navigation-atelier.css';
+import './styles/generation-running.css';
+import './styles/agent-conversation-polish.css';
 
 const manualAcceptanceHarness = new URLSearchParams(window.location.search).get('novusHarness') === 'novus-e2e-codex-canvas-layout';
 if (manualAcceptanceHarness) window.__NOVUS_MANUAL_ACCEPTANCE__ = true;

@@ -14,6 +14,11 @@ export type McpUiConfirmationRequest = {
     readonly limitations: readonly string[];
   }
   | {
+    readonly kind: 'layering_operation';
+    readonly operation: 'analyze_layering' | 'start_layering' | 'export_layered_psd';
+    readonly details: readonly string[];
+  }
+  | {
     readonly kind: 'paid_job';
     readonly nodeId: string;
     readonly jobKind: 'image' | 'video' | 'reverse';

@@ -1,221 +1,270 @@
-/* The settings page owns one calm surface per task. Keep provider navigation
-   and the model directory legible without repeating filled cards at each level. */
-:root[data-theme] body .workspace--canvas-layout .settings-drawer .settings-provider-overview.settings-layer {
-  margin: 4px 0 18px !important;
-  padding: 16px 18px !important;
-  background: var(--settings-field) !important;
-  border: 1px solid var(--settings-line) !important;
-  border-left: 3px solid var(--settings-accent) !important;
-  border-radius: 12px !important;
-  box-shadow: none !important;
+/* Approved four-page skeleton: final scoped geometry and shared theme tokens. */
+:root[data-theme] body .workspace--canvas-layout .settings-drawer {
+  display: grid !important;
+  grid-template-columns: 180px minmax(0, 1fr) !important;
+  grid-template-rows: 62px minmax(0, 1fr) !important;
+  width: min(1120px, calc(100vw - 32px)) !important;
+  max-width: 1120px !important;
+  height: min(800px, calc(100vh - 96px)) !important;
+  top: 72px !important; right: 16px !important; bottom: auto !important;
+  overflow: hidden !important;
+  background: var(--settings-paper) !important; color: var(--settings-ink) !important;
+  border: 1px solid var(--settings-line) !important; border-radius: 18px !important;
+  box-shadow: 0 24px 70px color-mix(in srgb, var(--settings-ink) 16%, transparent) !important;
+
+  & .settings-drawer__header { grid-column: 1 / -1; height: 62px !important; padding: 0 22px !important; background: var(--settings-paper) !important; border-bottom: 1px solid var(--settings-line) !important; }
+  & .settings-brand { gap: 11px !important; }
+  & .settings-brand > div { display: flex; align-items: center; gap: 16px; }
+  & .settings-brand strong { font-size: 15px !important; font-weight: 650; letter-spacing: 0; }
+  & .settings-brand__icon { width: 32px; height: 32px; border-radius: 10px; }
+  & .settings-drawer__header > .icon-button { display: grid !important; place-items: center; width: 30px !important; min-width: 30px !important; height: 30px !important; padding: 0 !important; border: 1px solid var(--settings-line) !important; border-radius: 8px !important; color: var(--settings-muted) !important; background: var(--settings-paper) !important; }
+  & .settings-navigation { min-width: 0; min-height: 0; padding: 23px 12px 20px; background: var(--settings-rail); border-right: 1px solid var(--settings-line); }
+  & .settings-tabs { gap: 7px !important; }
+  & .settings-tabs > button { gap: 11px !important; height: 44px !important; padding: 0 13px !important; border-radius: 9px !important; font-size: 13px !important; font-weight: 550 !important; }
+  & .settings-navigation__footer { padding: 12px; font-size: 11px; }
+  & .settings-navigation__footer > svg, & .settings-navigation__footer small { display: none; }
+  & .settings-drawer__body { min-width: 0; min-height: 0; padding: 24px 34px 20px !important; overflow-x: hidden !important; overflow-y: auto !important; background: var(--settings-paper) !important; scrollbar-gutter: auto; scrollbar-color: var(--settings-line) transparent; }
+  & .settings-page-heading { margin: 0 0 16px; }
+  & .settings-page-heading h2 { margin: 0 0 7px; font-size: 27px; line-height: 1.3; font-weight: 680; letter-spacing: -.03em; }
+  & .settings-page-heading p { font-size: 12px !important; line-height: 1.5 !important; }
+
+  /* Sections are title-and-row groups, with a separator between tasks. */
+  & :is(.settings-section.settings-layer, .settings-layer, .settings-section) { min-width: 0; margin: 0 !important; padding: 0 !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; }
+  & .settings-section > header { display: flex; align-items: center; justify-content: space-between !important; gap: 12px; min-height: 22px; padding: 0; margin: 0 0 12px; }
+  & .settings-section > header > span:has(svg), & .settings-section > header > div > small { display: none; }
+  & .settings-section > header strong { font-size: 15px !important; letter-spacing: 0; font-weight: 650; }
+  & .settings-section :is(p, small) { font-size: 11px !important; line-height: 1.5 !important; }
+  & :is(button, input, select) { font-family: inherit !important; }
+  & :is(input, select):not([type='checkbox']) { box-sizing: border-box; min-width: 0; height: 38px !important; padding: 0 11px !important; border: 1px solid var(--settings-line) !important; border-radius: 7px !important; background: var(--settings-field) !important; color: var(--settings-ink) !important; text-align: left !important; text-align-last: left !important; }
+  & :where(.settings-section__primary, .settings-section__secondary, .settings-update-action, .settings-cache-action, .settings-danger-button, .settings-mcp-client__actions > button, .settings-sync-knowledge-list article > button, .settings-sync-primary > button) { display: inline-flex !important; align-items: center; justify-content: center; gap: 7px; width: auto !important; min-width: 0 !important; min-height: 35px !important; height: auto; padding: 0 13px !important; border: 1px solid var(--settings-line) !important; border-radius: 7px !important; background: var(--settings-paper) !important; color: var(--settings-ink) !important; box-shadow: none !important; font-size: 11px !important; font-weight: 550 !important; white-space: nowrap; flex-shrink: 0; }
+  & :is(.settings-section__primary, .settings-update-action) { border-color: var(--settings-accent) !important; background: var(--settings-accent) !important; color: var(--on-accent) !important; }
+  & button:disabled { opacity: .55; }
+  & button > svg { flex-shrink: 0; }
+  & :is(button, input, select, summary):focus-visible { outline: 2px solid var(--settings-accent) !important; outline-offset: 2px !important; }
+  & .settings-action-content { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+  & :is([role='status'], [role='alert']) { overflow-wrap: anywhere; }
+
+  /* Provider selection uses compact tabs; credentials still use secure dialogs. */
+  & .settings-provider-switch.settings-section.settings-layer { margin-bottom: 14px !important; }
+  & .settings-provider-grid { display: grid !important; grid-template-columns: repeat(4, minmax(0, 1fr)) !important; gap: 6px !important; margin: 0; padding: 5px; border: 1px solid var(--settings-line); border-radius: 11px; background: var(--settings-field); }
+  & .settings-provider-grid > button { display: flex !important; align-items: center; justify-content: center; min-height: 37px !important; gap: 7px !important; padding: 0 10px !important; background: transparent !important; border: 1px solid transparent !important; border-radius: 7px !important; box-shadow: none !important; transform: none !important; color: var(--settings-muted) !important; }
+  & .settings-provider-grid > button > span { display: flex; align-items: center; gap: 7px; }
+  & .settings-provider-grid > button :is(i, small, em), & .settings-provider-grid > button::after { display: none !important; }
+  & .settings-provider-grid > button strong { font-size: 12px !important; font-weight: 600; }
+  & .settings-provider-grid > button.is-active { background: var(--settings-selected) !important; border-color: var(--accent-soft-border) !important; color: var(--settings-accent) !important; }
+  & .settings-provider-grid > button:hover:not(:disabled) { border-color: var(--settings-line) !important; }
+  & .settings-provider-priority-action { display: flex; align-items: center; justify-content: space-between !important; gap: 12px; margin: 7px 0 0; padding: 0 !important; border: 0; }
+  & .settings-provider-priority-action small { color: var(--settings-muted); font-size: 11px !important; }
+  & .settings-provider-priority-action > button { min-height: 27px !important; padding: 0 9px !important; }
+  & .settings-key-heading { margin-bottom: 10px !important; }
+  & [data-connection-state] { font-size: 11px !important; }
+  & .settings-provider-endpoint { display: grid !important; grid-template-columns: 174px minmax(0, 1fr) auto !important; align-items: center; gap: 10px 12px !important; margin: 0; padding: 10px 0 !important; border: 0 !important; border-radius: 0; background: transparent !important; }
+  & .settings-provider-endpoint > span { grid-column: 1; font-size: 12px !important; font-weight: 550; }
+  & .settings-provider-endpoint > input { grid-column: 2; width: 100%; }
+  & .settings-provider-endpoint > small { display: none; }
+  & .settings-provider-endpoint > .settings-endpoint-reset { grid-column: 3; grid-row: 1; min-height: 35px !important; padding: 0 4px !important; font-size: 11px !important; color: var(--settings-accent) !important; white-space: nowrap; }
+  & .settings-credential-row { display: grid; grid-template-columns: 174px minmax(0, 1fr); align-items: center; gap: 12px; padding: 10px 0; }
+  & .settings-credential-row > span { font-size: 12px; font-weight: 550; }
+  & .settings-credential-row__control { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  & .settings-credential-value { display: flex; align-items: center; min-width: 0; flex: 1; min-height: 38px; padding: 0 11px; background: var(--settings-field); border: 1px solid var(--settings-line); border-radius: 7px; color: var(--settings-muted); font-size: 12px; }
+  & .settings-credential-summary { display: flex !important; justify-content: space-between; align-items: center; gap: 14px !important; margin-left: 186px; padding: 0 !important; border: 0 !important; color: var(--settings-muted); }
+  & .settings-credential-summary :is(span, small) { font-size: 11px !important; }
+  & .settings-provider-links { display: flex; justify-content: flex-end; padding: 4px 0 0; font-size: 11px; }
+  & .settings-provider-key-link { min-height: 0; padding: 0; font-size: 11px; }
+  & .settings-connection-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 6px 0 0 186px; padding: 0; }
+  & .settings-connection-actions > small { color: var(--settings-muted); font-size: 11px !important; }
+  & .settings-connection-actions > div { display: flex; align-items: center; gap: 8px; }
+
+  /* Independent defaults precede the folded catalogue. */
+  & .settings-model-defaults-section.settings-section.settings-layer { margin-top: 18px !important; padding-top: 16px !important; border-top: 1px solid var(--settings-line) !important; }
+  & .settings-model-defaults { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; column-gap: 26px !important; row-gap: 10px !important; margin: 0; padding: 0; }
+  & .settings-model-defaults .settings-model-default { display: grid !important; grid-template-columns: 84px minmax(0, 1fr) !important; align-items: center; gap: 10px !important; margin: 0; padding: 0; border: 0; background: transparent; color: var(--settings-muted); }
+  & .settings-model-defaults .settings-model-default > span { font-size: 12px !important; font-weight: 400; }
+  & .settings-model-defaults .settings-model-default > select { width: 100%; }
+  & .settings-model-save-row { display: flex; justify-content: flex-end; margin: 13px 0 16px; }
+  & .settings-model-save-row .settings-model-save { width: auto !important; min-width: 0 !important; min-height: 35px !important; margin: 0 !important; padding: 0 13px !important; background: var(--settings-paper) !important; color: var(--settings-ink) !important; border-color: var(--settings-line) !important; }
+  & :is(.settings-catalog-details.settings-layer, .settings-api-diagnostics.settings-layer, .settings-storage-details.settings-layer, .settings-mcp-capability-details, .settings-mcp-more-permissions, .settings-advanced-diagnostics.settings-layer) { min-width: 0; margin: 0 !important; padding: 0 !important; border: 0 !important; border-bottom: 1px solid var(--settings-line) !important; border-radius: 0 !important; background: transparent !important; }
+  & :is(.settings-catalog-details, .settings-api-diagnostics, .settings-storage-details, .settings-mcp-capability-details, .settings-mcp-more-permissions, .settings-advanced-diagnostics) > summary { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 10px 0 !important; list-style: none; color: var(--settings-ink); font-size: 12px; font-weight: 550; cursor: pointer; }
+  & details > summary::-webkit-details-marker { display: none; }
+  & details > summary::after { content: '›'; margin-left: auto; color: var(--settings-muted); font-size: 18px; font-weight: 400; }
+  & details[open] > summary::after { content: '⌄'; }
+  & details > summary > span { color: var(--settings-muted); font-size: 11px; font-weight: 400; }
+  & :is(.settings-catalog-details, .settings-api-diagnostics, .settings-storage-details, .settings-mcp-capability-details, .settings-mcp-more-permissions, .settings-advanced-diagnostics)[open] { padding-bottom: 14px !important; }
+  & .settings-model-catalog { margin-top: 10px !important; }
+  & .settings-model-tabs { display: flex !important; flex-wrap: wrap; gap: 2px !important; padding: 0 !important; border: 0 !important; border-bottom: 1px solid var(--settings-line) !important; border-radius: 0 !important; background: transparent !important; }
+  & .settings-model-tabs > button { display: inline-flex; align-items: center; gap: 6px; min-height: 38px !important; padding: 0 8px; background: transparent !important; border: 0 !important; border-bottom: 2px solid transparent !important; border-radius: 0 !important; color: var(--settings-muted) !important; }
+  & .settings-model-tabs > button.is-active { color: var(--settings-accent) !important; border-bottom-color: var(--settings-accent) !important; }
+  & .settings-model-tabs > button > b { background: transparent !important; color: var(--settings-muted) !important; }
+  & .settings-model-group.settings-model-group--active { display: grid !important; grid-template-columns: minmax(0, 1fr) !important; gap: 12px !important; padding: 16px 0 0 !important; }
+  & .settings-model-group.settings-model-group--active > header { grid-column: 1 !important; padding: 0 !important; border: 0 !important; }
+  & .settings-model-search { grid-column: 1 !important; grid-row: auto !important; grid-template-columns: 110px minmax(0, 1fr) !important; }
+  & .settings-model-group.settings-model-group--active .settings-model-list { grid-column: 1 !important; grid-row: auto !important; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 0 14px !important; max-height: none !important; padding: 0 !important; overflow: visible !important; }
+  & .settings-model-group.settings-model-group--active .settings-model-list > article { min-height: 58px !important; margin: 0 !important; padding: 10px 8px !important; background: transparent !important; border: 0 !important; border-bottom: 1px solid var(--settings-line) !important; border-radius: 0 !important; box-shadow: none !important; }
+  & .settings-model-group.settings-model-group--active .settings-model-list > article.is-default { background: var(--settings-selected) !important; border-radius: 7px !important; }
+  & .settings-model-identity strong { font-size: 13px !important; }
+  & .settings-diagnostics-layer { display: grid; gap: 12px; padding-top: 10px !important; }
+
+  /* Daily storage controls stay outside the exact-path disclosure. */
+  & :is(.settings-local-storage.settings-section.settings-layer, .settings-clearable-cache.settings-section.settings-layer, .settings-sync-update-area.settings-layer) { margin-top: 18px !important; padding-top: 16px !important; border-top: 1px solid var(--settings-line) !important; }
+  & .settings-storage-mode { display: flex !important; width: auto !important; margin: 0 !important; padding: 13px 0 !important; border: 0 !important; border-bottom: 1px solid var(--settings-line) !important; border-radius: 0 !important; background: transparent !important; font-weight: 400 !important; }
+  & .settings-cache-directory-field { display: grid; grid-template-columns: 174px minmax(0, 1fr); align-items: center; gap: 12px 24px; margin: 0; }
+  & .settings-cache-directory-field > span { font-size: 12px; font-weight: 550; }
+  & .settings-cache-directory-field > input { width: 100%; }
+  & .settings-cache-directory-hint { grid-column: 2; color: var(--settings-muted); }
+  & .settings-cache-directory-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin: 11px 0 0; }
+  & .settings-storage-stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin: 18px 0 0; }
+  & .settings-storage-stat-grid > article { padding: 14px 20px; background: var(--settings-field); border: 1px solid var(--settings-line); border-radius: 9px; }
+  & .settings-storage-stat-grid strong { display: block; margin: 5px 0; font-size: 25px; font-weight: 600; }
+  & .settings-storage-stat-grid :is(span, small) { color: var(--settings-muted); font-size: 11px !important; }
+  & .settings-clearable-cache > header { margin: 0; }
+  & .settings-clearable-cache > header > div > small { display: block; margin-top: 4px; }
+  & .settings-danger-button { color: var(--danger) !important; }
+  & .settings-storage-note { margin: 10px 0 0 !important; color: var(--settings-muted); }
+  & .settings-storage-details.settings-layer { margin-top: 18px !important; }
+  & .settings-storage-details :is(p, dd, code) { overflow-wrap: anywhere; }
+
+  /* MCP clients and permissions use flat rows rather than nested cards. */
+  & .settings-section--mcp { display: block !important; }
+  & .settings-mcp-server { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 23px 0 16px; padding: 17px 19px; border: 1px solid var(--settings-line); border-radius: 9px; background: var(--settings-field); }
+  & .settings-mcp-server__identity > i { display: none; }
+  & .settings-mcp-server__identity strong { font-size: 13px; }
+  & .settings-mcp-server dl { display: flex; flex-wrap: wrap; gap: 16px; }
+  & .settings-mcp-server dl > div { padding: 0; border: 0; background: transparent; border-radius: 0; }
+  & .settings-mcp-server :is(dt, dd) { font-size: 11px; }
+  & .settings-mcp-client-list { gap: 0; }
+  & .settings-mcp-client { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px 18px; min-height: 78px; padding: 14px 0; border: 0; border-bottom: 1px solid var(--settings-line); border-radius: 0; background: transparent; }
+  & .settings-mcp-client__identity > i { display: none; }
+  & .settings-mcp-client__identity strong { font-size: 13px; }
+  & .settings-mcp-client__identity small { font-size: 11px; }
+  & .settings-mcp-client__state { padding: 0; border: 0; background: transparent; border-radius: 0; font-size: 11px; }
+  & .settings-mcp-client__actions { grid-column: 3; display: flex; gap: 7px; }
+  & .settings-mcp-client__actions > button:first-child { background: var(--settings-accent) !important; border-color: var(--settings-accent) !important; color: var(--on-accent) !important; }
+  & .settings-mcp-client__trust-hint { grid-column: 1 / -1; }
+  & .settings-mcp-permissions { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--settings-line); }
+  & .settings-mcp-permissions > header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  & .settings-mcp-permissions > header > svg { display: none; }
+  & .settings-mcp-permissions > header strong { font-size: 15px; }
+  & .settings-mcp-permissions > header small { display: block; color: var(--settings-muted); }
+  & .settings-mcp-permission-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 0 28px !important; }
+  & .settings-mcp-permission { min-height: 58px !important; padding: 13px 0 !important; background: transparent !important; border: 0 !important; border-bottom: 1px solid var(--settings-line) !important; border-radius: 0 !important; }
+  & .settings-mcp-permission strong { font-size: 12px; }
+  & .settings-mcp-permission small { font-size: 11px !important; }
+  & .settings-mcp-permission i { background: var(--settings-accent) !important; border-color: var(--settings-accent) !important; color: var(--on-accent); }
+  & .settings-mcp-permission--danger strong { color: var(--danger); }
+  & .settings-mcp-capability-details { margin-top: 18px !important; }
+  & .settings-mcp-capability-diagnostics { padding: 12px 0; border: 0; border-radius: 0; background: transparent; }
+  & .settings-mcp-capability-diagnostics dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  & .settings-mcp-contract-summary { margin: 10px 0; }
+
+  /* Updates sit beside knowledge checks; recovery remains a disclosure. */
+  & .settings-sync-primary { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 10px; padding: 0; border: 0; border-radius: 0; background: transparent !important; }
+  & .settings-sync-primary > small { color: var(--settings-muted); }
+  & .settings-sync-knowledge-list { gap: 0; }
+  & .settings-sync-knowledge-list article { grid-template-columns: minmax(0, 1fr) 112px auto; gap: 18px; min-height: 80px; padding: 17px 0; background: transparent; border: 0; border-bottom: 1px solid var(--settings-line); border-radius: 0; }
+  & .settings-sync-knowledge-list article > div:first-child > i { display: none; }
+  & .settings-sync-knowledge-list article strong { font-size: 13px; font-weight: 550; }
+  & .settings-sync-knowledge-list article small { font-size: 11px !important; }
+  & .settings-sync-warning { margin: 17px 0 0 !important; color: var(--settings-muted); }
+  & .settings-sync-update-area > .settings-status-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 18px; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
+  & .settings-sync-update-area .settings-status-card > header { grid-column: 1 / -1; margin: 0 0 4px; }
+  & .settings-sync-update-area .settings-status-card > header > span, & .settings-sync-update-area .settings-status-card > header small { display: none; }
+  & .settings-sync-update-area .settings-status-card > p { grid-column: 1; margin: 0 !important; color: var(--settings-muted); font-size: 11px !important; }
+  & .settings-sync-update-area .settings-tool-card__status { grid-column: 1; display: flex; align-items: center; justify-content: flex-start; gap: 12px; padding: 0; border: 0; background: transparent; }
+  & .settings-sync-update-area .settings-update-action { grid-column: 2; grid-row: 2 / 5; }
+  & .settings-advanced-diagnostics.settings-layer { margin-top: 24px !important; }
+  & .settings-diagnostics-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  & .settings-status-card { min-height: 0; margin: 0; padding: 14px 0; border: 0; border-radius: 0; background: transparent; }
+
+  /* Explicitly retire legacy grid positions and filled tool-card contracts. */
+  & :is(.settings-provider-panel, .settings-provider-switch, .settings-download-directory, .settings-local-storage, .settings-clearable-cache, .settings-sync-panel) { display: block !important; }
+  & .settings-provider-priority-action { border: 0 !important; }
+  & .settings-key-heading { display: flex !important; padding: 0 !important; }
+  & .settings-provider-endpoint > .settings-endpoint-reset { height: 35px !important; }
+  & .settings-provider-key-link { display: inline !important; min-height: 0 !important; padding: 0 !important; background: transparent !important; border: 0 !important; border-radius: 0 !important; }
+  & .settings-model-defaults .settings-model-default { grid-column: auto !important; grid-row: auto !important; min-height: 38px !important; padding: 0 !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; align-items: center !important; align-self: center !important; }
+  & .settings-model-defaults .settings-model-default > select { font-size: 12px !important; }
+  & .settings-model-catalog { grid-template-columns: minmax(0, 1fr) !important; }
+  & .settings-model-group.settings-model-group--active { border: 0 !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; }
+  & .settings-storage-stat-grid > article { background: var(--settings-field) !important; }
+  & .settings-mcp-permissions > header { display: block !important; padding: 0 !important; text-align: left !important; }
+  & .settings-mcp-permissions > header > div { margin: 0 !important; width: 100%; }
+  & .settings-mcp-permissions > header :is(strong, small) { text-align: left !important; }
+  & .settings-sync-warning { padding: 0 !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; }
+  & .settings-sync-update-area > .settings-status-card { display: grid !important; justify-items: stretch !important; align-content: start; min-height: 0 !important; padding: 0 !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; }
+  & .settings-sync-update-area .settings-status-card > header { display: flex !important; justify-content: flex-start !important; text-align: left !important; }
+  & .settings-sync-update-area .settings-status-card > header > div { margin: 0 !important; }
+  & .settings-sync-update-area .settings-status-card > header strong { font-size: 15px !important; text-align: left !important; }
+  & .settings-sync-update-area .settings-status-card > p { min-height: 0 !important; text-align: left !important; }
+  & .settings-sync-update-area .settings-tool-card__status { justify-content: flex-start !important; padding: 0 !important; border: 0 !important; background: transparent !important; }
+  & .settings-sync-update-area .settings-tool-card__status :is(span, strong) { font-size: 11px !important; }
+  & .settings-sync-update-area .settings-update-action { margin: 0 !important; }
+  & .settings-model-defaults-section { display: block !important; }
+  & .settings-key-heading { min-height: 22px; border: 0 !important; }
+  & .settings-key-heading > [data-connection-state] { min-height: 0 !important; padding: 0 !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; }
+  & :where(.settings-section__primary, .settings-section__secondary, .settings-update-action, .settings-cache-action, .settings-danger-button, .settings-mcp-client__actions > button, .settings-sync-knowledge-list article > button, .settings-sync-primary > button) { height: 35px !important; }
+  & .settings-provider-priority-action { margin-top: 4px; }
+  & .settings-provider-priority-action > button { height: 27px !important; }
+  & .settings-provider-endpoint, & .settings-credential-row { padding-block: 8px !important; }
+  & .settings-credential-summary { margin-right: 150px; }
+  & .settings-provider-links { margin-top: -16.5px; padding: 0; }
+  & .settings-model-defaults-section.settings-section.settings-layer { margin-top: 16px !important; }
+  & .settings-key-heading > [data-connection-state] { width: auto !important; height: auto !important; }
+  & .settings-page-heading { margin-bottom: 12px; }
+  & .settings-provider-switch.settings-section.settings-layer { margin-bottom: 10px !important; }
+  & .settings-key-heading { margin-bottom: 6px !important; }
+  & .settings-model-defaults-section.settings-section.settings-layer { padding-top: 12px !important; }
+  & .settings-model-save-row { margin-top: 10px; }
 }
-html body .workspace--canvas-layout .settings-drawer :is(input, select) {
-  font-family: inherit !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-page-heading > span {
-  color: var(--settings-accent);
-  font-weight: 600;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-page-heading h2 {
-  font-size: 28px;
-  letter-spacing: -.025em;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-overview > header {
-  gap: 12px;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-overview > header strong {
-  font-size: 16px !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-overview > p {
-  max-width: 66ch;
-  margin: 8px 0 0 !important;
-  color: var(--settings-muted) !important;
-  line-height: 1.6 !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-panel.settings-layer {
-  margin: 0 0 18px !important;
-  padding: 23px 24px !important;
-  background: var(--settings-paper) !important;
-  border: 1px solid var(--settings-line) !important;
-  border-radius: 16px !important;
-  box-shadow: 0 8px 26px color-mix(in srgb, var(--settings-ink) 4%, transparent) !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-subsection-heading strong {
-  font-size: 17px !important;
-  letter-spacing: -.02em;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-grid {
-  gap: 0 !important;
-  margin-top: 18px;
-  border-bottom: 1px solid var(--settings-line);
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-grid > button {
-  position: relative;
-  grid-template-columns: 30px minmax(0, 1fr) !important;
-  gap: 9px !important;
-  min-height: 69px !important;
-  padding: 10px 8px 12px !important;
-  background: transparent !important;
-  border: 0 !important;
-  border-radius: 0 !important;
-  box-shadow: none !important;
-  transform: none !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-grid > button + button {
-  border-left: 1px solid var(--settings-line) !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-grid > button::after {
-  position: absolute;
-  right: 9px;
-  bottom: -1px;
-  left: 9px;
-  height: 2px;
-  background: transparent;
-  content: '';
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-grid > button.is-active {
-  background: color-mix(in srgb, var(--settings-accent) 5%, var(--settings-paper)) !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-grid > button.is-active::after {
-  background: var(--settings-accent);
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-grid > button:hover:not(:disabled) {
-  background: var(--settings-field) !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-grid i {
-  width: 30px !important;
-  height: 30px !important;
-  background: transparent !important;
-  border: 1px solid var(--settings-line) !important;
-  border-radius: 9px !important;
-  font-size: 10px !important;
-  font-weight: 750;
-  letter-spacing: -.03em;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-grid > button.is-active i {
-  background: var(--settings-selected) !important;
-  border-color: var(--settings-accent) !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-grid strong {
-  font-size: 13px !important;
-  line-height: 1.3;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-grid :is(small, em) {
-  font-size: 11px !important;
-  line-height: 1.25 !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-grid em {
-  color: var(--settings-accent) !important;
-  font-weight: 650;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-priority-action {
-  padding: 12px 0 18px !important;
-  border-bottom: 1px solid var(--settings-line);
-}
-html body .workspace--canvas-layout .settings-drawer .settings-provider-priority-action > button {
-  min-height: 34px !important;
-  padding-inline: 12px !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-layer {
-  margin: 0 0 0 !important;
-  background: transparent !important;
-  border: 0 !important;
-  border-radius: 0 !important;
-  overflow: visible !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-catalog {
-  padding: 23px 24px !important;
-  background: var(--settings-paper) !important;
-  border: 1px solid var(--settings-line) !important;
-  border-radius: 16px !important;
-  box-shadow: 0 8px 26px color-mix(in srgb, var(--settings-ink) 4%, transparent) !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-catalog__summary {
-  padding: 0 0 16px !important;
-  border-bottom: 1px solid var(--settings-line) !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-catalog__summary strong {
-  font-size: 17px !important;
-  letter-spacing: -.02em;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-catalog__summary > span {
-  padding: 0 !important;
-  background: transparent !important;
-  border: 0 !important;
-  color: var(--settings-muted) !important;
-  font-size: 12px !important;
-  font-weight: 550 !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-tabs {
-  gap: 2px !important;
-  margin-top: 8px;
-  padding: 0 !important;
-  background: transparent !important;
-  border: 0 !important;
-  border-bottom: 1px solid var(--settings-line) !important;
-  border-radius: 0 !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-tabs > button {
-  min-height: 43px !important;
-  background: transparent !important;
-  border: 0 !important;
-  border-bottom: 2px solid transparent !important;
-  border-radius: 0 !important;
-  color: var(--settings-muted) !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-tabs > button.is-active {
-  background: transparent !important;
-  border-bottom-color: var(--settings-accent) !important;
-  color: var(--settings-ink) !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-tabs > button > b {
-  background: transparent !important;
-  color: var(--settings-muted) !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-group.settings-model-group--active {
-  padding: 20px 0 0 !important;
-  background: transparent !important;
-  border: 0 !important;
-  border-radius: 0 !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-group.settings-model-group--active > header {
-  padding-bottom: 0 !important;
-  border: 0 !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-group.settings-model-group--active .settings-model-list {
-  gap: 0 14px !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-group.settings-model-group--active .settings-model-list > article {
-  min-height: 58px !important;
-  margin: 0 !important;
-  padding: 10px 8px !important;
-  background: transparent !important;
-  border: 0 !important;
-  border-bottom: 1px solid var(--settings-line) !important;
-  border-radius: 0 !important;
-  box-shadow: none !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-group.settings-model-group--active .settings-model-list > article.is-enabled {
-  background: transparent !important;
-  box-shadow: none !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-group.settings-model-group--active .settings-model-list > article.is-default {
-  background: color-mix(in srgb, var(--settings-accent) 6%, var(--settings-paper)) !important;
-  border-radius: 8px !important;
-}
-html body .workspace--canvas-layout .settings-drawer .settings-model-list .settings-model-identity strong {
-  font-size: 13px !important;
-  font-weight: 650 !important;
+@media (max-width: 1050px) and (min-width: 761px) {
+  :root[data-theme] body .workspace--canvas-layout .settings-drawer {
+    & .settings-drawer__body { padding-inline: 24px !important; }
+    & .settings-mcp-client { grid-template-columns: minmax(0, 1fr) auto; }
+    & .settings-mcp-client__actions { grid-column: 1 / -1; justify-content: flex-end; }
+  }
 }
 @media (max-width: 760px) {
-  html body .workspace--canvas-layout .settings-drawer .settings-provider-panel.settings-layer,
-  html body .workspace--canvas-layout .settings-drawer .settings-model-catalog {
-    padding: 18px 16px !important;
-  }
-  html body .workspace--canvas-layout .settings-drawer .settings-provider-grid > button:nth-child(3) {
-    border-left: 0 !important;
-  }
-  html body .workspace--canvas-layout .settings-drawer .settings-provider-grid > button:nth-child(n + 3) {
-    border-top: 1px solid var(--settings-line) !important;
+  :root[data-theme] body .workspace--canvas-layout .settings-drawer {
+    top: 60px !important; right: 12px !important; width: calc(100vw - 24px) !important; height: calc(100vh - 72px) !important;
+    grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: 62px auto minmax(0, 1fr) !important;
+    & .settings-drawer__header { padding-inline: 18px !important; }
+    & .settings-brand > div { gap: 10px; }
+    & .settings-brand > div > span { font-size: 10px !important; }
+    & .settings-navigation { padding: 10px 14px; border-right: 0; border-bottom: 1px solid var(--settings-line); }
+    & .settings-navigation__footer { display: none; }
+    & .settings-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+    & .settings-tabs > button { padding-inline: 8px !important; font-size: 12px !important; }
+    & .settings-drawer__body { padding: 20px 16px !important; }
+    & .settings-provider-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+    & .settings-provider-priority-action { align-items: flex-start; }
+    & .settings-provider-endpoint { grid-template-columns: minmax(0, 1fr) auto !important; gap: 7px 10px !important; }
+    & .settings-provider-endpoint > span { grid-column: 1 / -1; }
+    & .settings-provider-endpoint > input { grid-column: 1; grid-row: 2; }
+    & .settings-provider-endpoint > .settings-endpoint-reset { grid-column: 2; grid-row: 2; }
+    & .settings-credential-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    & .settings-credential-row__control { flex-wrap: wrap; }
+    & .settings-credential-value { flex-basis: 50%; }
+    & .settings-credential-summary { margin-inline: 0; flex-wrap: wrap; }
+    & .settings-provider-links { margin-top: 4px; }
+    & .settings-connection-actions { margin-left: 0; flex-wrap: wrap; }
+    & .settings-connection-actions > div { flex-wrap: wrap; }
+    & .settings-model-defaults { grid-template-columns: minmax(0, 1fr) !important; }
+    & details > summary { flex-wrap: wrap; }
+    & details > summary > span { flex-wrap: wrap; }
+    & .settings-model-search { grid-template-columns: minmax(0, 1fr) !important; }
+    & .settings-model-group.settings-model-group--active .settings-model-list { grid-template-columns: minmax(0, 1fr) !important; }
+    & .settings-cache-directory-field { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    & .settings-cache-directory-hint { grid-column: 1; }
+    & .settings-storage-stat-grid { gap: 12px; }
+    & .settings-storage-stat-grid > article { padding: 14px 12px; }
+    & .settings-clearable-cache > header { flex-wrap: wrap; }
+    & .settings-mcp-server { flex-wrap: wrap; padding: 14px; }
+    & .settings-mcp-client { grid-template-columns: minmax(0, 1fr) auto; }
+    & .settings-mcp-client__actions { grid-column: 1 / -1; justify-content: flex-end; flex-wrap: wrap; }
+    & .settings-mcp-permission-grid { grid-template-columns: minmax(0, 1fr) !important; }
+    & .settings-sync-knowledge-list article { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+    & .settings-sync-knowledge-list article > div:nth-child(2) { grid-column: 1; }
+    & .settings-sync-knowledge-list article > button { grid-column: 2; grid-row: 1 / 3; }
+    & .settings-sync-update-area > .settings-status-card { grid-template-columns: minmax(0, 1fr); }
+    & .settings-sync-update-area .settings-update-action { grid-column: 1; grid-row: auto; justify-self: start; }
   }
 }

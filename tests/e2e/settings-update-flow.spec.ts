@@ -12,9 +12,15 @@ test('shows the explicit local desktop update flow without automatic install', a
   await page.getByTestId('settings-toggle').click();
   const settings = page.getByTestId('settings-drawer');
   await settings.getByRole('tab', { name: '同步' }).click();
-  await settings.getByText('高级故障排查').click();
+  const recovery = settings.getByTestId('settings-sync-diagnostics-layer');
+  await expect(recovery).toHaveJSProperty('open', false);
+  await expect(settings.getByRole('region', { name: '连接与恢复' })).toBeHidden();
+  const updates = settings.getByRole('region', { name: '应用更新', exact: true });
+  await expect(updates).toBeVisible();
+  const checkUpdate = updates.getByRole('button', { name: 'Check for updates' });
+  await expect(checkUpdate).toBeEnabled();
 
-  await settings.getByRole('button', { name: 'Check for updates' }).click();
+  await checkUpdate.click();
   const dialog = page.getByRole('dialog', { name: '应用更新' });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('发现新版本 1.6.63')).toBeVisible();
@@ -23,6 +29,23 @@ test('shows the explicit local desktop update flow without automatic install', a
 
   await dialog.getByRole('button', { name: '下载更新' }).click();
   await expect(dialog.getByText('下载进度 42%')).toBeVisible();
+  await expect(checkUpdate).toBeDisabled();
+  await expect.poll(() => page.evaluate(() => window.__NOVUS_E2E__?.getState().updateRestartCount)).toBe(0);
+
+  await page.evaluate(() => window.__NOVUS_E2E__?.publishUpdateState({
+    status: 'error',
+    version: '1.6.63',
+    message: 'E2E controlled download interruption',
+  }));
+  await expect(dialog.getByRole('alert')).toHaveText('更新检查失败，请检查网络后重试。');
+  await expect(checkUpdate).toBeEnabled();
+  await expect(recovery).toHaveJSProperty('open', false);
+  await expect(dialog.getByRole('button', { name: '重启并安装' })).toHaveCount(0);
+  await dialog.getByRole('button', { name: '重新检查更新' }).click();
+  await expect(dialog.getByText('发现新版本 1.6.63')).toBeVisible();
+  await dialog.getByRole('button', { name: '下载更新' }).click();
+  await expect(dialog.getByText('下载进度 42%')).toBeVisible();
+  await expect(checkUpdate).toBeDisabled();
   await expect.poll(() => page.evaluate(() => window.__NOVUS_E2E__?.getState().updateRestartCount)).toBe(0);
 
   await page.evaluate(() => window.__NOVUS_E2E__?.publishUpdateState({

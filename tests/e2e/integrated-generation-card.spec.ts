@@ -8,7 +8,7 @@ for (const theme of ['dark', 'light'] as const) {
     await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
     await openEmptyApp(page);
     for (const [moduleType, previewSelector, mediaLabel, controlSelector, minPreviewHeight] of [
-      ['image_generation', '.module-node__generation-editor-preview', 'Image generation reference slots', '.module-node__generation-control-bar', 420],
+      ['image_generation', '.module-node__generation-editor-preview', 'Image generation reference slots', '.module-node__generation-control-bar', 220],
       ['video_generation', '.module-node__result', 'Connected video media editor', '.module-node__video-control-bar', 340],
     ] as const) {
       await page.evaluate(async (type) => {
@@ -50,6 +50,7 @@ for (const theme of ['dark', 'light'] as const) {
       expect(card!.width).toBeLessThanOrEqual(740);
       expect(preview!.width).toBeGreaterThan(600);
       expect(preview!.height).toBeGreaterThanOrEqual(minPreviewHeight);
+      if (moduleType === 'image_generation') expect(preview!.height).toBeLessThanOrEqual(260);
       expect(preview!.x).toBeGreaterThan(card!.x);
       expect(preview!.y).toBeGreaterThan(card!.y + 40);
       expect(media!.y - (preview!.y + preview!.height)).toBeCloseTo(0, 0);

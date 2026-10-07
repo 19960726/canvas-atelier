@@ -49,6 +49,8 @@
   }
 
   function placeEmbedded(imageFile) {
+    var targetDocument = app.activeDocument;
+    var historyBeforePlace = targetDocument.activeHistoryState;
     try {
       var descriptor = new ActionDescriptor();
       descriptor.putPath(charIDToTypeID('null'), imageFile);
@@ -60,10 +62,12 @@
       executeAction(charIDToTypeID('Plc '), descriptor, DialogModes.NO);
       return app.activeDocument.activeLayer;
     } catch (placementError) {
+      // A failed action can already have inserted a layer. Restore this
+      // synchronous attempt before the alternative placement starts.
+      targetDocument.activeHistoryState = historyBeforePlace;
       // Some Photoshop builds reject the embedded-place action descriptor
       // over COM. Transfer the pixels through a temporary source document,
       // then convert the copied layer before it can be reported as imported.
-      var targetDocument = app.activeDocument;
       var sourceDocument = null;
       var copiedLayer = null;
       try {
@@ -105,6 +109,8 @@
   if (!imageFile.exists) throw new Error('asset_not_found');
 
   var documentRef = app.activeDocument;
+  var historyBeforeImport = documentRef.activeHistoryState;
+  try {
   stage = 'place-layer';
   var layer;
   try {
@@ -129,4 +135,12 @@
   if (scale !== 1) layer.resize(scale * 100, scale * 100, AnchorPosition.MIDDLECENTER);
   stage = 'center-layer';
   centerLayerInDocument(layer, documentRef);
+  return 'canvas-placed:' + layer.name;
+  } catch (importError) {
+    // All placement, conversion and geometry edits belong to this attempt.
+    // Do not permit an outer retry if restoring that exact state fails.
+    try { documentRef.activeHistoryState = historyBeforeImport; }
+    catch (rollbackError) { throw new Error('placement_outcome_uncertain: ' + importError); }
+    throw new Error('canvas_placement_rolled_back: ' + stage + ': ' + importError);
+  }
 }());

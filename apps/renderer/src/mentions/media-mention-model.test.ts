@@ -6,6 +6,20 @@ import {
 } from './media-mention-model';
 
 describe('media mention model', () => {
+  it('keeps node binding numbers stable while preview metadata reloads', () => {
+    const media = [{ assetId: 'a', kind: 'image' }, { assetId: 'b', kind: 'image' }] as const;
+    expect(buildConnectedMentionCatalog(media, [{ assetId: 'b', label: 'B' }], [], true).map(item => [item.token, item.assetId]))
+      .toEqual([['@图片1', 'a'], ['@图片2', 'b']]);
+  });
+  it('preserves an as-yet unbound token while a user connects its first reference', () => {
+    const next = [{ token: '@图片1', assetId: 'new-image', kind: 'image', label: 'New' }] as const;
+    expect(reconcileConnectedMentions([], next, '先写 @图片1 再连线')).toBe('先写 @图片1 再连线');
+  });
+  it('does not parse or erase a partial token inside a larger number', () => {
+    const value = '@图片100 @视频200';
+    expect(parseCanonicalMentions(value)).toEqual([{ kind: 'text', text: value, start: 0, end: value.length }]);
+    expect(reconcileConnectedMentions([], [], value)).toBe(value);
+  });
   it('parses canonical tokens while exposing labels without @', () => {
     expect(parseCanonicalMentions('参考 @图片1 和 @视频2')).toEqual([
       { kind: 'text', text: '参考 ', start: 0, end: 3 },

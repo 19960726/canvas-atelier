@@ -400,6 +400,15 @@ textarea:focus-visible {
 .module-node__media-picker { position: relative; width: 24px; height: 24px; display: grid; place-items: center; color: var(--module-muted); background: var(--surface); border: 1px solid var(--border); border-radius: 5px; cursor: pointer; }
 .module-node__media-picker:hover { color: var(--accent); border-color: var(--accent); }
 .module-node__media-picker select { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; opacity: 0; }
+/* Keep the project choice beside replacement, outside hidden metadata. */
+.workspace--canvas-layout .module-node__media-frame > .module-node__media-picker--frame { position: absolute; top: 6px; right: 40px; width: 28px; height: 30px; opacity: 0; transition: opacity 120ms ease; }
+.workspace--canvas-layout .module-node:is(:hover, .is-selected, :focus-within) .module-node__media-frame > .module-node__media-picker--frame { opacity: 1; }
+.workspace--canvas-layout .module-node__text-prompt textarea { box-sizing: border-box; width: 100%; min-height: 180px; resize: vertical; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; line-height: 1.6; }
+.workspace--canvas-layout .module-node__connected-output-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
+.workspace--canvas-layout .module-node__connected-output-images > button { padding: 0; overflow: hidden; border: 0; border-radius: 8px; background: transparent; }
+.workspace--canvas-layout .module-node__connected-output-images img { display: block; width: 100%; height: 160px; object-fit: contain; }
+.workspace--canvas-layout .module-node--foundation[data-module-type='result_output'] .module-node__output-preview.module-node__connected-image-output { overflow-y: auto; place-content: initial; align-content: start; gap: 8px; }
+.workspace--canvas-layout .module-node--foundation[data-module-type='result_output'] .module-node__connected-output-images img { height: 120px; }
 .module-node__image-control button { width: 27px; height: 27px; display: grid; place-items: center; padding: 0; color: var(--module-muted); background: var(--surface); border: 1px solid var(--border); border-radius: 5px; cursor: pointer; }
 .module-node__image-control button:hover:not(:disabled) { color: var(--blue); border-color: var(--blue-border); }
 .module-node__image-control button:disabled { cursor: wait; opacity: 0.65; }

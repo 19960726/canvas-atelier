@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { applyProjectTransaction, createCanvasModuleNode, DEFAULT_MCP_PERMISSION_FLAGS, parseCanvasProject, type CanvasProject, type ProjectTransaction } from '@agent-canvas/domain';
 import { createMcpConfirmationStore } from './mcp-confirmation-store';
-import { createMcpWorkspaceAdapter, type McpWorkspaceSource } from './mcp-workspace-adapter';
+import { createMcpWorkspaceAdapter, hashPublicProjectExecutionState, type McpWorkspaceSource } from './mcp-workspace-adapter';
 import { mcpUiConfirmationStore } from './mcp-ui-confirmation-store';
 
 describe('MCP workspace adapter', () => {
@@ -574,6 +574,8 @@ it('returns the one-time workflow token when the approved plan is retried exactl
     expect(source.runNode).toHaveBeenCalledWith('image-1', {
       projectId: 'project-1',
       expectedRevision: 4,
+      projectSnapshotHash: hashPublicProjectExecutionState(project),
+      isExecutionAuthorized: expect.any(Function),
       provider: '4dai',
       modelRoute: '4dai-gpt-image-1-5',
     });

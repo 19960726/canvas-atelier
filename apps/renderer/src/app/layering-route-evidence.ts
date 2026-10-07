@@ -10,6 +10,8 @@ export interface LayeringRouteEvidence {
   readonly transparentBackground: true;
   readonly outputFormat: 'png' | 'webp';
   readonly resolutions: readonly ImageResolutionTier[];
+  /** Independent foreground RGB is a separate contract from transparency. */
+  readonly independentRgba?: true;
 }
 
 export interface LayeringRouteContract {
@@ -44,6 +46,16 @@ export function eligibleForLayeringRoute(
   evidence: readonly LayeringRouteEvidence[],
 ): boolean {
   return getLayeringRouteContract(profile, evidence) !== null;
+}
+
+export function supportsIndependentRgba(
+  profile: ProviderBridgeProfile,
+  evidence: readonly LayeringRouteEvidence[],
+): boolean {
+  return evidence.some(item => item.provider === profile.provider && item.modelRoute === profile.modelRoute
+    && item.modelId === profile.modelId && item.transparentBackground === true
+    && ['png', 'webp'].includes(item.outputFormat) && item.resolutions.length > 0
+    && item.independentRgba === true);
 }
 
 export const PRODUCTION_LAYERING_ROUTE_EVIDENCE: readonly LayeringRouteEvidence[] = Object.freeze([]);

@@ -115,6 +115,12 @@ import {
 } from './contracts.js';
 import { AssetStore, type AssetMetadata } from './asset-store.js';
 import type { ManagedReversePromptMediaIdentity, ProjectMemoryContextSnapshot } from './provider-contracts.js';
+import { createProviderBridgeError } from './provider-contracts.js';
+import {
+  fingerprintGenerationProjectRoot,
+  parseGenerationProjectBinding,
+  type GenerationProjectBinding,
+} from './generation-project-binding.js';
 import type { ClipboardImageAdapter, TrustedClipboardImage } from './electron-clipboard-image.js';
 import type { ClipboardVideoAdapter } from './electron-clipboard-video.js';
 import { openSafeLocalMp4Source, type SafeLocalMp4Source } from './local-video-source.js';
@@ -154,7 +160,7 @@ import {
   type SnapshotFlushResult,
   type SnapshotReason,
 } from './snapshot-scheduler.js';
-import { BRIDGE_CHANNELS } from './preload-api.js';
+import { BRIDGE_CHANNELS, type PreparedLayerTarget } from './preload-api.js';
 import { capturePersistenceIpcResult } from './persistence-ipc-envelope.js';
 import { createProjectAssetDisplayUrl, parseProjectAssetDisplayUrl } from './project-asset-url.js';
 import { parseGenerationHistoryAssetUrl } from './generation-history-asset-url.js';
@@ -313,6 +319,7 @@ export interface DesktopBridgeHandlerDependencies {
   readonly openVideoSource?: (sourcePath: string) => Promise<SafeLocalMp4Source | null>;
   readonly approvedSnapshotOutbox?: ApprovedSnapshotOutboxLike;
   readonly assetStore?: ProjectAssetStoreLike;
+  readonly inspectPreparedLayerPng?: (bytes: Uint8Array) => PreparedLayerPngInspection;
   readonly knowledgeConfigurationSync?: KnowledgeConfigurationSyncLike;
   readonly knowledgeRefreshService?: KnowledgeRefreshServiceLike;
   readonly knowledgeStore?: KnowledgeStoreLike;
@@ -326,6 +333,15 @@ export interface DesktopBridgeHandlerDependencies {
   readonly repository?: Partial<ProjectRepositoryLike>;
   readonly snapshotScheduler?: SnapshotSchedulerLike;
   readonly photoshopSmartObjectAdapter?: PhotoshopSmartObjectAdapter;
+}
+
+interface PreparedLayerPngInspection {
+  readonly width: number;
+  readonly height: number;
+  readonly sha256: string;
+  readonly hasTransparentPixel: boolean;
+  readonly hasNonzeroPixel: boolean;
+  readonly opaque: boolean;
 }
 
 export interface DesktopBridgeHandlers {
@@ -370,6 +386,9 @@ export interface DesktopBridgeHandlers {
   prepareSkillCandidateReview(event: unknown, request: unknown): Promise<PrepareSkillCandidateReviewBridgeResult>;
   reviewSkillCandidate(event: unknown, request: unknown): Promise<ReviewSkillCandidateBridgeResult>;
   readManagedSkillChatImages(sessionId: string, referenceAssetIds: readonly string[]): Promise<readonly ManagedSkillChatImageContent[]>;
+  bindGenerationProject(sessionId: string, expectedProjectId?: string): Promise<GenerationProjectBinding>;
+  storeGeneratedImageForProject(binding: GenerationProjectBinding, bytes: Uint8Array, mediaType: string): Promise<ProjectImageAsset>;
+  storeGeneratedVideoForProject(binding: GenerationProjectBinding, bytes: Uint8Array, mediaType: 'video/mp4'): Promise<ProjectVideoAsset>;
   storeGeneratedImage(sessionId: string, bytes: Uint8Array, mediaType: string): Promise<ProjectImageAsset>;
   storeGeneratedVideo(sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4'): Promise<ProjectVideoAsset>;
   restore(event: unknown, request: unknown): Promise<RestoreBridgeResult>;
@@ -1068,6 +1087,7 @@ export function createDesktopBridgeHandlers(
           throw invalidRequest('Image import did not reach its durable commit boundary');
         }
         currentSession.assets.set(committed.asset.assetId, committed.asset);
+        scheduleRecentProjectUpdate(currentSession, committed.project);
         const summary = createProjectImageSummary(
           committed.asset,
           currentSession.sessionId,
@@ -1150,6 +1170,7 @@ export function createDesktopBridgeHandlers(
         const committed = commitState.value;
         if (committed === undefined) throw invalidRequest('Clipboard image paste did not reach its durable commit boundary');
         currentSession.assets.set(committed.asset.assetId, committed.asset);
+        scheduleRecentProjectUpdate(currentSession, committed.project);
         await flushScheduledSnapshotAfterCommit(currentSession, committed.ack, 'canvas');
         const result = {
           asset: createProjectImageSummary(
@@ -1177,7 +1198,7 @@ export function createDesktopBridgeHandlers(
     _event: unknown,
     payload: unknown,
   ): Promise<ImportDroppedProjectMediaBridgeResult | null> {
-    const { request, sourcePath } = validateImportDroppedProjectMediaPayload(payload);
+    const { request, sourcePath, preparedLayerTarget } = validateImportDroppedProjectMediaPayload(payload);
     const session = requireWritableSession(sessions, request.sessionId);
     if (session.writer === null) {
       throw createPersistenceError('CONCURRENT_WRITER', true, 'Dropped media import requires a writable desktop session');
@@ -1191,6 +1212,22 @@ export function createDesktopBridgeHandlers(
         const currentSession = requireWritableSession(sessions, request.sessionId);
         if (currentSession !== session || currentSession.writer !== openedWriter || currentSession.session.root !== openedRoot || currentSession.writer === null) {
           throw createPersistenceError('INVALID_SESSION', false, 'Desktop session changed before dropped media import');
+        }
+        let prepared: { readonly pixels: PreparedLayerPngInspection; readonly snapshot: string; readonly bytes: Uint8Array } | undefined;
+        if (preparedLayerTarget) {
+          if (request.target.kind !== 'agent_reference' || !dependencies.inspectPreparedLayerPng || !fileSystem.readFileBuffer) {
+            throw invalidRequest('Strict layer material import is unavailable for this target');
+          }
+          const stats = await fileSystem.stat(sourcePath);
+          if (!stats.isFile() || typeof stats.size !== 'number' || !Number.isSafeInteger(stats.size)
+            || stats.size < 24 || stats.size > 40 * 1024 * 1024) throw invalidRequest('Invalid local layer PNG size');
+          const bytes = await fileSystem.readFileBuffer(sourcePath);
+          let pixels: PreparedLayerPngInspection;
+          try { pixels = dependencies.inspectPreparedLayerPng(bytes); }
+          catch { throw invalidRequest('Local layer material is not a complete supported PNG'); }
+          const project = await repository.readCurrentProject(currentSession.session);
+          await validatePreparedLayerOwner(currentSession, preparedLayerTarget, project, pixels);
+          prepared = { pixels, snapshot: canonicalJson(project), bytes };
         }
         const videoSource = await openVideoSource(sourcePath);
         if (videoSource !== null) {
@@ -1236,6 +1273,7 @@ export function createDesktopBridgeHandlers(
           const committed = commitState.value;
           if (committed === undefined) throw invalidRequest('Dropped video import did not reach its durable commit boundary');
           currentSession.assets.set(committed.asset.assetId, committed.asset);
+          scheduleRecentProjectUpdate(currentSession, committed.project);
           await flushScheduledSnapshot(currentSession, {
             closing: false,
             lastTransactionKind: 'canvas',
@@ -1260,13 +1298,26 @@ export function createDesktopBridgeHandlers(
         const commitState: {
           value?: { readonly ack: CommitAck; readonly asset: ProjectImageAsset; readonly project: CanvasProject };
         } = {};
-        await assetStore.stageAndCommit(currentSession.session.root, createReadStream(sourcePath), {
+        await assetStore.stageAndCommit(currentSession.session.root, prepared ? Readable.from([prepared.bytes]) : createReadStream(sourcePath), {
           maxBytes: MAX_PROJECT_IMAGE_BYTES,
           originalName: basename(sourcePath),
           commitReference: async (storedAsset) => {
             const currentProject = await repository.readCurrentProject(currentSession.session);
             const currentRevision = await readCurrentRevision(repository, currentSession.session);
             const projectAsset = createImportedProjectImageAsset(storedAsset, sourcePath);
+            if (preparedLayerTarget && prepared) {
+              const stillCurrent = requireWritableSession(sessions, request.sessionId);
+              if (stillCurrent !== currentSession || stillCurrent.writer !== openedWriter || stillCurrent.session.root !== openedRoot) {
+                throw createPersistenceError('INVALID_SESSION', false, 'Desktop session changed while storing layer material');
+              }
+              await validatePreparedLayerOwner(currentSession, preparedLayerTarget, currentProject, prepared.pixels);
+              if (canonicalJson(currentProject) !== prepared.snapshot || storedAsset.extension !== 'png'
+                || storedAsset.mediaType !== 'image/png' || storedAsset.sha256 !== prepared.pixels.sha256
+                || storedAsset.byteSize !== prepared.bytes.byteLength
+                || storedAsset.width !== prepared.pixels.width || storedAsset.height !== prepared.pixels.height) {
+                throw invalidRequest('Layer material or its owned snapshot changed during import');
+              }
+            }
             const transaction = createDroppedImageImportTransaction(currentProject, request.target, projectAsset);
             const nextProject = applyProjectTransaction(currentProject, transaction);
             const ack = await currentSession.writer!.commit({
@@ -1281,6 +1332,7 @@ export function createDesktopBridgeHandlers(
         const committed = commitState.value;
         if (committed === undefined) throw invalidRequest('Dropped media import did not reach its durable commit boundary');
         currentSession.assets.set(committed.asset.assetId, committed.asset);
+        scheduleRecentProjectUpdate(currentSession, committed.project);
         await flushScheduledSnapshotAfterCommit(currentSession, committed.ack, 'canvas');
         const result = {
           asset: createProjectImageSummary(
@@ -1296,6 +1348,61 @@ export function createDesktopBridgeHandlers(
       });
     } finally {
       session.imageImportInFlight = false;
+    }
+  }
+
+  async function validatePreparedLayerOwner(
+    session: BridgeSessionContext,
+    target: PreparedLayerTarget,
+    project: CanvasProject,
+    pixels: PreparedLayerPngInspection,
+  ): Promise<void> {
+    if (project.id !== target.projectId || session.session.manifest.projectId !== target.projectId
+      || await readCurrentRevision(repository, session.session) !== target.expectedRevision) {
+      throw invalidRequest('Layer material project or revision changed');
+    }
+    const layers = project.nodes.filter(node => node.id === target.nodeId);
+    const layer = layers.length === 1 ? layers[0] : undefined;
+    if (!layer || layer.type !== 'module' || layer.data.moduleType !== 'image_layer') throw invalidRequest('Layer material target is unavailable');
+    const config = layer.data.config;
+    const groups = project.nodes.filter(node => node.type === 'module' && node.data.moduleType === 'image_layering'
+      && node.data.config.groupId === target.groupId);
+    const group = groups.length === 1 ? groups[0] : undefined;
+    if (!group || group.type !== 'module' || config.groupId !== target.groupId || config.layerId !== target.layerId
+      || config.sourceAssetId !== target.sourceAssetId || (config.resultAssetId ?? null) !== target.expectedResultAssetId
+      || group.data.config.sourceAssetId !== target.sourceAssetId) throw invalidRequest('Layer material source or layer ownership changed');
+    const plans = group.data.config.planLayers;
+    const members = Array.isArray(plans) ? plans.filter(plan => isPlainRecord(plan) && plan.layerId === target.layerId) : [];
+    const member = members.length === 1 ? members[0] : undefined;
+    if (!isPlainRecord(member) || (config.layerKind !== 'transparent' && config.layerKind !== 'background')
+      || member.kind !== config.layerKind) throw invalidRequest('Layer material role or plan membership changed');
+    if (['queued', 'submitting', 'running'].includes(String(config.status))
+      || ['queued', 'submitting', 'running'].includes(String(group.data.config.status))) throw invalidRequest('Layer generation has not finished');
+    if (config.layerKind === 'transparent') {
+      const bounds = config.sourceBounds;
+      if (!isPlainRecord(bounds) || !['x', 'y', 'width', 'height'].every(key => typeof bounds[key] === 'number' && Number.isFinite(bounds[key]))
+        || (bounds.x as number) < 0 || (bounds.y as number) < 0 || (bounds.width as number) <= 0 || (bounds.height as number) <= 0
+        || (bounds.x as number) + (bounds.width as number) > 1 || (bounds.y as number) + (bounds.height as number) > 1) {
+        throw invalidRequest('Layer material source bounds are invalid');
+      }
+    }
+    const sourceAssets = (project.assets ?? []).filter(asset => asset.assetId === target.sourceAssetId);
+    const source = sourceAssets.length === 1 ? sourceAssets[0] : undefined;
+    if (!source || !source.mediaType.startsWith('image/') || !Number.isInteger(source.width) || !Number.isInteger(source.height)
+      || !source.width || !source.height || source.width < 1 || source.height < 1 || !/^[a-f0-9]{64}$/u.test(source.sha256)
+      || pixels.width !== source.width || pixels.height !== source.height || pixels.width > 8192 || pixels.height > 8192
+      || pixels.width * pixels.height > 12_000_000 || !/^[a-f0-9]{64}$/u.test(pixels.sha256)
+      || config.canvasWidth !== source.width || config.canvasHeight !== source.height
+      || group.data.config.canvasWidth !== source.width || group.data.config.canvasHeight !== source.height) {
+      throw invalidRequest('Local layer PNG must exactly match the complete owned source canvas');
+    }
+    if (target.expectedResultAssetId !== null && !(project.assets ?? []).some(asset => asset.assetId === target.expectedResultAssetId && asset.mediaType.startsWith('image/'))) {
+      throw invalidRequest('Previous layer result is not owned by this project');
+    }
+    const resolvedSource = await assetStore.resolvePath(session.session.root, source.assetId, source.extension, source.sha256, source.byteSize);
+    if (resolvedSource === null) throw invalidRequest('Owned source image is missing or its checksum changed');
+    if (config.layerKind === 'background' ? pixels.opaque !== true : pixels.hasTransparentPixel !== true || pixels.hasNonzeroPixel !== true) {
+      throw invalidRequest('Local layer PNG alpha does not match the planned layer role');
     }
   }
 
@@ -1391,6 +1498,7 @@ export function createDesktopBridgeHandlers(
         const committed = commitState.value;
         if (committed === undefined) throw invalidRequest('Video import did not reach its durable commit boundary');
         currentSession.assets.set(committed.asset.assetId, committed.asset);
+        scheduleRecentProjectUpdate(currentSession, committed.project);
         await flushScheduledSnapshot(currentSession, {
           closing: false,
           lastTransactionKind: 'canvas',
@@ -1477,6 +1585,7 @@ export function createDesktopBridgeHandlers(
         const committed = commitState.value;
         if (committed === undefined) throw invalidRequest('Clipboard video paste did not reach its durable commit boundary');
         currentSession.assets.set(committed.asset.assetId, committed.asset);
+        scheduleRecentProjectUpdate(currentSession, committed.project);
         await flushScheduledSnapshot(currentSession, {
           closing: false,
           lastTransactionKind: 'canvas',
@@ -1607,16 +1716,81 @@ export function createDesktopBridgeHandlers(
     }));
   }
 
+  async function bindGenerationProject(sessionId: string, expectedProjectId?: string): Promise<GenerationProjectBinding> {
+    const session = sessions.get(sessionId);
+    if (session === undefined || !isAvailableGenerationWriter(session)) throw unavailableGenerationProject();
+    const projectId = session.session.manifest.projectId;
+    if (expectedProjectId !== undefined && expectedProjectId !== projectId) {
+      throw createProviderBridgeError('INVALID_REQUEST', 'Generation job belongs to a different project');
+    }
+    const rootFingerprint = await fingerprintGenerationProjectRoot(fileSystem, session.session.root);
+    if (sessions.get(sessionId) !== session || !isAvailableGenerationWriter(session)) throw unavailableGenerationProject();
+    return { projectId, rootFingerprint };
+  }
+
+  async function resolveBoundGenerationSession(binding: GenerationProjectBinding): Promise<BridgeSessionContext> {
+    const expected = parseGenerationProjectBinding(binding);
+    const candidates = [...sessions.values()].filter((session) => (
+      session.session.manifest.projectId === expected.projectId && isAvailableGenerationWriter(session)
+    ));
+    const matched: BridgeSessionContext[] = [];
+    for (const session of candidates) {
+      const rootFingerprint = await fingerprintGenerationProjectRoot(fileSystem, session.session.root);
+      if (rootFingerprint === expected.rootFingerprint) matched.push(session);
+    }
+    if (matched.length !== 1 || sessions.get(matched[0]!.sessionId) !== matched[0]) {
+      throw unavailableGenerationProject();
+    }
+    return matched[0]!;
+  }
+
+  async function assertCurrentGenerationBinding(sessionId: string, binding: GenerationProjectBinding): Promise<void> {
+    const session = sessions.get(sessionId);
+    if (session === undefined || !isAvailableGenerationWriter(session)
+      || session.session.manifest.projectId !== binding.projectId
+      || await fingerprintGenerationProjectRoot(fileSystem, session.session.root) !== binding.rootFingerprint) {
+      throw unavailableGenerationProject();
+    }
+  }
+
+  async function storeGeneratedImageForProject(
+    binding: GenerationProjectBinding,
+    bytes: Uint8Array,
+    mediaType: string,
+  ): Promise<ProjectImageAsset> {
+    if (!mediaType.startsWith('image/') || bytes.byteLength === 0) {
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Generated result is not a valid image');
+    }
+    const session = await resolveBoundGenerationSession(binding);
+    try { return await storeGeneratedImage(session.sessionId, bytes, mediaType, binding); }
+    catch (error) { throw normalizeGenerationProjectStorageError(error); }
+  }
+
+  async function storeGeneratedVideoForProject(
+    binding: GenerationProjectBinding,
+    bytes: Uint8Array,
+    mediaType: 'video/mp4',
+  ): Promise<ProjectVideoAsset> {
+    if (mediaType !== 'video/mp4' || bytes.byteLength === 0) {
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Generated result is not a valid MP4');
+    }
+    const session = await resolveBoundGenerationSession(binding);
+    try { return await storeGeneratedVideo(session.sessionId, bytes, mediaType, binding); }
+    catch (error) { throw normalizeGenerationProjectStorageError(error); }
+  }
+
   async function storeGeneratedImage(
     sessionId: string,
     bytes: Uint8Array,
     mediaType: string,
+    expectedBinding?: GenerationProjectBinding,
   ): Promise<ProjectImageAsset> {
     if (!mediaType.startsWith('image/')) throw invalidRequest('Generated result must be an image');
     if (bytes.byteLength === 0) throw invalidRequest('Generated result is empty');
     const session = requireWritableSession(sessions, sessionId);
     return enqueueSessionMaintenance(session, async () => {
       const currentSession = requireWritableSession(sessions, sessionId);
+      if (expectedBinding !== undefined) await assertCurrentGenerationBinding(sessionId, expectedBinding);
       if (currentSession.writer === null) throw createPersistenceError('CONCURRENT_WRITER', true, 'Generated image requires a writable desktop session');
       const commitState: { value?: { readonly ack: CommitAck; readonly asset: ProjectImageAsset } } = {};
       await assetStore.stageAndCommit(currentSession.session.root, Readable.from([bytes]), {
@@ -1647,12 +1821,14 @@ export function createDesktopBridgeHandlers(
     sessionId: string,
     bytes: Uint8Array,
     mediaType: 'video/mp4',
+    expectedBinding?: GenerationProjectBinding,
   ): Promise<ProjectVideoAsset> {
     if (mediaType !== 'video/mp4') throw invalidRequest('Generated video result must be an MP4');
     if (bytes.byteLength === 0) throw invalidRequest('Generated video result is empty');
     const session = requireWritableSession(sessions, sessionId);
     return enqueueSessionMaintenance(session, async () => {
       const currentSession = requireWritableSession(sessions, sessionId);
+      if (expectedBinding !== undefined) await assertCurrentGenerationBinding(sessionId, expectedBinding);
       if (currentSession.writer === null) throw createPersistenceError('CONCURRENT_WRITER', true, 'Generated video requires a writable desktop session');
       const commitState: { value?: { readonly ack: CommitAck; readonly asset: ProjectVideoAsset } } = {};
       await assetStore.stageAndCommit(currentSession.session.root, Readable.from([bytes]), {
@@ -2179,6 +2355,9 @@ export function createDesktopBridgeHandlers(
     readManagedReverseMedia,
     readManagedSkillChatImages,
     resolveProjectMemoryContext,
+    bindGenerationProject,
+    storeGeneratedImageForProject,
+    storeGeneratedVideoForProject,
     storeGeneratedImage,
     storeGeneratedVideo,
     resolveGenerationHistoryImagePath,
@@ -3715,6 +3894,29 @@ function requireWritableSession(
   return session;
 }
 
+function isAvailableGenerationWriter(session: BridgeSessionContext): boolean {
+  return session.closeState === 'open'
+    && session.session.mode === 'write'
+    && session.writer !== null
+    && !session.recoveryRequired;
+}
+
+function unavailableGenerationProject(): Error {
+  return createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Original generation project is not open for writing', true);
+}
+
+function normalizeGenerationProjectStorageError(error: unknown): Error {
+  if (error !== null && typeof error === 'object' && 'code' in error) {
+    const code = error.code;
+    if ((code === 'PROVIDER_UNAVAILABLE' || code === 'PROVIDER_INVALID_RESPONSE') && error instanceof Error) return error;
+    if (code === 'PACKAGE_VALIDATION_FAILED' && error instanceof Error
+      && /^(?:Asset exceeds configured size limit|Asset media type does not match detected content|Unsupported asset (?:extension|media type or extension)|MP4\b)/u.test(error.message)) {
+      return createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Generated result media is invalid');
+    }
+  }
+  return createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Generated result could not be stored in its project yet', true);
+}
+
 function requireSingleWritableProjectSession(
   sessions: Map<string, BridgeSessionContext>,
   projectId: string,
@@ -4079,13 +4281,26 @@ function validateImportProjectVideoBridgeRequest(value: unknown): ImportProjectV
 function validateImportDroppedProjectMediaPayload(value: unknown): {
   readonly request: ImportDroppedProjectMediaBridgeRequest;
   readonly sourcePath: string;
+  readonly preparedLayerTarget?: PreparedLayerTarget;
 } {
   const record = expectPlainRecord(value);
-  assertExactKeys(record, ['request', 'sourcePath'], 'Dropped project media import payload');
+  assertExactKeys(record, ['request', 'sourcePath', 'preparedLayerTarget'], 'Dropped project media import payload');
   const request = validateImportDroppedProjectMediaBridgeRequest(record.request);
   const sourcePath = parseNonEmptyString(record.sourcePath, 'sourcePath');
   if (!isAbsolute(sourcePath)) throw invalidRequest('Dropped media source must be an absolute local path');
-  return { request, sourcePath };
+  if (!('preparedLayerTarget' in record)) return { request, sourcePath };
+  const target = expectPlainRecord(record.preparedLayerTarget);
+  const keys = ['projectId', 'nodeId', 'groupId', 'layerId', 'sourceAssetId', 'expectedResultAssetId', 'expectedRevision'];
+  assertExactKeys(target, keys, 'Prepared layer target');
+  if (Object.keys(target).length !== keys.length || !Number.isSafeInteger(target.expectedRevision)) throw invalidRequest('Prepared layer target is incomplete');
+  const preparedLayerTarget: PreparedLayerTarget = {
+    projectId: parseNonEmptyString(target.projectId, 'target.projectId'), nodeId: parseNonEmptyString(target.nodeId, 'target.nodeId'),
+    groupId: parseNonEmptyString(target.groupId, 'target.groupId'), layerId: parseNonEmptyString(target.layerId, 'target.layerId'),
+    sourceAssetId: parseNonEmptyString(target.sourceAssetId, 'target.sourceAssetId'),
+    expectedResultAssetId: target.expectedResultAssetId === null ? null : parseNonEmptyString(target.expectedResultAssetId, 'target.expectedResultAssetId'),
+    expectedRevision: parseNonNegativeInteger(target.expectedRevision, 'target.expectedRevision'),
+  };
+  return { request, sourcePath, preparedLayerTarget };
 }
 
 function validateImportDroppedProjectMediaBridgeRequest(value: unknown): ImportDroppedProjectMediaBridgeRequest {

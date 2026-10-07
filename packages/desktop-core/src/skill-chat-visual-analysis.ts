@@ -6,6 +6,7 @@ export interface SkillChatReferenceMention {
 
 export function buildSkillChatSystemInstructions(input: {
   readonly agentMode?: 'chat' | 'original' | 'codex';
+  readonly purpose?: 'image_layering_analysis' | 'reverse_workflow';
   readonly reasoningEffort?: 'low' | 'medium' | 'high';
   readonly reverseAnalysisDepth?: 'fast' | 'standard' | 'deep';
   readonly visualAnalysis: boolean;
@@ -21,10 +22,33 @@ export function buildSkillChatSystemInstructions(input: {
       ? '你是视觉创作助手，负责提示词、构图、镜头、分镜、生图与视频方案。给出可复制的创作结果，但 Do not create or modify canvas nodes.'
       : '你是通用对话助手，负责讨论、分析、文案与问答。Answer with useful and copyable suggestions only. Do not create or modify canvas nodes.';
   const base = [role, reasoningInstruction(input.reasoningEffort)].join(' ');
+  if (input.purpose === 'image_layering_analysis') return [
+    base,
+    '本次任务仅分析原图的可见对象并提供图片分层建议。遵守用户消息中的层计划 JSON 合同，只返回一个 JSON 对象，不要 Markdown 围栏、额外文字或创作 options。',
+    'layers 包含一个底部 background 和独立 transparent 图层；每个透明层提供原图相对坐标 sourceBounds，按可见位置、尺寸和遮挡关系拆分对象与对应阴影。',
+    '必须同时返回 elements 清单；每个 elementId、可见对象或光学贡献只能归属一个 layer 的 elementIds。elements 的 layerId 必须存在，layer 的 elementIds 必须覆盖且只覆盖全部 elements。手、杯盖、杯身、水流、反光和阴影分别声明归属；光学/阴影可用 carrierElementId 指向承载对象，但不转移所有权。included=false 的层也保留清单，供背景移除和其他前景排除。重复、遗漏或未知引用时不要猜测，返回无法完成的 JSON 让调用方拒绝。',
+    '不得编造图中不可见的物体、空层或重复层。只做分析供用户校对，不生成图片、不创建节点、不执行任务。',
+  ].join('\n');
+  if (input.purpose === 'reverse_workflow') return [
+    base,
+    reverseDepthInstruction(input.reverseAnalysisDepth),
+    '本次任务按用户消息中的反推工作流 JSON 合同输出，只返回一个 JSON 对象，不要 Markdown 围栏或额外分析文章。',
+    '只依据真实可见证据填写 visual、referenceDuties 和 prompts；主体数量、空间、材质、光线、机位、景深、构图、透视及遮挡均需分析，估计和未知必须说明。',
+    `引用顺序：${input.referenceMentions.map(reference => `${reference.mention}（${reference.label}）`).join('、') || '无'}。逐一说明继承、替换、禁止照搬与冲突，不改变素材顺序。`,
+    '将中文、英文提示词和负面约束放入 prompts，将方向放入 variants，将执行检查放入 checklist；不在 JSON 外再输出八段文字，不声称已创建或运行工作流。',
+  ].join('\n');
   if (!input.visualAnalysis) return base;
   const orderedReferences = input.referenceMentions
     .map((reference) => `${reference.mention}（${reference.label}）`)
     .join('、');
+  if (input.agentMode === 'original') return [
+    base,
+    reverseDepthInstruction(input.reverseAnalysisDepth),
+    '结合用户需求和参考素材规划创作工作流。观察只依据可见证据，估计和未知分别标明；保留项、修改项和禁止项均落实到方案。',
+    `引用顺序：${orderedReferences || '无'}。保持各素材的用途和顺序，不能漏掉用户要求的参考图。`,
+    '遵循本次请求的 JSON 方案合同，必须优先完成 options：每个方案包含完整执行 prompt、可用生成模型 modelRoute 和 workflow 步骤；summary 和 requirements 简明。不能只返回分析报告或关键词。',
+    '没有兼容生成模型或需求无法执行时明确说明并返回 options:[]。方案供界面预览、选择和确认；不要声称已经创建节点或生成图片。',
+  ].join('\n');
   return [
     base,
     reverseDepthInstruction(input.reverseAnalysisDepth),

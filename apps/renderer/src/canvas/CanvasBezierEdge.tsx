@@ -77,6 +77,8 @@ export function CanvasBezierEdge({
         path={path}
         markerEnd={markerEnd}
         style={style}
+        // Disconnectable edges already provide a 20px hover and selection path.
+        interactionWidth={onCancel === undefined ? undefined : 0}
       />
       {onCancel !== undefined && (
         <path

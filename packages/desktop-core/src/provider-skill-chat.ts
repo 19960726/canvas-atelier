@@ -92,6 +92,7 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
       content: JSON.stringify({
         instructions: buildSkillChatSystemInstructions({
           agentMode: validated.agentMode ?? 'chat',
+          purpose: validated.purpose,
           reasoningEffort: validated.reasoningEffort,
           reverseAnalysisDepth: validated.reverseAnalysisDepth,
           visualAnalysis: validated.visualAnalysis === true,

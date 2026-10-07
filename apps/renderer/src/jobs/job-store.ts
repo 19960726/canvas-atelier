@@ -9,7 +9,8 @@ import {
 } from '@agent-canvas/domain';
 import { createModelJobRunId } from './model-job-identity';
 import { isRejectedLayerResult } from './layer-result-retry';
-import { isExternalProviderJob, isUncertainExternalSubmission, UNCERTAIN_EXTERNAL_SUBMISSION_ERROR } from './model-job-retry-policy';
+import { isPotentiallyPaidProviderJob, isUncertainExternalSubmission, UNCERTAIN_EXTERNAL_SUBMISSION_ERROR } from './model-job-retry-policy';
+import { invalidateLayeringProof } from '../app/layering-proof';
 
 const DEFAULT_POLL_CONCURRENCY = 4;
 const DEFAULT_MATERIALIZE_CONCURRENCY = 2;
@@ -50,6 +51,8 @@ export interface ModelJobRequest {
   outputCount?: 1 | 2 | 3 | 4;
   layeringGroupId?: string;
   layeringLayerId?: string;
+  layeringOutputContract?: NonNullable<ModelJob['layeringOutputContract']>;
+  layeringConfirmationDigest?: string;
 }
 
 export interface EnqueueConfirmedJobsInput {
@@ -70,6 +73,8 @@ export interface ModelJobResult {
   width?: number;
   height?: number;
   durationSeconds?: number;
+  /** Provider result representation is retained as an untrusted candidate label. */
+  resultRepresentation?: 'alpha-matte' | 'independent-rgba-candidate' | 'opaque-background-candidate';
   decode?: () => Promise<void>;
 }
 
@@ -198,13 +203,17 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
   const resultDecodeQueue = new AsyncQueue(decodeConcurrency);
   const resultCommitQueue = new AsyncQueue(1);
   const submittingJobs = new Set<string>();
+  const cancellationRequests = new Set<string>();
   const pollingJobs = new Set<string>();
+  const pollRetryStates = new Map<string, { failures: number; nextPollAt: number }>();
   const materializingJobs = new Set<string>();
   const shouldProcessJob = options.shouldProcessJob ?? (() => true);
   const isJobInScope = options.isJobInScope ?? shouldProcessJob;
   const retryingJobs = new Map<string, Promise<ModelJob>>();
   let activeRun: Promise<void> | null = null;
+  let runRequestedWhileActive = false;
   let stopped = false;
+  let store!: ModelJobStore;
 
   const emit = async () => {
     if (listeners.size === 0) return;
@@ -221,19 +230,31 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
     await emit();
   };
 
+  const submitAndResolveCancellation = async (id: string) => {
+    try {
+      await submitJob(id, storage, putJob, options.executor, providerQueue, now, submittingJobs, shouldProcessJob, cancellationRequests);
+    } finally {
+      if (cancellationRequests.has(id)) {
+        const latest = await storage.get(id);
+        cancellationRequests.delete(id);
+        if (latest?.status === 'running') await store.cancelQueuedJob(id);
+      }
+    }
+  };
+
   const runOnce = async (optionsForRun: { poll: 'once' | 'until-terminal'; submitQueued: boolean }) => {
     await ackPendingTerminalJobs(storage, putJob, options.executor, now);
 
     if (optionsForRun.submitQueued) {
       const queued = (await storage.list()).filter((job) => job.status === 'queued' && shouldProcessJob(job));
       await runLimited(queued, queued.length, async (job) => {
-        await submitJob(job.id, storage, putJob, options.executor, providerQueue, now, submittingJobs, shouldProcessJob);
+        await submitAndResolveCancellation(job.id);
       });
     }
 
     const running = (await storage.list()).filter((job) => job.status === 'running' && shouldProcessJob(job));
     await runLimited(running, running.length, async (job) => {
-      await pollJob(job.id, storage, putJob, options, providerQueue, resultDecodeQueue, resultCommitQueue, now, pollingJobs, materializingJobs);
+      await pollJob(job.id, storage, putJob, options, providerQueue, resultDecodeQueue, resultCommitQueue, now, pollingJobs, materializingJobs, pollRetryStates, pollIntervalMs);
     });
   };
 
@@ -249,16 +270,33 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
     }
   };
 
-  const coalescedRun = () => {
-    if (!activeRun) {
-      activeRun = runUntilTerminal().finally(() => {
-        activeRun = null;
-      });
+  const coalescedRun = (): Promise<void> => {
+    if (activeRun) {
+      // A new job may arrive after the current run's final queue read. Keep
+      // that wakeup until the active promise settles instead of returning it.
+      runRequestedWhileActive = true;
+      return activeRun;
     }
+    runRequestedWhileActive = false;
+    activeRun = runUntilTerminal().then(
+      () => {
+        const shouldRunAgain = runRequestedWhileActive;
+        activeRun = null;
+        return shouldRunAgain ? coalescedRun() : undefined;
+      },
+      (error: unknown) => {
+        const shouldRunAgain = runRequestedWhileActive;
+        activeRun = null;
+        // A transient queue read must not discard a later explicit wakeup.
+        // One replay is enough; a persistent storage failure still rejects.
+        if (shouldRunAgain) return coalescedRun();
+        throw error;
+      },
+    );
     return activeRun;
   };
 
-  return {
+  store = {
     enqueueConfirmedJobs: async (input) => {
       if (!input.confirmedAt) throw new Error('confirmedAt is required before enqueueing model jobs');
       assertPublicModelJobPayload(input);
@@ -293,7 +331,7 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
         if (job.status === 'running'
           && options.canRecoverRunningJob !== undefined
           && (isRecoverableRunningJobFresh(job, now())
-            || (job.providerTaskId !== undefined && isExternalProviderJob(job)))) {
+            || (job.providerTaskId !== undefined && isPotentiallyPaidProviderJob(job)))) {
           if (await options.canRecoverRunningJob(job)) return;
         }
         // Recovery may wait for provider ownership while workers advance. Only
@@ -301,9 +339,8 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
         // unchanged snapshots over concurrent progress or terminal results.
         const latest = await storage.get(job.id);
         if (!isSameJobRun(latest, job) || latest.status !== job.status || shouldPreserve(latest)) return;
-        const uncertainExternalSubmission = latest.status === 'submitting'
-          && latest.providerTaskId === undefined
-          && isExternalProviderJob(latest);
+        const uncertainExternalSubmission = isPotentiallyPaidProviderJob(latest)
+          && (latest.status === 'submitting' || latest.providerTaskId !== undefined);
         await putJob(transitionModelJob(latest, 'cancelled', {
           completedAt: now(),
           updatedAt: now(),
@@ -316,19 +353,20 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
     run: () => coalescedRun(),
     stop: () => {
       stopped = true;
+      runRequestedWhileActive = false;
     },
     processQueue: async () => {
       if (activeRun) return activeRun;
       const queued = (await storage.list()).filter((job) => job.status === 'queued' && shouldProcessJob(job));
       await runLimited(queued, queued.length, async (job) => {
-        await submitJob(job.id, storage, putJob, options.executor, providerQueue, now, submittingJobs, shouldProcessJob);
+        await submitAndResolveCancellation(job.id);
       });
     },
     pollActiveJobs: async () => {
       if (activeRun) return activeRun;
       const running = (await storage.list()).filter((job) => job.status === 'running' && shouldProcessJob(job));
       await runLimited(running, running.length, async (job) => {
-        await pollJob(job.id, storage, putJob, options, providerQueue, resultDecodeQueue, resultCommitQueue, now, pollingJobs, materializingJobs);
+        await pollJob(job.id, storage, putJob, options, providerQueue, resultDecodeQueue, resultCommitQueue, now, pollingJobs, materializingJobs, pollRetryStates, pollIntervalMs);
       });
     },
     retryJob: (id, overrides) => {
@@ -375,6 +413,10 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
           outputCount: job.outputCount as 1 | 2 | 3 | 4 | undefined,
           layeringGroupId: job.layeringGroupId,
           layeringLayerId: job.layeringLayerId,
+          ...(job.layeringOutputContract === undefined ? {} : {
+            layeringOutputContract: job.layeringOutputContract,
+            layeringConfirmationDigest: job.layeringConfirmationDigest,
+          }),
         });
         const retryRecord = { ...retry, retryCount: job.retryCount + 1 };
         await bulkPutJobs([
@@ -387,22 +429,24 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
       return operation;
     },
     cancelQueuedJob: async (id) => {
+      cancellationRequests.add(id);
       const job = await requireJob(storage, id);
       if (job.status === 'queued') {
         await putJob(transitionModelJob(job, 'cancelled', { updatedAt: now() }));
+        if (!submittingJobs.has(id)) cancellationRequests.delete(id);
         return;
       }
       if ((job.status === 'submitting' || job.status === 'running') && options.executor.cancel) {
+        // A submission has no provider handle yet. The provider may accept it
+        // before submit() returns, so a local cancellation cannot be terminal.
+        if (job.status === 'submitting' && job.providerTaskId === undefined) return;
+        cancellationRequests.delete(id);
         try {
           const cancelResult = await waitForCancellation(options.executor.cancel(job), DEFAULT_CANCEL_TIMEOUT_MS);
           const latest = await storage.get(id);
           if (latest && (latest.status === 'submitting' || latest.status === 'running')) {
             if (cancelResult?.status === 'completed' && latest.status === 'running') {
               await materializeResult(latest, cancelResult.result, options, storage, putJob, resultDecodeQueue, resultCommitQueue, now, materializingJobs);
-              const afterMaterialization = await storage.get(id);
-              if (afterMaterialization && (afterMaterialization.status === 'submitting' || afterMaterialization.status === 'running')) {
-                await putTerminalJob(storage, putJob, options.executor, afterMaterialization, 'cancelled', { updatedAt: now() }, now);
-              }
               return;
             }
             if (cancelResult?.status === 'failed') {
@@ -412,13 +456,18 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
               }, now);
               return;
             }
-            await putTerminalJob(storage, putJob, options.executor, latest, 'cancelled', { updatedAt: now() }, now);
+            if (cancelResult?.status === 'cancelled') {
+              await putTerminalJob(storage, putJob, options.executor, latest, 'cancelled', { updatedAt: now() }, now);
+            }
           }
         } catch (error) {
           const latest = await storage.get(id);
           if (latest) {
             const errorPatch = { error: sanitizeModelJobError(error), updatedAt: now() };
-            if (latest.status === 'running' || latest.status === 'submitting') {
+            if (isPotentiallyPaidProviderJob(latest)
+              && (latest.status === 'running' || latest.status === 'submitting')) {
+              await putJob({ ...latest, ...errorPatch });
+            } else if (latest.status === 'running' || latest.status === 'submitting') {
               await putJob(transitionModelJob(latest, 'failed', errorPatch));
             } else {
               await putJob({ ...latest, ...errorPatch });
@@ -427,6 +476,7 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
         }
         return;
       }
+      cancellationRequests.delete(id);
       throw new Error(`model job cannot be cancelled from ${job.status}`);
     },
     listJobs: async () => storage.list(),
@@ -438,6 +488,7 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
       };
     },
   };
+  return store;
 }
 
 function requireProviderField(value: ModelJobProvider | undefined): ModelJobProvider {
@@ -498,6 +549,7 @@ async function submitJob(
   now: () => string,
   submittingJobs: Set<string>,
   shouldProcessJob: (job: ModelJob) => boolean,
+  cancellationRequests: Set<string>,
 ): Promise<void> {
   if (submittingJobs.has(id)) return;
   submittingJobs.add(id);
@@ -506,8 +558,10 @@ async function submitJob(
     if (!queued || queued.status !== 'queued' || !shouldProcessJob(queued)) return;
     const submitting = transitionModelJob(queued, 'submitting', { updatedAt: now(), error: undefined });
     await putJob(submitting);
+    let submitted: ModelJobSubmission | undefined;
+    let providerCalled = false;
     try {
-      const submitted = await providerQueue.run(async () => {
+      submitted = await providerQueue.run(async () => {
         const latest = await storage.get(id);
         if (!isSameJobRun(latest, submitting) || latest.status !== 'submitting') return;
         if (!shouldProcessJob(latest)) {
@@ -516,9 +570,18 @@ async function submitJob(
           await putJob(modelJobSchema.parse({ ...latest, status: 'queued', updatedAt: now() }));
           return;
         }
+        if (cancellationRequests.delete(id)) {
+          await putJob(transitionModelJob(latest, 'cancelled', { updatedAt: now() }));
+          return;
+        }
+        providerCalled = true;
         return executor.submit(latest);
       });
-      if (submitted === undefined) return;
+      if (submitted === undefined && !providerCalled) return;
+      if (submitted === undefined || typeof submitted.providerTaskId !== 'string' || submitted.providerTaskId.trim().length === 0) {
+        submitted = undefined;
+        throw new Error('Provider submission acknowledgement did not contain a task id');
+      }
       const latest = await storage.get(id);
       if (!latest || latest.status !== 'submitting' || latest.retryCount !== submitting.retryCount) return;
       await putJob(transitionModelJob(latest, 'running', {
@@ -529,8 +592,33 @@ async function submitJob(
     } catch (error) {
       const latest = await storage.get(id);
       if (!latest || latest.status !== 'submitting' || latest.retryCount !== submitting.retryCount) return;
+      if (submitted !== undefined) {
+        // The provider already accepted this job. Persist its handle even if
+        // the first local write failed; never turn it into a fresh paid run.
+        const running = transitionModelJob(latest, 'running', {
+          providerTaskId: submitted.providerTaskId,
+          startedAt: latest.startedAt ?? now(),
+          updatedAt: now(),
+        });
+        try {
+          await putJob(running);
+          return;
+        } catch (writeError) {
+          const afterWrite = await storage.get(id);
+          if (afterWrite?.status === 'running' && afterWrite.providerTaskId === submitted.providerTaskId) return;
+          if (!afterWrite || afterWrite.status !== 'submitting') throw writeError;
+          await putJob(transitionModelJob(afterWrite, 'failed', {
+            providerTaskId: submitted.providerTaskId,
+            error: `${UNCERTAIN_EXTERNAL_SUBMISSION_ERROR} ${sanitizeModelJobError(writeError)}`,
+            updatedAt: now(),
+          }));
+          return;
+        }
+      }
       await putJob(transitionModelJob(latest, 'failed', {
-        error: sanitizeModelJobError(error),
+        error: isPotentiallyPaidProviderJob(latest)
+          ? `${UNCERTAIN_EXTERNAL_SUBMISSION_ERROR} ${sanitizeModelJobError(error)}`
+          : sanitizeModelJobError(error),
         updatedAt: now(),
       }));
     }
@@ -550,12 +638,16 @@ async function pollJob(
   now: () => string,
   pollingJobs: Set<string>,
   materializingJobs: Set<string>,
+  pollRetryStates: Map<string, { failures: number; nextPollAt: number }>,
+  pollIntervalMs: number,
 ): Promise<void> {
   if (pollingJobs.has(id)) return;
   pollingJobs.add(id);
   try {
     const job = await storage.get(id);
     if (!job || job.status !== 'running' || options.shouldProcessJob?.(job) === false) return;
+    const retryState = pollRetryStates.get(id);
+    if (retryState !== undefined && Date.parse(now()) < retryState.nextPollAt) return;
     let result: ModelJobPollResult | undefined;
     try {
       result = await providerQueue.run(async () => {
@@ -567,22 +659,34 @@ async function pollJob(
       const latest = await storage.get(id);
       if (!isSameRunningJob(latest, job)) return;
       if (isRetryableProviderPollError(error)) {
-        const { error: _staleError, ...recoverable } = latest;
-        await putJob({ ...recoverable, updatedAt: now() });
+        const timestamp = now();
+        if (pollIntervalMs > 0) {
+          const failures = (retryState?.failures ?? 0) + 1;
+          pollRetryStates.set(id, {
+            failures,
+            nextPollAt: Date.parse(timestamp) + Math.min(30_000, 1_000 * 2 ** Math.min(failures - 1, 5)),
+          });
+        }
+        await putJob({ ...latest, error: sanitizeModelJobError(error), updatedAt: timestamp });
         return;
       }
+      pollRetryStates.delete(id);
       await putJob(transitionModelJob(latest, 'failed', {
-        error: sanitizeModelJobError(error),
+        error: isPotentiallyPaidProviderJob(latest) && latest.providerTaskId !== undefined
+          ? `${UNCERTAIN_EXTERNAL_SUBMISSION_ERROR} ${sanitizeModelJobError(error)}`
+          : sanitizeModelJobError(error),
         updatedAt: now(),
       }));
       return;
     }
     if (result === undefined) return;
+    pollRetryStates.delete(id);
     try {
       const latest = await storage.get(id);
       if (!isSameRunningJob(latest, job)) return;
       if (result.status === 'running') {
-        await putJob({ ...latest, progress: result.progress, updatedAt: now() });
+        const { error: _staleError, ...recoverable } = latest;
+        await putJob({ ...recoverable, progress: result.progress, updatedAt: now() });
         return;
       }
       if (result.status === 'failed') {
@@ -602,10 +706,17 @@ async function pollJob(
     } catch (error) {
       const latest = await storage.get(id);
       if (!isSameRunningJob(latest, job)) return;
-      await putJob(transitionModelJob(latest, 'failed', {
-        error: sanitizeModelJobError(error),
-        updatedAt: now(),
-      }));
+      if (isPotentiallyPaidProviderJob(latest) && latest.providerTaskId !== undefined
+        && isRetryableLocalResultError(error)) {
+        await putJob({ ...latest, error: sanitizeModelJobError(error), updatedAt: now() });
+      } else {
+        await putJob(transitionModelJob(latest, 'failed', {
+          error: isPotentiallyPaidProviderJob(latest) && latest.providerTaskId !== undefined
+            ? `${UNCERTAIN_EXTERNAL_SUBMISSION_ERROR} ${sanitizeModelJobError(error)}`
+            : sanitizeModelJobError(error),
+          updatedAt: now(),
+        }));
+      }
     }
   } finally {
     pollingJobs.delete(id);
@@ -621,6 +732,16 @@ function isRetryableProviderPollError(error: unknown): boolean {
     && typeof error.message === 'string'
     && 'retryable' in error
     && error.retryable === true;
+}
+
+function isRetryableLocalResultError(error: unknown): boolean {
+  if (isRetryableProviderPollError(error)) return true;
+  const code = error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  return typeof code === 'string' && [
+    'SAVE_TIMEOUT', 'PROJECT_SAVE_CONFLICT', 'PROJECT_SAVE_RETRY_REQUIRED',
+    'DURABLE_WRITE_FAILED', 'PROJECT_WRITE_FAILED', 'PERMISSION_DENIED',
+    'EAGAIN', 'EBUSY', 'ETIMEDOUT',
+  ].includes(code);
 }
 
 async function materializeResult(
@@ -718,31 +839,91 @@ function createResultMaterialization(
       && candidate.data.config.layerId === job.layeringLayerId
       && candidate.data.config.jobId === job.id);
     if (layerNode === undefined) throw new Error('The owned image layer for this task is no longer available.');
+    // A provider result is always a fresh, unvalidated candidate.  Keep the
+    // confirmed request binding beside it, while removing every local proof
+    // that belonged to a previous asset/refinement.  In particular, a v2
+    // independent-RGBA declaration must never become foreground merely by
+    // returning from the provider or by repeating a prompt.
+    const {
+      qualityReason: _oldQualityReason,
+      qualityValidationVersion: _oldQualityValidationVersion,
+      foregroundProvenance: _oldForegroundProvenance,
+      foregroundValidation: _oldForegroundValidation,
+      preparedRgb: _oldPreparedRgb,
+      layerPrepared: _oldLayerPrepared,
+      resultRepresentation: _oldResultRepresentation,
+      assemblyConfirmationDigest: _oldAssemblyConfirmationDigest,
+      semanticReviewAccepted: _oldSemanticReviewAccepted,
+      semanticReviewDigest: _oldSemanticReviewDigest,
+      formatQualityStatus: _oldFormatQualityStatus,
+      qualityFormatCheckedAssetId: _oldQualityFormatCheckedAssetId,
+      ...candidateConfig
+    } = layerNode.data.config;
+    const expectedRepresentation = job.layeringOutputContract === 'source-independent-rgba-v2'
+      ? 'independent-rgba-candidate' as const
+      : job.layeringOutputContract === 'opaque-background-v2'
+        ? 'opaque-background-candidate' as const
+        : job.layeringOutputContract === 'source-alpha-matte-v1'
+          ? 'alpha-matte' as const
+          : undefined;
+    const resultRepresentation = job.layeringOutputContract === undefined
+      ? normalizeLayeringResultRepresentation(result.resultRepresentation)
+      : expectedRepresentation;
     const nextNode: CanvasNode = {
       ...layerNode,
       data: {
         ...layerNode.data,
         config: {
-          ...layerNode.data.config,
+          ...candidateConfig,
           resultAssetId: result.assetId,
           ...(result.width === undefined ? {} : { resultWidth: result.width }),
           ...(result.height === undefined ? {} : { resultHeight: result.height }),
           resultJobId: job.id,
+          ...(resultRepresentation === undefined ? {} : { resultRepresentation }),
+          ...(job.layeringOutputContract === undefined ? {} : {
+            layeringOutputContract: job.layeringOutputContract,
+            layeringConfirmationDigest: job.layeringConfirmationDigest,
+          }),
           pixelColorSpace: null,
           refinedFromAssetId: null,
           mattingRegions: [],
+          qualityReason: null,
+          qualityValidationVersion: null,
           qualityStatus: 'pending',
           status: 'validating',
+          needsReconfirm: true,
         },
         execution: { ...layerNode.data.execution, state: 'running' },
       },
     };
+    const groupNode = project?.nodes.find((candidate): candidate is Extract<CanvasNode, { type: 'module' }> => candidate.type === 'module'
+      && candidate.data.moduleType === 'image_layering' && candidate.data.config.groupId === job.layeringGroupId);
+    const operations: ProjectTransaction['operations'][number][] = [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }];
+    if (groupNode) {
+      const { assemblyConfirmationDigest: _oldGroupAssembly, semanticReviewAccepted: _oldGroupReview, semanticReviewDigest: _oldGroupDigest,
+        ...groupConfig } = groupNode.data.config;
+      operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: { ...groupNode, data: { ...groupNode.data, config: {
+        ...groupConfig, needsReconfirm: true, status: 'validating', resultState: 'needs_review',
+      } } } } });
+      for (const sibling of project?.nodes ?? []) {
+        if (sibling.type !== 'module' || sibling.id === layerNode.id || sibling.data.moduleType !== 'image_layer'
+          || sibling.data.config.groupId !== job.layeringGroupId) continue;
+        const siblingConfig = invalidateLayeringProof(sibling.data.config);
+        // Review invalidation must not stop an already bound sibling task.
+        if (['queued', 'submitting', 'running'].includes(String(sibling.data.config.status))) {
+          siblingConfig.status = sibling.data.config.status;
+        }
+        operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: {
+          ...sibling, data: { ...sibling.data, config: siblingConfig },
+        } } });
+      }
+    }
     return {
       resultNodeId: layerNode.id,
       transaction: {
         id: `model-job-layer-result-${job.id}`,
         label: `保存图片图层结果 ${job.layeringLayerId}`,
-        operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+        operations,
       },
     };
   }
@@ -858,6 +1039,12 @@ function resultAssetIds(result: ModelJobResult): string[] {
   return [...new Set([result.assetId, ...(result.assetIds ?? [])])];
 }
 
+function normalizeLayeringResultRepresentation(value: unknown): ModelJobResult['resultRepresentation'] {
+  return value === 'alpha-matte' || value === 'independent-rgba-candidate' || value === 'opaque-background-candidate'
+    ? value
+    : undefined;
+}
+
 async function putTerminalJob(
   storage: ModelJobStorage,
   putJob: (job: ModelJob) => Promise<void>,
@@ -868,7 +1055,7 @@ async function putTerminalJob(
   now: () => string,
 ): Promise<void> {
   const shouldAckProviderTerminal = Boolean(executor.ackTerminal && job.providerTaskId);
-  const terminal = transitionModelJob(job, status, {
+  const terminal = transitionModelJob(status === 'completed' ? { ...job, error: undefined } : job, status, {
     ...patch,
     providerAckPending: shouldAckProviderTerminal,
     terminalStatus: shouldAckProviderTerminal ? status : undefined,
@@ -997,7 +1184,11 @@ function isSameJobRun(candidate: ModelJob | undefined, expected: ModelJob): cand
     && candidate.confirmedAt === expected.confirmedAt
     && candidate.createdAt === expected.createdAt
     && candidate.projectId === expected.projectId
-    && candidate.projectSessionId === expected.projectSessionId;
+    && candidate.projectSessionId === expected.projectSessionId
+    && candidate.layeringGroupId === expected.layeringGroupId
+    && candidate.layeringLayerId === expected.layeringLayerId
+    && candidate.layeringOutputContract === expected.layeringOutputContract
+    && candidate.layeringConfirmationDigest === expected.layeringConfirmationDigest;
 }
 
 function isSameRunningJob(candidate: ModelJob | undefined, expected: ModelJob): candidate is ModelJob {

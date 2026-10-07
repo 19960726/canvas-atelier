@@ -45,14 +45,33 @@ test(`${moduleType}: twenty five inputs retain thumbnails, scroll and reorder`, 
   const visibleCount = (count: number) => moduleType === 'reverse_agent' ? count : Math.min(20, count);
   const inputCount = 25;
   for (let index=1; index<=inputCount; index++) {
-    await page.locator('.react-flow__pane').click({ position: { x: 1400, y: 60 } });
+    await page.locator('.react-flow__pane').click({ position: { x: 1400, y: 160 } });
     await page.evaluate(() => window.__NOVUS_E2E__!.createModule('image_input', { x: 160, y: 100 }));
     const input = page.locator('[data-module-type="image_input"]').last();
-    await queueProjectImageImport(page, makeReferenceImage(`Reference ${index}.png`, [index*10,100,130,255]));
+    const dimensions = index % 3 === 1 ? { width: 48, height: 72 } : index % 3 === 2 ? { width: 80, height: 45 } : { width: 48, height: 48 };
+    await queueProjectImageImport(page, makeReferenceImage(`Reference ${index}.png`, [index*10,100,130,255], dimensions));
     await input.getByRole('button', { name:'导入图像 / Import image' }).click();
     await input.locator('[data-port-id="image"].react-flow__handle').dragTo(reverse.locator(`[data-port-id="${targetPort}"].react-flow__handle`));
     if (moduleType === 'image_generation') await reverse.getByRole('button', { name: 'Open image generation editor' }).click();
     await expect(reverse.getByLabel(slotLabel, {exact:true})).toContainText(`${visibleCount(index)} / 20`);
+    if (moduleType === 'reverse_agent' && [1, 3, 8, 25].includes(index)) {
+      const bounds = await reverse.evaluate(element => {
+        const tray = element.querySelector('.connected-agent-media-slots')!.getBoundingClientRect();
+        const region = element.querySelector('.module-node__agent-media-region')!.getBoundingClientRect();
+        const route = element.querySelector('.module-node__agent-route-region')!.getBoundingClientRect();
+        const items = [...element.querySelectorAll('[data-slot-index]')].map(item => {
+          const rect = item.getBoundingClientRect();
+          return { top: rect.top, bottom: rect.bottom };
+        });
+        return { tray: { top: tray.top, bottom: tray.bottom }, region: { top: region.top, bottom: region.bottom }, routeTop: route.top, items };
+      });
+      for (const item of bounds.items) {
+        expect(item.top).toBeGreaterThanOrEqual(bounds.tray.top);
+        expect(item.bottom).toBeLessThanOrEqual(bounds.tray.bottom);
+        expect(item.bottom).toBeLessThanOrEqual(bounds.region.bottom);
+      }
+      expect(bounds.routeTop).toBeGreaterThanOrEqual(bounds.region.bottom);
+    }
     if ([6,7,8,20,21,25].includes(index)) {
       if (index > 20 && moduleType === 'reverse_agent') await expect(reverse.getByText(/Agent 反推最多连接 20/)).toBeVisible();
       const imgs = reverse.getByLabel(slotLabel, {exact:true}).locator('img');
@@ -64,14 +83,34 @@ test(`${moduleType}: twenty five inputs retain thumbnails, scroll and reorder`, 
       const row = reverse.getByLabel(slotLabel, {exact:true}).locator('.connected-agent-media-slots__row');
       await expect(row).not.toHaveAttribute('data-overflow', 'true');
       const thresholdMetrics = await row.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
-      expect(thresholdMetrics.scrollWidth).toBeLessThanOrEqual(thresholdMetrics.clientWidth + 1);
+      expect(thresholdMetrics.scrollWidth).toBeGreaterThanOrEqual(7 * 54 + 6 * 6);
+      if (thresholdMetrics.scrollWidth > thresholdMetrics.clientWidth) {
+        expect(await row.evaluate(element => getComputedStyle(element).scrollbarWidth)).toBe('thin');
+        expect(await row.evaluate(element => getComputedStyle(element, '::-webkit-scrollbar').display)).toBe('block');
+        await row.hover();
+        await page.mouse.wheel(0, 1000);
+        await expect(reverse.getByLabel(slotLabel, { exact: true }).getByLabel('Agent media slot 7', { exact: true })).toBeInViewport();
+      }
+    }
+    if (index === 6) {
+      await expect(reverse.getByLabel(slotLabel, { exact: true })).toHaveAttribute('data-thumbnail-sizing', 'uniform');
+      const proportions = await reverse.getByLabel(slotLabel, { exact: true }).locator('[data-slot-index]').evaluateAll(elements => elements.map(element => {
+        const rect = element.getBoundingClientRect();
+        const image = element.querySelector('img')!;
+        return { width: rect.width, height: rect.height, fit: getComputedStyle(image).objectFit };
+      }));
+      for (const item of proportions) {
+        expect(item.fit).toBe('contain');
+        expect(item.width).toBeCloseTo(54, 0);
+        expect(item.height).toBeCloseTo(54, 0);
+      }
     }
     if (index === 8) {
       const row = reverse.getByLabel(slotLabel, {exact:true}).locator('.connected-agent-media-slots__row');
       await expect(row).toHaveAttribute('data-overflow', 'true');
       if (moduleType === 'image_generation') {
         await expect(row).toHaveAttribute('data-layout', 'single-row');
-        expect(await row.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+        expect(await row.evaluate((element) => element.scrollWidth >= 8 * 54 + 7 * 6)).toBe(true);
       } else {
         expect(await row.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
         expect(await row.evaluate((element) => getComputedStyle(element, '::-webkit-scrollbar').display)).toBe('block');
@@ -84,26 +123,27 @@ test(`${moduleType}: twenty five inputs retain thumbnails, scroll and reorder`, 
   await expect.poll(() => slots.locator('img').evaluateAll(images => images.every(img => (img as HTMLImageElement).naturalWidth > 0))).toBe(true);
   const row = slots.locator('.connected-agent-media-slots__row');
   if (moduleType === 'image_generation') {
-    await expect(row).toHaveAttribute('data-layout', 'two-rows');
-    expect(await row.evaluate(e => e.scrollWidth <= e.clientWidth + 1)).toBe(true);
+    await expect(row).toHaveAttribute('data-layout', 'single-row');
+    expect(await row.evaluate(e => e.scrollWidth > e.clientWidth && ['auto', 'scroll'].includes(getComputedStyle(e).overflowX))).toBe(true);
     const layout = await reverse.evaluate((element) => {
       const rect = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
       return {
-        lastRowBelowFirst: rect('[data-slot-index="20"]').top > rect('[data-slot-index="1"]').top,
+        firstCenter: rect('[data-slot-index="1"]').top + rect('[data-slot-index="1"]').height / 2,
+        lastCenter: rect('[data-slot-index="20"]').top + rect('[data-slot-index="20"]').height / 2,
         mediaGap: rect('.module-node__prompt-workspace').top - rect('.module-node__unified-media-slots').bottom,
         controlsGap: rect('.module-node__generation-control-bar').top - rect('.module-node__prompt-workspace').bottom,
       };
     });
-    expect(layout.lastRowBelowFirst).toBe(true);
+    expect(layout.lastCenter).toBeCloseTo(layout.firstCenter, 0);
     expect(layout.mediaGap).toBeCloseTo(0, 0);
     expect(layout.controlsGap).toBeCloseTo(0, 0);
   } else {
     expect(await row.evaluate(e => e.scrollWidth > e.clientWidth && ['auto', 'scroll'].includes(getComputedStyle(e).overflowX))).toBe(true);
     expect(await row.evaluate(e => getComputedStyle(e).scrollbarWidth)).not.toBe('none');
-    await row.hover();
-    await page.mouse.wheel(0, 2000);
-    await expect.poll(() => row.evaluate(e => e.scrollLeft)).toBeGreaterThan(0);
   }
+  await row.hover();
+  await page.mouse.wheel(0, 2000);
+  await expect.poll(() => row.evaluate(e => e.scrollLeft)).toBeGreaterThan(0);
   await expect(slots.getByLabel(`Agent media slot ${last}`, { exact:true }).locator('img')).toBeInViewport();
   const moveLastLeft = slots.getByRole('button', { name:`Move Reference ${last} left`, exact:true });
   const moveLastRight = slots.getByRole('button', { name:`Move Reference ${last} right`, exact:true });
@@ -129,10 +169,10 @@ test(`${moduleType}: twenty five inputs retain thumbnails, scroll and reorder`, 
     const expandedSlots=reverse.getByLabel(moduleType==='image_generation'?slotLabel:'Connected video media editor',{exact:true});
     await expect(expandedSlots.locator('img')).toHaveCount(20);
     await expect(expandedSlots.locator('.connected-agent-media-slots__row')).toBeVisible();
-    if (moduleType !== 'image_generation') {
-      await expandedSlots.locator('.connected-agent-media-slots__row').hover();
-      await page.mouse.wheel(0,2000);
-    }
+    await expect(expandedSlots).toHaveAttribute('data-thumbnail-sizing', 'uniform');
+    await expect(expandedSlots.locator('.connected-agent-media-slots__row')).toHaveAttribute('data-layout', 'single-row');
+    await expandedSlots.locator('.connected-agent-media-slots__row').hover();
+    await page.mouse.wheel(0,2000);
     await expandedSlots.getByRole('button',{name:'Move Reference 20 right',exact:true}).click();
     await expect(expandedSlots.getByLabel('Agent media slot 20',{exact:true})).toHaveAttribute('title',/Reference 20/);
   }

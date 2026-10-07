@@ -7,6 +7,26 @@ const exact = ['gpt-image-2', 'gpt-image-2-vip', 'gpt-image-2-2k', 'gpt-image-2-
 const models = [...legacy, ...exact, 'gpt-image-2-all'];
 
 describe('Comfly catalog GPT image transport matrix', () => {
+  it('keeps numbered mentions paired with ordered multipart image bytes', async () => {
+    const fetch = vi.fn<ComflyFetch>(async () => ({ ok: true, status: 200, json: async () => ({ data: [{ b64_json: 'iVBORw0KGgo=' }] }) }));
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'fixture', fetch });
+    const prompt = '产品使用 @图片2，构图使用 @图片1。';
+    const images = [
+      { bytes: Uint8Array.from([137, 80, 78, 71, 1]), mediaType: 'image/png' },
+      { bytes: Uint8Array.from([137, 80, 78, 71, 2]), mediaType: 'image/png' },
+    ];
+    await submitComflyImage(client, { provider: 'comfly', modelRoute: 'fixture-gpt', modelId: 'gpt-image-1', displayName: 'GPT', capabilities: ['image_generation', 'image_edit'] }, {
+      jobId: 'fixture-mentions', sessionId: 'fixture', conversationId: 'fixture', provider: 'comfly', modelRoute: 'fixture-gpt', prompt,
+      referenceAssetIds: ['a'.repeat(16), 'b'.repeat(16)], resolution: '1K', outputCount: 1,
+    }, prompt, images);
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, init] = fetch.mock.calls[0]!;
+    expect(url).toBe('https://ai.comfly.org/v1/images/edits');
+    const form = await new Response(new Blob([Uint8Array.from(init!.body as Uint8Array)]), { headers: { 'content-type': init!.headers!['content-type']! } }).formData();
+    expect(form.get('prompt')).toBe(prompt);
+    const files = form.getAll('image') as File[];
+    expect(await Promise.all(files.map(async file => new Uint8Array(await file.arrayBuffer())))).toEqual(images.map(image => image.bytes));
+  });
   it.each(['flare', 'sunburst'].flatMap(variant => ['', '-2k', '-4k'].flatMap(suffix => [false, true].flatMap(edit => ['png', 'webp'].map(format => ({ model: `gpt-image-2.5-${variant}${suffix}`, edit, format: format as 'png' | 'webp' }))))))('$model edit=$edit forwards transparent $format explicitly', async ({ model, edit, format }) => {
     const fetch = vi.fn<ComflyFetch>(async () => ({ ok: true, status: 200, json: async () => ({ task_id: 'transparent-fixture' }) }));
     const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'fixture', fetch });

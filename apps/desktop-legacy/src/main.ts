@@ -348,6 +348,7 @@ app.whenReady().then(async () => {
   });
   const julunProviderService = createNewApiProviderService({
     provider: 'julun',
+    appDataRoot: join(appDataRoot, 'providers', 'julun'),
     credentialStore: julunCredentialStore,
     configurationStore: createProviderConfigurationStore({ appDataRoot, provider: 'julun', fileSystem }),
     fetch: providerFetch,
@@ -358,10 +359,14 @@ app.whenReady().then(async () => {
     }),
     historySink: generationHistorySink,
     readReferenceImage: readNewApiReferenceImage,
+    bindGenerationProject: providerDesktopHandlers.bindGenerationProject,
+    storeGeneratedImageForProject: providerDesktopHandlers.storeGeneratedImageForProject,
+    storeGeneratedVideoForProject: providerDesktopHandlers.storeGeneratedVideoForProject,
     storeGeneratedVideo: providerDesktopHandlers.storeGeneratedVideo,
   });
   const fourDAiProviderService = createNewApiProviderService({
     provider: '4dai',
+    appDataRoot: join(appDataRoot, 'providers', '4dai'),
     credentialStore: fourDAiCredentialStore,
     configurationStore: createProviderConfigurationStore({ appDataRoot, provider: '4dai', fileSystem }),
     fetch: providerFetch,
@@ -377,6 +382,9 @@ app.whenReady().then(async () => {
     resolveResultHost: async (hostname) => (await lookup(hostname, { all: true, verbatim: true }))
       .map((entry) => entry.address),
     storeGeneratedImage: providerDesktopHandlers.storeGeneratedImage,
+    bindGenerationProject: providerDesktopHandlers.bindGenerationProject,
+    storeGeneratedImageForProject: providerDesktopHandlers.storeGeneratedImageForProject,
+    storeGeneratedVideoForProject: providerDesktopHandlers.storeGeneratedVideoForProject,
   });
   const providerActiveStore = createProviderActiveStore({ appDataRoot });
   registerProviderBridgeHandlers(ipcMain, createProviderBridgeHandlers(createProviderRegistry({
@@ -398,6 +406,9 @@ app.whenReady().then(async () => {
       readManagedSkillChatImages: desktopHandlers.readManagedSkillChatImages,
       storeGeneratedImage: desktopHandlers.storeGeneratedImage,
       storeGeneratedVideo: desktopHandlers.storeGeneratedVideo,
+      bindGenerationProject: desktopHandlers.bindGenerationProject,
+      storeGeneratedImageForProject: desktopHandlers.storeGeneratedImageForProject,
+      storeGeneratedVideoForProject: desktopHandlers.storeGeneratedVideoForProject,
     }),
     relayme: createRelayMeProviderService({
       appDataRoot: app.getPath('userData'),
@@ -415,6 +426,9 @@ app.whenReady().then(async () => {
       readManagedSkillChatImages: desktopHandlers.readManagedSkillChatImages,
       storeGeneratedImage: desktopHandlers.storeGeneratedImage,
       storeGeneratedVideo: desktopHandlers.storeGeneratedVideo,
+      bindGenerationProject: desktopHandlers.bindGenerationProject,
+      storeGeneratedImageForProject: desktopHandlers.storeGeneratedImageForProject,
+      storeGeneratedVideoForProject: desktopHandlers.storeGeneratedVideoForProject,
     }),
     julun: julunProviderService,
     '4dai': fourDAiProviderService,
